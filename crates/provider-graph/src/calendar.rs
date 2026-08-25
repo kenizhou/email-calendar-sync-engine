@@ -21,13 +21,13 @@ use engine_core::{
 };
 use engine_provider::{
     Capabilities, ConnectionInfo, EventDeletion, EventDraft, EventEdit, EventRsvp,
-    EventWriteReceipt, PageToken, Provider, ProviderError, ProviderResult, RsvpControls, ScopeSync,
-    SyncKind, WriteGuard,
+    EventWriteReceipt, OverrideSurvival, PageToken, Provider, ProviderError, ProviderResult,
+    RsvpControls, ScopeSync, SyncKind, WriteGuard,
 };
 
 use crate::{
-    cal_fetch::{self, CalendarWindow},
-    cal_write,
+    cal_fetch::{self, CalendarWindow, EventsPage},
+    cal_override, cal_write,
     transport::GraphClient,
 };
 
@@ -46,6 +46,17 @@ const GRAPH_RSVP: RsvpControls = RsvpControls {
     comment: true,
     suppress_notification: true,
     guard: WriteGuard::Absent,
+};
+
+/// What a Graph series edit costs the user — the harshest of the four.
+///
+/// Moving the series' time **and** changing its rule each destroy every per-occurrence
+/// exception, reverting them to the pattern. Measured, and re-measured by
+/// `tests/live_calendar_survival.rs` against the real account.
+const GRAPH_OVERRIDE_SURVIVAL: OverrideSurvival = OverrideSurvival {
+    survives_time_change: false,
+    survives_rule_change: false,
+    clobbers_own_fields: false,
 };
 
 /// A Microsoft Graph calendar read/sync/write provider bound to one calendar.
@@ -101,7 +112,7 @@ impl GraphCalendarProvider {
             display_zone,
             capabilities: Capabilities::none()
                 .with_calendars()
-                .with_calendar_writes(WriteGuard::Enforced)
+                .with_calendar_writes(WriteGuard::Enforced, GRAPH_OVERRIDE_SURVIVAL)
                 .with_calendar_rsvp(GRAPH_RSVP)
                 .with_calendar_scheduling(),
         }
@@ -162,6 +173,7 @@ impl Provider for GraphCalendarProvider {
         let mut changed = Vec::new();
         let mut removed = Vec::new();
         let mut present = BTreeSet::new();
+        let mut overrides = Vec::new();
         let mut kind: Option<SyncKind> = None;
         let next_cursor = loop {
             let page = match cal_fetch::events_page(
@@ -188,15 +200,23 @@ impl Provider for GraphCalendarProvider {
                 }
                 Err(err) => return Err(err.into()),
             };
+            let EventsPage {
+                page,
+                overrides: page_overrides,
+            } = page;
             kind.get_or_insert(page.kind);
             changed.extend(page.changed);
             removed.extend(page.removed);
             present.extend(page.present);
+            overrides.extend(page_overrides);
             if page.next_page.is_none() {
                 break page.next_cursor;
             }
             page_token = page.next_page;
         };
+        // Only now: an exception names its master by id, and the master may have been on
+        // any page of this pass — or, on a delta, on none of them.
+        cal_override::fold_into(&mut changed, overrides);
         let update = match kind.unwrap_or(SyncKind::Delta) {
             SyncKind::Snapshot => SyncUpdate::snapshot(changed, present),
             SyncKind::Delta => SyncUpdate::delta(changed, removed),

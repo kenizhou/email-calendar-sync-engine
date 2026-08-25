@@ -51,9 +51,14 @@ pub use engine::{
 // Re-exports of the types this facade's signatures mention, so hosts depend on
 // `engine-api` alone (the providers themselves still come from the adapter crates).
 pub use engine_core::calendar::{
-    Calendar, Event, EventKind, EventStatus, FreeBusyStatus, Location, Participant,
-    ParticipantKind, ParticipantRole, ParticipationStatus, Privacy, VirtualLocation,
+    Calendar, Event, EventKind, EventStatus, FreeBusyStatus, Frequency, Location, NDay,
+    Participant, ParticipantKind, ParticipantRole, ParticipationStatus, Privacy, Recurrence,
+    RecurrenceBound, RecurrenceOverride, RecurrenceRule, RecurrenceSkip, VirtualLocation, Weekday,
 };
+// The payload of a `RecurrenceOverride::Patch` — what one occurrence changed about itself.
+// The variant is re-exported above, so without this a host can match on it and then not name
+// what it is holding.
+pub use engine_core::patch::PatchObject;
 // The inbound-scheduling (iTIP/iMIP) layer. `Engine::message_scheduling` returns a
 // `SchedulingMessage`, so without these a host could not name what it received — and the
 // product rule that decides whether to offer an RSVP is written over `ScheduleMethod` plus
@@ -117,10 +122,11 @@ pub use engine_core::{mail::MailFlags, search_index::MailRow};
 /// [`ThrottleObserver`], because the engine writes no logs of its own.
 pub use engine_http::{IgnoreThrottles, RetryConfig, RetryPolicy, ThrottleEvent, ThrottleObserver};
 pub use engine_provider::{
-    Capabilities, ContactDestination, ContactPhoto, ContactsProvider, ContentIdHeader, Draft,
-    DraftAttachment, DraftAttachmentDisposition, DraftCalendar, EventDeletion, EventDraft,
-    EventEdit, EventPatch, EventRsvp, EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt,
-    MessageReport, PatchTarget, Provider, ReplyDelivery, ReportControls, ReportEvidence,
+    Capabilities, ContactDestination, ContactPhoto, ContactsProvider, ContentIdHeader,
+    DeleteTarget, Draft, DraftAttachment, DraftAttachmentDisposition, DraftCalendar,
+    DraftRecurrence, EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, EventWrite,
+    EventWriteReceipt, MailEdit, MailEditReceipt, MessageReport, Occurrence, OverrideSurvival,
+    PatchTarget, Provider, RecurrenceEdit, ReplyDelivery, ReportControls, ReportEvidence,
     ReportReceipt, ReportVerdict, ReportVerdicts, ReportingProvider, RsvpControls, RsvpResponse,
     SentCopy, SubmissionReceipt, TextEdit, WriteGuard, WritePrecondition,
 };
@@ -132,7 +138,7 @@ pub use engine_search::{ParseError, SearchHit, SearchResults};
 use engine_store::StoreError;
 pub use engine_store::{
     ContactPhotoFile, MailListRow, OccurrenceRow, PendingOpState, PruneReport, SchemaStatus,
-    SweepReport, SyncApplied, TzdataVersion,
+    SourcesDropped, SweepReport, SyncApplied, TzdataVersion,
 };
 pub use engine_sync::{
     AccountProgress, CalendarSyncReport, CalendarWriteOutcome, ContactReconcileReport,
