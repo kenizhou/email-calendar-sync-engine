@@ -32,10 +32,10 @@ fn adapter_at(server: &MockServer) -> EasAdapter {
     EasAdapter::new(client_at(&server.eas_url()), folder())
 }
 
-/// The pre-connect shape: nothing has gone out, so nothing is claimed and
-/// nothing is observed. Capabilities are the **verb ladder** — this task
-/// lands connection facts and scopes only, so nothing is advertised; each
-/// bit turns on when the verb honoring it lands, never before.
+/// The pre-connect shape: nothing has gone out, so nothing is observed.
+/// Capabilities are the **verb ladder** — the read verbs (`sync_mailboxes`,
+/// `stream_email`) have landed, so `mail` is advertised from construction;
+/// every other bit stays off until the verb honoring it lands, never before.
 #[tokio::test]
 async fn pre_connect_connection_info_reports_no_transport_facts() {
     super::harness::init_logger();
@@ -46,8 +46,8 @@ async fn pre_connect_connection_info_reports_no_transport_facts() {
     let info = adapter.connection_info();
     assert_eq!(
         info.capabilities,
-        Capabilities::none(),
-        "T2 ladder: no verb has landed, so nothing may be advertised"
+        Capabilities::none().with_mail(),
+        "the mail read verbs have landed — the whole domain the bit names"
     );
     assert_eq!(
         info.tls_version, None,
@@ -113,7 +113,7 @@ async fn options_negotiation_populates_connection_info() {
     );
     assert_eq!(
         info.capabilities,
-        Capabilities::none(),
+        Capabilities::none().with_mail(),
         "capabilities are the verb ladder, not the server's advertised command list"
     );
 

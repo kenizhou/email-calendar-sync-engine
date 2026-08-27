@@ -33,18 +33,42 @@ fn failure_class(err: &EasError) -> FailureClass {
         EasError::Wbxml(_) | EasError::UnexpectedRoot { .. } => FailureClass::Permanent,
         // In-body command statuses classify through the per-family
         // `RecoveryAction` table the crate already owns (`status.rs`) — one
-        // source of truth, not a second table here. Only FolderSync flows
-        // through the adapter today; the Sync family's classifier wires up
-        // with the message verbs.
+        // source of truth, not a second table here. The Sync family carries
+        // its own variant (Sync 3 = invalid key → `NeedsResync`, Sync 5/16 =
+        // transient → `Retryable`, Sync 6 = conversion error, not transient
+        // → `Permanent`); the family-untagged `CommandStatus` arm serves the
+        // families whose verbs have not landed adapter slices yet and
+        // classifies through the FolderSync table — today that is exactly
+        // the FolderSync verb itself.
+        EasError::SyncStatus { status, .. } => {
+            class_of_action(crate::status::recovery_action_for_sync(*status))
+        }
         EasError::CommandStatus { status, .. } => {
-            match crate::status::recovery_action_for_folder_sync(*status) {
-                RecoveryAction::ResetSyncKey => FailureClass::NeedsResync,
-                RecoveryAction::RetryProvision => FailureClass::Retryable,
-                _ => FailureClass::Permanent,
-            }
+            class_of_action(crate::status::recovery_action_for_folder_sync(*status))
         }
         EasError::InvalidRequest(_) => FailureClass::InvalidState,
         EasError::Auth(_) => FailureClass::Authentication,
+    }
+}
+
+/// The engine class a `RecoveryAction` resolves to — the shared tail of every
+/// family classifier above. Resync-shaped actions (reset the sync key, run
+/// FolderSync) map to `NeedsResync` (the orchestrator drops the cursor and
+/// re-runs); the retry-shaped ones to `Retryable`; everything else surfaces
+/// permanently.
+fn class_of_action(action: RecoveryAction) -> FailureClass {
+    match action {
+        RecoveryAction::ResetSyncKey | RecoveryAction::RunFolderSync => FailureClass::NeedsResync,
+        RecoveryAction::RetryProvision
+        | RecoveryAction::RefreshToken
+        | RecoveryAction::FollowRedirect
+        | RecoveryAction::RetryTransient => FailureClass::Retryable,
+        // `Ok` never reaches the classifier (only non-success statuses are
+        // converted to errors) — a healthy action on an error path is a
+        // contradiction that must not be silently retried.
+        RecoveryAction::Ok | RecoveryAction::SurfaceAuth | RecoveryAction::SurfacePermanent => {
+            FailureClass::Permanent
+        }
     }
 }
 
@@ -159,6 +183,51 @@ mod tests {
                     message: "FolderSync failed".into(),
                 }),
                 FailureClass::Permanent
+            );
+        }
+    }
+
+    /// The Sync family classifies through its own table ([MS-ASCMD] "Status
+    /// (Sync)"): 3 = invalid synchronization key → the "0" re-bootstrap
+    /// recovery (`NeedsResync` when surfaced — the stream recovers internally
+    /// first); 5/16 = transient server/retry errors → `Retryable`; 6 =
+    /// client/server conversion error, explicitly NOT transient →
+    /// `Permanent`. The same codes under FolderSync mean different things —
+    /// the reason the family carries its own variant.
+    #[test]
+    fn sync_statuses_follow_the_sync_family_classifier() {
+        assert_eq!(
+            class_of(&EasError::SyncStatus {
+                status: 3,
+                message: "Sync failed: invalid synchronization key".into(),
+            }),
+            FailureClass::NeedsResync
+        );
+        assert_eq!(
+            class_of(&EasError::SyncStatus {
+                status: 12,
+                message: "Sync failed: folder hierarchy changed".into(),
+            }),
+            FailureClass::NeedsResync
+        );
+        for status in [5, 16] {
+            assert_eq!(
+                class_of(&EasError::SyncStatus {
+                    status,
+                    message: "Sync failed: server error".into(),
+                }),
+                FailureClass::Retryable,
+                "Sync {status} is transient"
+            );
+        }
+        for status in [4, 6, 8] {
+            assert_eq!(
+                class_of(&EasError::SyncStatus {
+                    status,
+                    message: "Sync failed".into(),
+                }),
+                FailureClass::Permanent,
+                "Sync {status} is not recoverable by resending"
             );
         }
     }

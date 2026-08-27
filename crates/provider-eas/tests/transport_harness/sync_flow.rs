@@ -207,9 +207,11 @@ async fn sync_changes_empty_batch_never_touches_the_wire() {
 }
 
 /// A failing collection status on the upsync (status 3 = invalid key)
-/// surfaces as `CommandStatus` naming the chunk.
+/// surfaces as the Sync family's own `SyncStatus` variant naming the chunk —
+/// the family tag that routes its classification through the Sync recovery
+/// table (3 → the "0" re-bootstrap), not the family-blind `CommandStatus`.
 #[tokio::test]
-async fn sync_changes_invalid_key_surfaces_command_status() {
+async fn sync_changes_invalid_key_surfaces_sync_status() {
     super::harness::init_logger();
     let server = MockServer::http(Arc::new(|_: &CapturedRequest, _| {
         MockResponse::wbxml(&sync_response("3", "0", false, &[]))
@@ -230,9 +232,9 @@ async fn sync_changes_invalid_key_surfaces_command_status() {
     assert!(
         matches!(
             &err,
-            provider_eas::client::EasError::CommandStatus { status: 3, .. }
+            provider_eas::client::EasError::SyncStatus { status: 3, .. }
         ),
-        "expected CommandStatus 3, got {err:?}"
+        "expected SyncStatus 3, got {err:?}"
     );
 }
 

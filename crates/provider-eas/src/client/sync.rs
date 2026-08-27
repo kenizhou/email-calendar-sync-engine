@@ -226,7 +226,10 @@ impl EasClient {
         expect_root(&resp, PAGE_AIRSYNC, AS_SYNC)?;
         let outcome = commands::parse_sync_change_response(&resp)?;
         if outcome.status != 1 {
-            return Err(EasError::CommandStatus {
+            // The Sync family's own variant — its codes classify through the
+            // Sync recovery table (status 3 = invalid key → resync), not the
+            // family-blind CommandStatus arm.
+            return Err(EasError::SyncStatus {
                 status: outcome.status,
                 message: format!(
                     "Sync Change failed (chunk {chunk_no}/{total_chunks}): {}",

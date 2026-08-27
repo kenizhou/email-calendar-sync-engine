@@ -8,6 +8,9 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+# The streaming email pass (`adapter/email.rs`) yields its chunks through
+# `async_stream::try_stream!` — the IMAP/JMAP stream-verb precedent.
+async-stream = { workspace = true }
 # The adapter skeleton implements `engine_provider::Provider` (connection
 # facts + the EAS scope overrides), over the engine's ids and sync scopes.
 engine-core = { workspace = true }
@@ -51,6 +54,9 @@ hex = { workspace = true }
 # workspace lock via engine-tls's own dev-deps.
 rcgen = "0.13"
 rustls = { workspace = true }
+# The adapter flow tests drive `stream_email`'s `EmailStream` (a boxed
+# `Stream`) with `StreamExt::next` — the provider-imap stream-tests precedent.
+futures-util = { workspace = true }
 
 [lints]
 workspace = true

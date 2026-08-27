@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 //! The trait half of the adapter: what [`EasAdapter`] reports, which scopes
-//! it names, and the verbs that have landed (FolderSync). The un-overridden
-//! defaults remain the honest behavior for every verb still to come (the
-//! module docs in `super` carry the ladder).
+//! it names, and the verbs that have landed (FolderSync, Sync class Email).
+//! The un-overridden defaults remain the honest behavior for every verb
+//! still to come (the module docs in `super` carry the ladder).
 
 use engine_core::{
     ids::AccountId,
     mail::Mailbox,
-    sync::{SyncScope, SyncState},
+    sync::{SyncScope, SyncState, SyncWindow},
 };
-use engine_provider::{ConnectionInfo, Provider, ProviderResult, ScopeSync};
+use engine_provider::{ConnectionInfo, EmailStream, Provider, ProviderResult, ScopeSync};
 
 use super::EasAdapter;
 
@@ -19,9 +19,9 @@ impl Provider for EasAdapter {
     /// version — composed per call, the Graph/JMAP precedent, because the
     /// version fact is live (most-recent observation) rather than latched.
     ///
-    /// * **Capabilities are `none()` in this slice** — they follow the verbs that have landed, not
-    ///   the server's OPTIONS answer. FolderSync alone does not flip `mail`: that bit names the
-    ///   whole mail read domain (containers *and* messages), so it turns on with the message verbs.
+    /// * **`mail` is on in this slice** — `sync_mailboxes` (containers) and `stream_email`
+    ///   (messages) are both live, which is the whole mail read domain the bit names. The
+    ///   write/submission bits stay off until their verbs land (the module docs' ladder).
     /// * **`http_version`** is `None` until the [`EasAdapter::negotiate`] OPTIONS exchange (EAS's
     ///   session-discovery step — the JMAP/CalDAV connect-time precedent; Graph, which has no
     ///   discovery step, stays `None` until its first fetch), then whatever the transport most
@@ -72,5 +72,27 @@ impl Provider for EasAdapter {
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Mailbox>> {
         super::mailboxes::sync(&self.client, cursor).await
+    }
+
+    /// Sync class "Email" over the bound folder ([MS-ASSYNC]): the
+    /// collection SyncKey is the cursor (`None`/empty → bootstrap `"0"`),
+    /// `MoreAvailable` pages the pass, and each completed round's chunk
+    /// carries that round's rotated key as `advance_to` — Additive with a
+    /// checkpoint per round. A SyncKey invalidation (collection status
+    /// 3/12) recovers inside the stream as a Reconcile pass re-bootstrapped
+    /// from `"0"`; everything else surfaces through the Sync family
+    /// classifier. `fetch_batch` is the wire `WindowSize` (`0` = the
+    /// drain-loop cap); `chunk_size` splits a round's items for incremental
+    /// commit. `super::email` owns the mapping and its contract, including
+    /// the depth-window note (no wire filter; the bound holds at apply).
+    fn stream_email<'a>(
+        &'a self,
+        _account: &'a AccountId,
+        cursor: Option<&'a SyncState>,
+        _window: SyncWindow,
+        fetch_batch: usize,
+        chunk_size: usize,
+    ) -> EmailStream<'a> {
+        super::email::stream(&self.client, &self.folder, cursor, fetch_batch, chunk_size)
     }
 }

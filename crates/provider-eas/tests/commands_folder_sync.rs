@@ -131,7 +131,9 @@ fn folder_type_to_class_covers_the_spec_table() {
         ("15", "Tasks"),
         ("16", "Notes"),
         ("17", "Notes"), // journal → Notes
-        ("19", "Email"), // observed mail folder type (crate note)
+        ("19", "Email"), /* "Recipient information cache" — NOT a mail type
+                          * ([MS-ASCMD] Type (FolderSync) §2.2.3.159.3); rides
+                          * the unrecognized-code Email fallback */
     ];
     for (typ, class) in cases {
         assert_eq!(folder_type_to_class(typ), class, "Type {typ}");

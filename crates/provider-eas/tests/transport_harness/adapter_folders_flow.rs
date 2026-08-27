@@ -201,11 +201,12 @@ async fn fresh_sync_bootstraps_from_zero_and_returns_a_snapshot() {
         "present is exactly the mail folders' keys (BTreeSet order)"
     );
     // The verb ladder: the mail bit promises the whole mail read surface
-    // (containers + messages), so it stays off until stream_email lands.
+    // (containers + messages) — both are live now (this verb and
+    // `stream_email`), so the bit is on.
     assert_eq!(
         adapter.connection_info().capabilities,
-        Capabilities::none(),
-        "mail flips with the message verbs, not with FolderSync alone"
+        Capabilities::none().with_mail(),
+        "mail flipped when the message verbs landed"
     );
 }
 

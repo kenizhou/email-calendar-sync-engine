@@ -248,14 +248,18 @@ fn parse_folder_element(folder_el: &WbxmlElement) -> Result<EasFolder, WbxmlErro
 /// mail), 7=tasks, 8=calendar, 9=contacts, 10=journal, 11=notes. User-created
 /// folders: 1/12=mail, 13=calendar, 14=contacts, 15=tasks, 16=notes, 17=journal.
 /// We map journal/notes to Notes for now; MVP doesn't sync them. Mail folder
-/// types and anything unrecognized fall back to Email.
+/// types (1-6, 12) and anything unrecognized fall back to Email — including
+/// type 19, which is "Recipient information cache" (the nickname cache
+/// folder, [MS-ASCMD] Type (FolderSync) §2.2.3.159.3), NOT a mail type;
+/// it lands in the Email fallback alongside the other unrecognized codes.
 pub fn folder_type_to_class(type_str: &str) -> String {
     match type_str {
         "7" | "15" => "Tasks".to_string(),
         "8" | "13" => "Calendar".to_string(),
         "9" | "14" => "Contacts".to_string(),
         "10" | "11" | "16" | "17" => "Notes".to_string(),
-        // Mail folder types (1-6, 12, 19) and anything unrecognized.
+        // Mail folder types (1-6, 12) and anything unrecognized (19 =
+        // recipient information cache included, see the doc comment).
         _ => "Email".to_string(),
     }
 }

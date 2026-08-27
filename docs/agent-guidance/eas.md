@@ -1,15 +1,16 @@
 # EAS (Exchange ActiveSync) Client Guidance
 
 > **Protocol client landed; adapter standing up verb by verb — connection
-> facts + scopes + FolderSync (`sync_mailboxes`) are in; the message verbs
-> are pending.** The per-verb verdicts below come from the trait-shape spike
+> facts + scopes + FolderSync (`sync_mailboxes`) + Sync class Email
+> (`stream_email`) are in; the mail read domain is complete and the `mail`
+> capability bit is on.** The per-verb verdicts below come from the trait-shape spike
 > (Plan B Task 3, 2026-08-24) and are stable. The relocation series has since
 > brought the crate to engine quality — edition 2024, workspace lints, module
 > split under the 500-line cap, the engine-tls transport, normalized live gating —
 > and `EasAdapter` (`src/adapter/`) implements `engine_provider::Provider`'s
-> `connection_info`, the EAS scope overrides, and `sync_mailboxes` (FolderSync),
-> advertising `Capabilities::none()` until the slice that completes each
-> capability's verbs lands (the verb ladder — a bit never precedes its verb).
+> `connection_info`, the EAS scope overrides, `sync_mailboxes` (FolderSync),
+> and `stream_email` (Sync class Email), advertising exactly the capabilities
+> whose verbs have landed (the verb ladder — a bit never precedes its verb).
 > Everything marked *fork decision* or *P2* stays unimplemented
 > until Plan C/P2 says otherwise. Update this file as the adapter's verbs land —
 > it is intended to become authoritative for `provider-eas`, peer of
@@ -40,17 +41,18 @@ table behind every verdict here.
   exchange (protocol version negotiated, applied to the client's
   `MS-ASProtocolVersion`, held adapter-side — never `ConnectionInfo`).
 - The adapter implements `connection_info`, the mail scope overrides, and the
-  first verb: `sync_mailboxes` (FolderSync — `adapter/mailboxes.rs`). The
+  read verbs: `sync_mailboxes` (FolderSync — `adapter/mailboxes.rs`) and
+  `stream_email` (Sync class Email — `adapter/email.rs`). The
   client sits behind a `tokio::sync::Mutex` (the verb lock): command methods
   rotate session state in place (hierarchy key, policy key, adopted URL), so
   verbs serialize onto one client — the IMAP connection-lock precedent — while
   `connection_info` reads the `ObservedHttpVersion` funnel through an `Arc`
-  handle (`EasClient::http_version_handle`), lock-free.
-  Capabilities follow the verb ladder: `none()` until each capability's verbs
-  have all landed — `sync_mailboxes` alone does **not** flip `mail`, because
-  that bit names the whole mail read domain (containers *and* messages) and
-  IMAP/Graph advertise it only with every mail verb live; it turns on with the
-  message verbs (`stream_email`).
+  handle (`EasClient::http_version_handle`), lock-free. An email stream holds
+  the lock for its whole pass, like IMAP's held connection guard.
+  Capabilities follow the verb ladder: `mail` is on (containers *and*
+  messages are both live — the whole domain the bit names); every other bit
+  (`mail_writes`, `message_source`, `submission`, calendar/contacts) stays
+  off until its verbs land.
   The spike's job was to decide whether the verbs *can* map without engine API
   changes. Answer: **one required engine change (new
   `SyncScope` variants — since landed, see the fork-decision records), everything
@@ -107,24 +109,37 @@ table behind every verdict here.
   `retryable`/`rate_limited`; `SurfaceAuth` → `authentication`; `RunFolderSync`
   (Sync 12, Ping 7) → needs-resync-or-internal-FolderSync; `RetryProvision` /
   `RefreshToken` / `FollowRedirect` are handled inside the transport and never
-  surface. This is a clean 1:1 with `FailureClass`.
+  surface. This is a clean 1:1 with `FailureClass`. The family a status came
+  from decides its meaning, so the Sync family surfaces through its own
+  `EasError::SyncStatus` variant (classified via the Sync table), while the
+  family-untagged `CommandStatus` serves the families without adapter slices
+  yet. Verified against the [MS-ASCMD] Status (Sync) table (2026-08-27):
+  3 = invalid sync key (MUST re-bootstrap from "0"), 5/16 = transient
+  retry, **6 = "error in client/server conversion … not a transient
+  condition" → permanent** (an earlier table treated 6 as `Ok` — corrected;
+  per-item upsync 6s will need skip-item handling when `edit_mail` lands).
 - **Sync key mechanics** (the load-bearing quirk set):
   - A collection sync key is an opaque server cursor; `"0"` bootstraps. The
     bootstrap round itself returns **no items** on some servers (Exchange 15.2) —
-    the drain loop must follow the rotated key once (Kylins
-    `eas_source/window.rs::should_follow_empty_bootstrap`).
+    the drain loop must follow the rotated key once (the Kylins
+    `should_follow_empty_bootstrap` rule, ported into `adapter/email.rs`).
   - Sync key invalid (status 3) = the EAS `cannotCalculateChanges`; FolderSync 9
     is the same for the hierarchy. Restart from `"0"` as a reconcile snapshot.
   - Each Sync round rotates the key, and `MoreAvailable` says whether more rounds
     remain — so **every round is a safe checkpoint** (EAS is more resumable
     mid-pass than JMAP/Graph, not less).
-  - `WindowSize` (items per round) follows the Android ladder 10→512
-    (`next_window_size`); ≤200 upsync commands per request are chunked and
-    key-threaded automatically (`client/sync.rs::sync_changes`).
-  - `FilterType` (days-back ladder: 1/3/5/7/14/30/45/90/180) is the only server
-    window; a `SyncWindow::since` date maps to the smallest covering rung and the
-    engine's `SyncWindow::admits` tightens the delta on apply — the composition
-    `window.rs` already prescribes.
+  - `WindowSize` (items per round): the adapter maps the engine's `fetch_batch`
+    knob directly (`0` → the 512 Kylins/Android cap); ≤200 upsync commands per
+    request are chunked and key-threaded automatically
+    (`client/sync.rs::sync_changes`).
+  - `FilterType` wire values are an **enum code table, not days** ([MS-ASCMD]
+    §2.2.3.68: 1=1 day, 2=3 days, 3=1 week, 4=2 weeks, 5=1 month, 6=3 months,
+    7=6 months, 0=no filter — correcting this file's earlier "days ladder"
+    note). `stream_email` currently sends 0 (the Kylins client's live-proven
+    shape): the window's bound holds at apply time (`SyncWindow::admits`
+    filters every additive chunk) with the host's prune pass as the backstop
+    for a Reconcile recovery's coarser enumeration; mapping `since` to the
+    smallest covering code is a pending adapter slice.
 - **MoveItems' status table is inverted**: 3 is success (with `DstMsgId`), 1 is
   invalid source. A move re-keys the message (new ServerId), exactly like an IMAP
   move re-keys by UID — `MailEditReceipt::message_key` keeps the source key and
@@ -221,8 +236,8 @@ document; this is the summary.
 | --- | --- | --- |
 | `connection_info` | **landed** (skeleton): composed per call — caps from the verb ladder (`none()` until each verb slice lands), `http_version` from the transport's `ObservedHttpVersion` (recorded by `options()` and every command send, shared across client clones, most-recent-wins; `None` before the `negotiate` OPTIONS first contact — the JMAP/CalDAV connect-time precedent), `concurrent_fetches` the default 1 until a measured per-server ceiling exists | no gap |
 | `mailbox_scope` / `email_scope` | **landed** (skeleton): the adapter returns `SyncScope::EasFolderList` / `EasFolder` (+ `EasCalendarList`/`EasCalendar` and `EasContactList`/`EasContact` siblings exist in `engine-core` for the calendar/contacts slices, whose id bindings differ), exactly as IMAP (`ImapMailboxList`/`ImapMailbox`) and Graph (`GraphFolderList`/`GraphFolder`) did | no gap |
-| `sync_mailboxes` | **landed**: `FolderSync` (`adapter/mailboxes.rs`); the hierarchy SyncKey is the cursor (`None`/empty → bootstrap `"0"` → snapshot of the full hierarchy; `Some(key)` → Add/Update/Delete delta); status 9 invalidation recovers **inside the call** — one re-bootstrap from `"0"` returning a snapshot (the JMAP needs-resync→snapshot-fallback precedent; a server answering 9 to `"0"` itself surfaces as `needs_resync`); non-mail classes (Calendar/Contacts/Tasks/Notes) are filtered out — `Mailbox` is the *mail* container type and those folders belong to the calendar/contacts scopes (the wire's Delete element carries no class, so delta deletions pass through unfiltered — tombstoning a key the mail scope never held is a store no-op); a success response omitting its SyncKey keeps the request's key (the Sync empty-body invariant — an empty key would poison the cursor); `Type`-derived roles (2 Inbox / 3 Drafts / 4 Trash / 5 Sent; Outbox and user types carry none, the raw type survives in `extended["eas/*"]`); **does not flip `mail`** — see the crate section | no gap (JMAP `container_sync` is the code precedent) |
-| `stream_email` | Sync class Email; cursor = collection sync key (`None` → `"0"`); per-round chunks are `Additive` with `advance_to` = rotated key; status 3 restarts the pass in `Reconcile` mode | no gap (`PassMode::Reconcile` matches SyncKey invalidation cleanly — JMAP `cannotCalculateChanges` recovery is the precedent) |
+| `sync_mailboxes` | **landed**: `FolderSync` (`adapter/mailboxes.rs`); the hierarchy SyncKey is the cursor (`None`/empty → bootstrap `"0"` → snapshot of the full hierarchy; `Some(key)` → Add/Update/Delete delta); status 9 invalidation recovers **inside the call** — one re-bootstrap from `"0"` returning a snapshot (the JMAP needs-resync→snapshot-fallback precedent; a server answering 9 to `"0"` itself surfaces as `needs_resync`); non-mail classes (Calendar/Contacts/Tasks/Notes) are filtered out — `Mailbox` is the *mail* container type and those folders belong to the calendar/contacts scopes (the wire's Delete element carries no class, so delta deletions pass through unfiltered — tombstoning a key the mail scope never held is a store no-op); a success response omitting its SyncKey keeps the request's key (the Sync empty-body invariant — an empty key would poison the cursor); `Type`-derived roles (2 Inbox / 3 Drafts / 4 Trash / 5 Sent; Outbox and user types carry none, the raw type survives in `extended["eas/*"]`); the `mail` bit flipped only once `stream_email` landed beside it — see the crate section | no gap (JMAP `container_sync` is the code precedent) |
+| `stream_email` | **landed**: Sync class Email (`adapter/email.rs`); cursor = collection sync key (`None`/empty → `"0"`); per-round chunks are `Additive` with `advance_to` = rotated key (sub-chunks within a round hold the cursor — the pre-round key is always a valid resume point; `fetch_batch` = `WindowSize`, `0` → the 512 drain-loop cap; `chunk_size` splits a round for incremental commit; Exchange-15.2's empty bootstrap round is followed once; metadata-tier only — bodies are `fetch_message_source`'s job); status 3 (and 12, degraded to the same reset) recovers **inside the stream** — one restart from `"0"` as a `Reconcile` pass (present-set + tombstoning), the JMAP `cannotCalculateChanges` recovery precedent; a mid-pass or at-`"0"` invalidation surfaces `needs_resync`; **no wire filter yet** (`FilterType` 0 — the window's bound holds at apply via `admits`; the coarse `FilterType` ladder is a pending slice, and note its wire values are an enum code table, not days: 1=1d, 2=3d, 3=1w, 4=2w, 5=1m, 6=3m, 7=6m) | no gap (`PassMode::Reconcile` matches SyncKey invalidation cleanly — JMAP `cannotCalculateChanges` recovery is the precedent) |
 | `default_sync_window` / `SyncWindow` | `FilterType` day-ladder (coarse) + `admits` tighten | no gap (mapping note) |
 | `fetch_message_source` | `ItemOperations` Fetch with `MIMESupport=2` + `BodyPreference` type 4 (raw MIME); multipart opt-in | no gap in contract; **EAS-local TODO**: `Options>Range` pagination/reassembly for oversized items is not implemented in the crate yet (P2; adapter-internal loop) |
 | `submit_email` | `SendMail` with `save_to_sent`; empty-body success; `SubmissionReceipt` via the Graph `sent:<Message-ID>` placeholder-key precedent (EAS returns no id) | no gap |

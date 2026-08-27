@@ -48,16 +48,31 @@ pub fn recovery_action_for_common(status: u32) -> RecoveryAction {
     }
 }
 
-/// Recovery decision for a Sync collection status (MS-ASSYNC 2.2.3.23).
+/// Recovery decision for a Sync collection status ([MS-ASCMD] "Status
+/// (Sync)" table — §2.2.3.177.6 in current revisions, cited as
+/// MS-ASSYNC 2.2.3.23 in older ones).
+///
+/// Verified against the spec table (2026-08-27): 3 = "Invalid
+/// synchronization key … MUST return to SyncKey value of 0 for the
+/// collection" (full resync); 5 = "Server error … frequently a transient
+/// condition … Retry the synchronization"; 12 = "The folder hierarchy has
+/// changed … Perform a FolderSync command and then retry"; 16 = "Retry …
+/// Resend the request". Status 6 is "Error in client/server conversion —
+/// the client has sent a malformed or invalid item … This is not a
+/// transient condition" (item scope): an identical resend cannot fix it,
+/// so it surfaces permanently — it is NOT a success-shaped code (the
+/// earlier `1 | 6 => Ok` arm misread it; nothing in the table says 6 is
+/// healthy).
 pub fn recovery_action_for_sync(status: u32) -> RecoveryAction {
     match status {
-        1 | 6 => RecoveryAction::Ok,
+        1 => RecoveryAction::Ok,
         3 => RecoveryAction::ResetSyncKey,
         12 => RecoveryAction::RunFolderSync,
-        // MS-ASCMD 2.2.3.177.17: 5 = "Server error … frequently a transient
-        // condition … retry"; 16 = "Retry — retriable error, resend the
-        // request". Both are folder-scoped transient retries, NOT permanent
-        // failures (Android treats 5/16 as backoff-retry).
+        // MS-ASCMD Status (Sync) 2.2.3.177.17 citation retained: 5 = "Server
+        // error … frequently a transient condition … retry"; 16 = "Retry —
+        // retriable error, resend the request". Both are folder-scoped
+        // transient retries, NOT permanent failures (Android treats 5/16 as
+        // backoff-retry).
         5 | 16 => RecoveryAction::RetryTransient,
         _ => RecoveryAction::SurfacePermanent,
     }
@@ -183,15 +198,25 @@ mod tests {
         assert_eq!(recovery_action_for_sync(3), RecoveryAction::ResetSyncKey);
         assert_eq!(recovery_action_for_sync(12), RecoveryAction::RunFolderSync);
         assert_eq!(recovery_action_for_sync(1), RecoveryAction::Ok);
-        assert_eq!(recovery_action_for_sync(6), RecoveryAction::Ok);
-        // MS-ASCMD 2.2.3.177.17 — Sync 5 ("Server error … frequently a
-        // transient condition … retry") and 16 ("Retry — retriable error,
-        // resend the request") are TRANSIENT: the engine retries next round
-        // without escalating the per-folder failure backoff (previously both
-        // were pinned permanent, which parked busy folders like Deleted
-        // Items). Android's client treats 5/16 the same way.
+        // MS-ASCMD Status (Sync) 2.2.3.177.17 — Sync 5 ("Server error …
+        // frequently a transient condition … retry") and 16 ("Retry —
+        // retriable error, resend the request") are TRANSIENT: the engine
+        // retries next round without escalating the per-folder failure
+        // backoff (previously both were pinned permanent, which parked busy
+        // folders like Deleted Items). Android's client treats 5/16 the
+        // same way.
         assert_eq!(recovery_action_for_sync(5), RecoveryAction::RetryTransient);
         assert_eq!(recovery_action_for_sync(16), RecoveryAction::RetryTransient);
+        // MS-ASCMD Status (Sync) spec table (verified 2026-08-27): 6 =
+        // "Error in client/server conversion — the client has sent a
+        // malformed or invalid item … This is not a transient condition"
+        // (item scope). Resending the same round cannot fix it, so it
+        // surfaces permanently — pinned here so it can never silently
+        // regress to the old `Ok` arm.
+        assert_eq!(
+            recovery_action_for_sync(6),
+            RecoveryAction::SurfacePermanent
+        );
         // Sync 4/8 remain permanent (protocol error, object not found) —
         // exhaustive pin so a future refactor can't silently regress these
         // to a retry path.

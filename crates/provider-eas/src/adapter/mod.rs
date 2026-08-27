@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 //! The [`Provider`](engine_provider::Provider) adapter over the EAS client —
-//! connection facts, the EAS scope overrides, and the FolderSync verb.
+//! connection facts, the EAS scope overrides, and the read verbs
+//! (FolderSync containers, Sync class Email messages).
 //!
 //! ## Binding
 //!
@@ -8,7 +9,8 @@
 //! folder — like IMAP and Graph, an [`EasAdapter`] is bound to a single mail
 //! folder (its [`email_scope`](engine_provider::Provider::email_scope) names
 //! that folder) and the cross-folder fan-out is the orchestrator's job
-//! (`docs/agent-guidance/eas.md`). The bound [`EasClient`] is cheap to clone
+//! (`docs/agent-guidance/eas.md`). The bound
+//! [`EasClient`](crate::client::EasClient) is cheap to clone
 //! and clones share one pooled HTTP transport, so an account's folder
 //! adapters may share a client.
 //!
@@ -25,8 +27,8 @@
 //!
 //! ## The verb lock
 //!
-//! [`EasClient`]'s command methods take `&mut self` — the retry layers adopt
-//! redirects and rotate policy keys in place, and FolderSync rotates the
+//! [`EasClient`](crate::client::EasClient)'s command methods take `&mut self` — the retry layers
+//! adopt redirects and rotate policy keys in place, and FolderSync rotates the
 //! cached hierarchy key — while the trait's verbs take `&self`. The verb
 //! slice therefore holds the client behind a [`tokio::sync::Mutex`]: the
 //! IMAP precedent (its session sits "behind an async `Mutex` — concurrent
@@ -35,10 +37,12 @@
 //! key, adopted URL), not an exclusive socket. The one sync reader,
 //! [`connection_info`](engine_provider::Provider::connection_info), must not
 //! take that lock (an async lock from a sync method), so the adapter holds
-//! the [`ObservedHttpVersion`] funnel directly — the same `Arc` the client
+//! the [`ObservedHttpVersion`](engine_provider::ObservedHttpVersion) funnel
+//! directly — the same `Arc` the client
 //! records every response into, taken as a handle at construction
-//! ([`EasClient::http_version_handle`]) — and reads the live,
-//! most-recent-wins fact lock-free.
+//! ([`EasClient::http_version_handle`](crate::client::EasClient::http_version_handle)) — and reads
+//! the live, most-recent-wins fact lock-free. An email stream holds the lock for its
+//! whole pass, like IMAP's held connection guard.
 //!
 //! ## The verb ladder (capabilities stay honest)
 //!
@@ -49,14 +53,17 @@
 //! caller straight at that rejection (`provider.rs`: "the default rejects,
 //! so a capability-checking caller never relies on it").
 //!
-//! FolderSync (`sync_mailboxes`) has landed, but it does **not** flip the
-//! `mail` bit: that bit names the whole mail read domain — containers *and*
-//! messages (`stream_email`, whose default yields a classified `Err`) — and
-//! IMAP/Graph advertise it only with every mail verb live. The bit turns on
-//! in the slice that lands the message verbs; until then the adapter stays
-//! at `Capabilities::none()`.
+//! The `mail` bit is **on** in this slice: `sync_mailboxes` (the
+//! containers) and `stream_email` (the messages) are both live, which is
+//! the whole mail read domain the bit names — IMAP/Graph advertise it only
+//! with every mail verb live, and this slice reaches that bar. The bits
+//! that name domains beyond it stay off until their verbs land:
+//! `mail_writes` (`edit_mail`), `message_source`
+//! (`fetch_message_source`), `submission` (`submit_email`), and the
+//! calendar/contacts families.
 
 mod connection;
+mod email;
 mod error;
 mod mailboxes;
 
@@ -95,10 +102,10 @@ pub struct EasAdapter {
     folder: MailboxId,
     /// The verb ladder, read by
     /// [`connection_info`](engine_provider::Provider::connection_info):
-    /// `none()` until the slice that lands the message verbs flips `mail`
-    /// (see the module docs). Deliberately not a constructor parameter — a
-    /// host must not be able to advertise a verb this adapter does not
-    /// implement.
+    /// `mail` since the read verbs (`sync_mailboxes` + `stream_email`) both
+    /// landed; every other bit stays off until its verb does (see the
+    /// module docs). Deliberately not a constructor parameter — a host must
+    /// not be able to advertise a verb this adapter does not implement.
     capabilities: Capabilities,
     /// The OPTIONS-negotiated protocol version ("16.1"-shaped), or `None`
     /// before [`EasAdapter::negotiate`]. Adapter-held by design: a host must
@@ -138,9 +145,10 @@ impl EasAdapter {
             http: client.http_version_handle(),
             client: tokio::sync::Mutex::new(client),
             folder,
-            // The honest ladder: `mail` names containers AND messages, so it
-            // stays off until the message verbs land (module docs).
-            capabilities: Capabilities::none(),
+            // The honest ladder: `mail` names containers AND messages —
+            // both read verbs are live in this slice, so the bit is on
+            // (module docs).
+            capabilities: Capabilities::none().with_mail(),
             protocol_version: None,
         }
     }

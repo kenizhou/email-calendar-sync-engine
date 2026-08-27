@@ -102,6 +102,22 @@ pub enum EasError {
         /// Human-readable mapping of the code.
         message: String,
     },
+    /// The server answered a non-success **Sync-family** in-body status
+    /// (collection or top-level, [MS-ASCMD] "Status (Sync)" table). A
+    /// dedicated variant — not [`EasError::CommandStatus`] — because the
+    /// family a status came from decides its classification
+    /// (`status.rs` owns one recovery table per family): Sync 3 is
+    /// "invalid synchronization key" (recover by re-bootstrapping the
+    /// collection from "0"), Sync 5/16 are transient retries, where the same
+    /// codes under another family mean something else. Families gain their
+    /// own variant as their adapter verbs land.
+    #[error("sync status {status}: {message}")]
+    SyncStatus {
+        /// The in-body status code.
+        status: u32,
+        /// Human-readable mapping of the code.
+        message: String,
+    },
     /// Client-side request validation failure — the request was rejected
     /// before ANY network I/O (distinct from `CommandStatus`, which means
     /// the SERVER actively rejected a request that went out).

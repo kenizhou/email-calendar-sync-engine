@@ -48,8 +48,9 @@ use crate::{
 
 /// The FolderSync bootstrap key ([MS-ASFolderSync] §2.2.3.1.7.2): requesting
 /// it returns the full hierarchy, so a round sent with this key is by
-/// definition a snapshot.
-const BOOTSTRAP_KEY: &str = "0";
+/// definition a snapshot. Shared with the email slice — a collection Sync
+/// bootstraps from the same "0".
+pub(super) const BOOTSTRAP_KEY: &str = "0";
 
 /// FolderSync status 9: "folder hierarchy out of date" — the stored hierarchy
 /// SyncKey is invalidated ([MS-ASFolderSync] §2.2.3.1.10; `status.rs` maps it
@@ -97,8 +98,9 @@ pub(super) async fn sync(
 }
 
 /// The hierarchy key this pass requests: the cursor's string, with `None` and
-/// the empty string (a corrupted cursor) both bootstrapping from `"0"`.
-fn request_key(cursor: Option<&SyncState>) -> &str {
+/// the empty string (a corrupted cursor) both bootstrapping from `"0"`. The
+/// same rule resolves a collection Sync's key (the email slice).
+pub(super) fn request_key(cursor: Option<&SyncState>) -> &str {
     cursor.map_or(BOOTSTRAP_KEY, |state| {
         let key = state.as_str();
         if key.is_empty() { BOOTSTRAP_KEY } else { key }
@@ -142,7 +144,7 @@ fn scope_sync(result: &FolderSyncResult, request_key: &str) -> ProviderResult<Sc
 /// persisted cursor (the Sync empty-body invariant), so a success response
 /// that omits the element keeps the request's key — the round changed
 /// nothing the caller needs to remember.
-fn next_key<'a>(returned: &'a str, request_key: &'a str) -> &'a str {
+pub(super) fn next_key<'a>(returned: &'a str, request_key: &'a str) -> &'a str {
     if returned.is_empty() {
         request_key
     } else {
