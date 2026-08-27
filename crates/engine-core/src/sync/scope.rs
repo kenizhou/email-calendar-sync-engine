@@ -39,12 +39,14 @@ impl JmapDataType {
 
 /// The unit of sync state, leasing, and serialization.
 ///
-/// Granularity is dictated by the protocol, and the three disagree
+/// Granularity is dictated by the protocol, and the protocols disagree
 /// (`store-and-sync.md`), so this is an enum, not a single id:
 ///
 /// - **JMAP** state is per account, per data type.
 /// - **IMAP** state is per mailbox (`UIDVALIDITY`/`UIDNEXT`/`HIGHESTMODSEQ`).
 /// - **CalDAV/CardDAV** state is per collection (sync-token, or CTag + ETags).
+/// - **EAS** state is per folder (a collection sync key), with a separate hierarchy sync key for
+///   the FolderSync folder list.
 ///
 /// SMTP is not a sync scope; it is an outbox transport leased per account.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -251,6 +253,78 @@ pub enum SyncScope {
         /// The discovered address book.
         address_book: AddressBookId,
     },
+    /// An EAS per-account folder-list (FolderSync hierarchy) scope.
+    ///
+    /// EAS discovers every folder — mail, calendar, and contact — in one
+    /// FolderSync hierarchy, whose sync key is a real cursor (rotated each
+    /// round), unlike the snapshot re-discovery lists of IMAP/Graph/Gmail. It is
+    /// still a distinct **container** scope, claimed and applied before the
+    /// per-[`EasFolder`](Self::EasFolder) email it parents (`store-and-sync.md`
+    /// referential apply order), and distinct from any single folder's scope so
+    /// the two never share a lease.
+    EasFolderList {
+        /// The account.
+        account: AccountId,
+    },
+    /// An EAS `(account, folder)` message scope.
+    ///
+    /// EAS item `Sync` carries one collection per request, so message sync is
+    /// per folder — like [`ImapMailbox`](Self::ImapMailbox) and
+    /// [`GraphFolder`](Self::GraphFolder), keyed by the folder's ServerId (the
+    /// `Sync` `CollectionId`). An EAS provider is bound to one folder for email;
+    /// the cross-folder fan-out is the orchestrator's job.
+    EasFolder {
+        /// The account.
+        account: AccountId,
+        /// The mail folder.
+        folder: MailboxId,
+    },
+    /// An EAS per-account calendar-list scope.
+    ///
+    /// Calendar folders come from the same FolderSync hierarchy as
+    /// [`EasFolderList`](Self::EasFolderList) (folders carry a class), split
+    /// into its own **container** scope — claimed and applied before the
+    /// per-[`EasCalendar`](Self::EasCalendar) events it parents — mirroring the
+    /// per-class [`GraphCalendarList`](Self::GraphCalendarList) split.
+    EasCalendarList {
+        /// The account.
+        account: AccountId,
+    },
+    /// An EAS `(account, calendar folder)` event scope.
+    ///
+    /// Sync class `Calendar` is per collection, so event sync is per calendar
+    /// folder — like [`GraphCalendar`](Self::GraphCalendar) — keyed by the
+    /// folder's ServerId. An EAS provider is bound to one calendar for events;
+    /// the cross-calendar fan-out is the orchestrator's job.
+    EasCalendar {
+        /// The account.
+        account: AccountId,
+        /// The calendar folder.
+        calendar: CalendarId,
+    },
+    /// An EAS per-account contact-folder-list scope.
+    ///
+    /// Contact folders come from the same FolderSync hierarchy as
+    /// [`EasFolderList`](Self::EasFolderList), split into its own **container**
+    /// scope — claimed and applied before the per-[`EasContact`](Self::EasContact)
+    /// cards it parents — mirroring
+    /// [`GraphContactFolderList`](Self::GraphContactFolderList).
+    EasContactList {
+        /// The account.
+        account: AccountId,
+    },
+    /// EAS contact cards in one contact folder.
+    ///
+    /// Sync class `Contacts` is per collection; the discovered contact folder is
+    /// the address book holding its cards, like
+    /// [`GraphContacts`](Self::GraphContacts) and
+    /// [`CardDavAddressBook`](Self::CardDavAddressBook).
+    EasContact {
+        /// The account.
+        account: AccountId,
+        /// The discovered contact folder.
+        address_book: AddressBookId,
+    },
 }
 
 /// The search domain whose member objects a scope holds — the index a per-account
@@ -311,7 +385,13 @@ impl SyncScope {
             | Self::GoogleDirectoryPeople { account }
             | Self::GoogleContactGroups { account }
             | Self::CardDavAddressBookList { account }
-            | Self::CardDavAddressBook { account, .. } => account,
+            | Self::CardDavAddressBook { account, .. }
+            | Self::EasFolderList { account }
+            | Self::EasFolder { account, .. }
+            | Self::EasCalendarList { account }
+            | Self::EasCalendar { account, .. }
+            | Self::EasContactList { account }
+            | Self::EasContact { account, .. } => account,
         }
     }
 
@@ -336,23 +416,28 @@ impl SyncScope {
                 JmapDataType::AddressBook => Some(ObjectKind::AddressBook),
                 _ => None,
             },
-            // Graph mirrors IMAP: a per-folder message scope + a folder-list container.
-            // Gmail's message scope is account-global (like JMAP's Email) but still a
-            // message scope; its label list is the mailbox container.
-            Self::ImapMailbox { .. } | Self::GraphFolder { .. } | Self::GmailMessages { .. } => {
-                Some(ObjectKind::Message)
-            }
+            // Graph and EAS mirror IMAP: a per-folder message scope + a
+            // folder-list container. Gmail's message scope is account-global
+            // (like JMAP's Email) but still a message scope; its label list is
+            // the mailbox container.
+            Self::ImapMailbox { .. }
+            | Self::GraphFolder { .. }
+            | Self::EasFolder { .. }
+            | Self::GmailMessages { .. } => Some(ObjectKind::Message),
             Self::ImapMailboxList { .. }
             | Self::GraphFolderList { .. }
+            | Self::EasFolderList { .. }
             | Self::GmailLabelList { .. } => Some(ObjectKind::Mailbox),
-            // Graph/Google calendar mirror CalDAV: a per-calendar event scope + a
-            // calendar-list container.
+            // Graph/Google/EAS calendars mirror CalDAV: a per-calendar event
+            // scope + a calendar-list container.
             Self::DavCollection { .. }
             | Self::GraphCalendar { .. }
-            | Self::GoogleCalendar { .. } => Some(ObjectKind::Event),
+            | Self::GoogleCalendar { .. }
+            | Self::EasCalendar { .. } => Some(ObjectKind::Event),
             Self::DavCollectionList { .. }
             | Self::GraphCalendarList { .. }
-            | Self::GoogleCalendarList { .. } => Some(ObjectKind::Calendar),
+            | Self::GoogleCalendarList { .. }
+            | Self::EasCalendarList { .. } => Some(ObjectKind::Calendar),
             Self::GraphContacts { .. }
             | Self::GraphOrgContacts { .. }
             | Self::GraphDirectoryUsers { .. }
@@ -360,10 +445,12 @@ impl SyncScope {
             | Self::GoogleOtherContacts { .. }
             | Self::GoogleDirectoryPeople { .. }
             | Self::GoogleContactGroups { .. }
-            | Self::CardDavAddressBook { .. } => Some(ObjectKind::ContactCard),
+            | Self::CardDavAddressBook { .. }
+            | Self::EasContact { .. } => Some(ObjectKind::ContactCard),
             Self::GraphContactFolderList { .. }
             | Self::GoogleContactSourceList { .. }
-            | Self::CardDavAddressBookList { .. } => Some(ObjectKind::AddressBook),
+            | Self::CardDavAddressBookList { .. }
+            | Self::EasContactList { .. } => Some(ObjectKind::AddressBook),
         }
     }
 

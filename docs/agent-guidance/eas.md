@@ -32,7 +32,8 @@ table behind every verdict here.
 - It is **not yet an adapter**: nothing in it implements `Provider`,
   `ContactsProvider`, or `Watch`. The spike's job was to decide whether it *can*
   without engine API changes. Answer: **one required engine change (new
-  `SyncScope` variants), everything else maps within the existing trait surface.**
+  `SyncScope` variants — since landed, see the fork-decision records), everything
+  else maps within the existing trait surface.**
 
 ## Protocol overview
 
@@ -198,7 +199,7 @@ document; this is the summary.
 | Trait verb | EAS mapping | Verdict |
 | --- | --- | --- |
 | `connection_info` | composed post-connect (OPTIONS + Provision + first FolderSync); caps static thereafter; `http_version` from the shared client; `concurrent_fetches` from a per-server ceiling | no gap |
-| `mailbox_scope` / `email_scope` | FolderSync hierarchy scope + per-folder Sync scope | **engine change (fork patch)**: new `SyncScope::EasFolderList` / `EasFolder` (+ calendar/contacts siblings), exactly as IMAP (`ImapMailboxList`/`ImapMailbox`) and Graph (`GraphFolderList`/`GraphFolder`) did |
+| `mailbox_scope` / `email_scope` | FolderSync hierarchy scope + per-folder Sync scope | **landed**: `SyncScope::EasFolderList` / `EasFolder` (+ `EasCalendarList`/`EasCalendar` and `EasContactList`/`EasContact` siblings), exactly as IMAP (`ImapMailboxList`/`ImapMailbox`) and Graph (`GraphFolderList`/`GraphFolder`) did; the adapter still has to override the `*_scope` methods to return them |
 | `sync_mailboxes` | `FolderSync`; hierarchy sync key is the cursor; status 9 → `needs_resync` → bootstrap `"0"` snapshot | no gap (JMAP `container_sync` is the code precedent) |
 | `stream_email` | Sync class Email; cursor = collection sync key (`None` → `"0"`); per-round chunks are `Additive` with `advance_to` = rotated key; status 3 restarts the pass in `Reconcile` mode | no gap (`PassMode::Reconcile` matches SyncKey invalidation cleanly — JMAP `cannotCalculateChanges` recovery is the precedent) |
 | `default_sync_window` / `SyncWindow` | `FilterType` day-ladder (coarse) + `admits` tighten | no gap (mapping note) |
@@ -221,11 +222,14 @@ These do **not** become upstream issues — the engine is our fork; they are pat
 we may make here, judged against the cross-provider survey (see the spike document
 for the full table):
 
-1. **[Required] EAS `SyncScope` variants** — add the EAS scope family to
-   `engine-core` (`EasFolderList`/`EasFolder`, calendar and contacts siblings) and
-   override the `*_scope` trait methods. Survey: every non-JMAP provider
+1. **[Landed] EAS `SyncScope` variants** — the EAS scope family now lives in
+   `engine-core` (`EasFolderList`/`EasFolder`, `EasCalendarList`/`EasCalendar`,
+   `EasContactList`/`EasContact`, in `engine-core/src/sync/scope.rs`; member
+   scopes carry the folder ServerId as a `MailboxId`/`CalendarId`/`AddressBookId`
+   exactly as the sibling families do). Remaining adapter work: override the
+   `*_scope` trait methods to return them. Survey: every non-JMAP provider
    (IMAP, Graph, Gmail, CalDAV/CardDAV) added its own variants; EAS is the sixth
-   and the pattern is mechanical. Estimated S (≤1 day with tests).
+   and the pattern is mechanical.
 2. **[Optional, deferred] `Provider::watch()` accessor** — there is no trait seam
    to obtain a `Watch` today; IMAP and JMAP hand out concrete watcher types and the
    host switches on provider kind to build one. EAS would be the third such. A

@@ -315,6 +315,7 @@ mod body;
 mod calendar;
 mod contact;
 mod horizon;
+mod inbox_first;
 mod mail_account;
 mod observer;
 mod outbox;

@@ -306,3 +306,78 @@ fn dav_collection_list_is_distinct_from_a_collection_and_roundtrips() {
     let json = serde_json::to_string(&list).unwrap();
     assert_eq!(serde_json::from_str::<SyncScope>(&json).unwrap(), list);
 }
+
+#[test]
+fn eas_folder_list_is_distinct_from_a_folder_and_roundtrips() {
+    // The folder-list container scope must never collide with the message
+    // scope of any single folder, or the two would share one lease. EAS item
+    // Sync carries one collection per request, so each folder is a distinct
+    // member scope, mirroring the Graph GraphFolder/GraphFolderList split.
+    // EAS ServerIds are opaque per-device-partnership strings.
+    let list = SyncScope::EasFolderList { account: account() };
+    let inbox = SyncScope::EasFolder {
+        account: account(),
+        folder: MailboxId::try_from("1").unwrap(),
+    };
+    assert_ne!(list, inbox);
+    assert_eq!(list.account(), &account());
+    assert_eq!(inbox.account(), &account());
+    assert_eq!(list.object_kind(), Some(ObjectKind::Mailbox));
+    assert_eq!(inbox.object_kind(), Some(ObjectKind::Message));
+    assert_eq!(list.search_domain(), None);
+    assert_eq!(inbox.search_domain(), Some(SearchDomain::Mail));
+    for scope in [&list, &inbox] {
+        let json = serde_json::to_string(scope).unwrap();
+        assert_eq!(&serde_json::from_str::<SyncScope>(&json).unwrap(), scope);
+    }
+}
+
+#[test]
+fn eas_calendar_list_is_distinct_from_a_calendar_and_roundtrips() {
+    // The calendar-list container scope must never collide with the event
+    // scope of any single calendar folder, or the two would share one lease.
+    // EAS event sync is Sync class Calendar per collection, so each calendar
+    // folder is a distinct member scope, mirroring the Graph
+    // GraphCalendar/GraphCalendarList split.
+    let list = SyncScope::EasCalendarList { account: account() };
+    let calendar = SyncScope::EasCalendar {
+        account: account(),
+        calendar: CalendarId::try_from("5").unwrap(),
+    };
+    assert_ne!(list, calendar);
+    assert_eq!(list.account(), &account());
+    assert_eq!(calendar.account(), &account());
+    assert_eq!(list.object_kind(), Some(ObjectKind::Calendar));
+    assert_eq!(calendar.object_kind(), Some(ObjectKind::Event));
+    assert_eq!(list.search_domain(), None);
+    assert_eq!(calendar.search_domain(), Some(SearchDomain::Calendar));
+    for scope in [&list, &calendar] {
+        let json = serde_json::to_string(scope).unwrap();
+        assert_eq!(&serde_json::from_str::<SyncScope>(&json).unwrap(), scope);
+    }
+}
+
+#[test]
+fn eas_contact_list_is_distinct_from_a_contact_scope_and_roundtrips() {
+    // The contact-folder-list container scope must never collide with the card
+    // scope of any single contact folder, or the two would share one lease.
+    // EAS contact sync is Sync class Contacts per collection, with the
+    // discovered folder acting as the address book, mirroring the Graph
+    // GraphContacts/GraphContactFolderList split.
+    let list = SyncScope::EasContactList { account: account() };
+    let cards = SyncScope::EasContact {
+        account: account(),
+        address_book: AddressBookId::try_from("9").unwrap(),
+    };
+    assert_ne!(list, cards);
+    assert_eq!(list.account(), &account());
+    assert_eq!(cards.account(), &account());
+    assert_eq!(list.object_kind(), Some(ObjectKind::AddressBook));
+    assert_eq!(cards.object_kind(), Some(ObjectKind::ContactCard));
+    assert_eq!(list.search_domain(), None);
+    assert_eq!(cards.search_domain(), Some(SearchDomain::Contacts));
+    for scope in [&list, &cards] {
+        let json = serde_json::to_string(scope).unwrap();
+        assert_eq!(&serde_json::from_str::<SyncScope>(&json).unwrap(), scope);
+    }
+}
