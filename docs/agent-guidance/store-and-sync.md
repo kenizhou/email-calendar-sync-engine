@@ -679,8 +679,9 @@ delete it: another account's row may name the same hash. The file half is a mark
 
 Pending ops are durable before any side effect and are claimed with the same
 fencing discipline as scopes. The thin inline drivers built on this are
-`engine_sync::{submit_mail, edit_mail, create_calendar_event, patch_calendar_event,
-delete_calendar_event, put_calendar_document}`. `edit_mail` applies a `MailEdit`
+`engine_sync::{submit_mail, submit_mail_source, edit_mail, create_calendar_event,
+patch_calendar_event, delete_calendar_event, put_calendar_document}`. `edit_mail` applies
+a `MailEdit`
 (mark-read/flag, move, or permanent delete) and serializes on the target message key
 (`mail:{key}`), recording a plain classified `Failed` on error (no `NeedsConfirmation`: a
 mail edit is not post-`DATA`-ambiguous like an SMTP send, and a stale-target `Conflict`
@@ -695,6 +696,20 @@ one event never race on either provider.
   base. Re-sending bytes built from the copy the server has moved past would silently revert
   somebody else's edit with a write the server happily accepts. (The drainer that will do
   that recovery is issue #60; today a `Conflict` is recorded and surfaced to the caller.)
+
+- **A mail submission's payload is a *tagged* intent (`SubmitPayload`), and for
+  caller-rendered bytes the tag is the dispatch key.** `kind: "draft"` carries the
+  structured draft — the recovery path re-renders it; `kind: "rendered_source"`
+  carries the caller's **final MIME bytes** themselves, base64-encoded so signed or
+  encrypted (arbitrary, non-UTF-8) payloads survive the JSON round-trip — the
+  recovery path re-sends them **verbatim**. That variant is the deliberate mail-side
+  counterpart of the calendar rule above: for a message the host already signed or
+  encrypted, the bytes *are* the immutable intent — re-rendering would destroy the
+  signature — so they ride in the op (it is the only record left after a crash),
+  and the `kind` tag is what tells the drainer which recovery is safe, never an
+  inference from the payload's shape. Both submission paths mint their op keys from
+  the message's `Message-ID` in one namespace (`submit:{id}` / `draft:{id}`), so the
+  same message through either path collapses to one op.
 
 - **A write does not update the store; a *reconcile* does** (issue #65). The drivers are
   deliberately pure: they record the op, call the provider, record the outcome. They never

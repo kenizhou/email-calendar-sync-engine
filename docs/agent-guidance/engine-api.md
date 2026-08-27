@@ -33,7 +33,9 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   arrived and deliberately makes no decision, because whether to offer an RSVP is a
   product rule over the `METHOD` plus an `ATTENDEE` matching one of the account's own
   addresses — see `calendar-semantics.md`); and
-  write with `submit_mail` (send) / `edit_mail` (mark-read/flag, move, delete) /
+  write with `submit_mail` (send) or `submit_mail_source` (send the caller's own
+  rendered — e.g. signed/encrypted — MIME bytes; see "Who renders the MIME" below) /
+  `edit_mail` (mark-read/flag, move, delete) /
   `create_calendar_event` / `patch_calendar_event` / `delete_calendar_event`
   (+ `put_calendar_document`, the iMIP RSVP escape hatch) / `pending_op_state`.
   Contact hosts use `sync_address_books`, source-bound `sync_contact_cards`, or
@@ -176,6 +178,41 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   picked/device zone before adopting it (`is_supported_zone`) — without depending on
   `engine-recurrence` or bundling tzdata itself (`calendar-semantics.md`).
 
+## Who renders the MIME: `submit_mail` vs `submit_mail_source`
+
+Two submission verbs share one outbox, one op namespace (keyed by `Message-ID`) and
+one reconciliation; they differ only in **who rendered the message**:
+
+- **`submit_mail(draft)` — the engine renders.** The host composes a structured
+  `Draft`; the provider renders and sends it. The every-day compose path, and the
+  one a host with no crypto pipeline wants.
+- **`submit_mail_source(source, recipients)` — the caller renders, and the bytes are
+  final.** The host builds its own MIME, applies whatever crypto it wants
+  (PGP/MIME, `multipart/signed`, S/MIME), and submits the finished bytes; the
+  engine sends them **verbatim** and never re-renders — a re-render would strip the
+  signature or break the envelope the recipient must verify. This is the
+  host-crypto seam: the engine deliberately has no crypto opinion, so
+  render → sign/encrypt → submit is bytes-in, bytes-out.
+
+The caller's two obligations on the source bytes. **Stamp the `Message-ID` before
+submitting** — the receipt, the op's idempotency keys and the Sent-copy
+reconciliation all hang off it, so bytes without one are refused with an error
+*before anything is enqueued*, as are bytes not ending in a line terminator. And
+keep **Bcc in `recipients`, never in the bytes**: `recipients` is the envelope —
+non-empty, the exact `RCPT TO` set, so the blind copy is delivered with no `Bcc`
+header ever entering the message; empty, the envelope derives from the bytes' own
+`To`/`Cc` headers (`imap-smtp.md` has the full Bcc semantics). Failure semantics
+are `submit_mail`'s unchanged: a failed send records the op `Failed`, an ambiguous
+post-`DATA` SMTP loss parks it `NeedsConfirmation` (the outbox never blind-retries),
+and both surface as `ApiError::Sync`.
+
+Only a byte-capable transport implements the source verb (IMAP/SMTP does —
+`imap-smtp.md`); a provider whose submission re-renders from structured fields
+(JMAP) keeps the trait's rejecting default *even though it advertises
+`Capabilities::submission`* — the capability covers `submit_mail`, not this — so a
+host driving such an account sees a `Provider` error, never silent re-rendering of
+bytes it believed final.
+
 ## Slice plan
 
 Step 6 lands in small, tested slices. Order and status:
@@ -197,7 +234,9 @@ Step 6 lands in small, tested slices. Order and status:
    `submit_mail` (durable op → claim → provider send → record), returning a
    `SubmitOutcome` (sent key, `Message-ID`, op id); a failed send is recorded
    `Failed` / `NeedsConfirmation` *before* surfacing as `ApiError::Sync`, so the
-   outbox never blind-retries. `Engine::pending_op_state` exposes
+   outbox never blind-retries. `Engine::submit_mail_source` rides the same outbox
+   for the caller's **own final MIME bytes** — the host-crypto seam, "Who renders
+   the MIME" above. `Engine::pending_op_state` exposes
    `StoreRead::pending_op_state` for polling an op's lifecycle (e.g. confirming an
    ambiguous send). `Engine::edit_mail` rides the same outbox for mail mutations —
    it takes a caller-minted idempotency key and a `MailEdit` (mark-read/flag, move,
@@ -362,7 +401,10 @@ mail/event with complete coverage, a malformed query is `ApiError::Query`, and a
 unsynced account returns an empty answer. A `SubmittingProvider` then exercises the
 outbox facade: a successful `submit_mail` commits the op `Succeeded` (read back via
 `pending_op_state`), a failed send surfaces as `ApiError::Sync`, and an unknown op id
-reads back `None`. A `sync_mail` with a closure observer then asserts
+reads back `None`. The rendered-source seam gets the same treatment —
+`submit_mail_source` commits its op `Succeeded` with the receipt's id read back out
+of the bytes, and bytes with no `Message-ID` are refused as `ApiError::Sync` before
+anything enqueues. A `sync_mail` with a closure observer then asserts
 one `SyncCommit` lands with `fetched == total == 2`. Run the standard gate (`AGENTS.md`):
 `cargo +nightly fmt --check`, `cargo clippy --workspace --all-targets --all-features -- -D
 warnings`, `cargo test --workspace --all-features`, `cargo doc`. `engine-api`'s own

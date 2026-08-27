@@ -101,3 +101,14 @@ pub(crate) fn draft(message_id: &str, subject: &str) -> Draft {
         "see attached",
     )
 }
+
+/// Caller-rendered source bytes a `submit_mail_source` test can submit: a minimal
+/// RFC 5322 message with the given `Message-ID`, a `From` the envelope derives
+/// from, and a trailing line terminator — the shape the seam accepts.
+pub(crate) fn rendered_source(message_id: &str) -> Vec<u8> {
+    format!(
+        "Message-ID: <{message_id}>\r\nFrom: alice@test.local\r\nTo: bob@test.local\r\n\
+         Subject: Rendered\r\n\r\nbody\r\n"
+    )
+    .into_bytes()
+}

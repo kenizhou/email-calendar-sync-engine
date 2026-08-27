@@ -292,9 +292,10 @@ impl Provider for GateProvider {
     }
 }
 
-/// Wraps a [`FakeProvider`] and overrides `submit_email` to succeed (filing the
-/// sent copy under a fixed key, echoing the draft's `Message-ID`) or fail, so the
-/// outbox-mediated submission facade can be exercised. Other methods delegate.
+/// Wraps a [`FakeProvider`] and overrides the submission verbs — `submit_email`
+/// (filing the sent copy under a fixed key, echoing the draft's `Message-ID`) and
+/// `submit_email_source` (the same, with the id read back out of the bytes) — so
+/// the outbox-mediated submission facade can be exercised. Other methods delegate.
 struct SubmittingProvider {
     inner: FakeProvider,
     fail: bool,
@@ -353,6 +354,25 @@ impl Provider for SubmittingProvider {
         Ok(SubmissionReceipt::filed(key, id))
     }
 
+    /// The rendered-source transport: the same filed receipt, but the id is read
+    /// back out of the bytes — there is no structured field to echo — exactly as
+    /// the byte-capable transports (IMAP/SMTP) do. No `fail`/`unfiled` variants:
+    /// those surfaces ride the same `map_sync_error` the draft path above proves,
+    /// and the outbox's failure/ambiguity recording is locked at `engine-sync`.
+    async fn submit_email_source(
+        &self,
+        _account: &AccountId,
+        source: &[u8],
+        _recipients: &[String],
+    ) -> ProviderResult<SubmissionReceipt> {
+        let id = message_id_of(source)
+            .ok_or_else(|| ProviderError::permanent("the submitted bytes carry no Message-ID"))?;
+        Ok(SubmissionReceipt::filed(
+            ProviderKey::new("sent-1").unwrap(),
+            id,
+        ))
+    }
+
     async fn edit_mail(
         &self,
         _account: &AccountId,
@@ -387,6 +407,19 @@ fn report_controls() -> ReportControls {
         verdicts: ReportVerdicts::without_phishing(),
         evidence: ReportEvidence::Convention,
     }
+}
+
+/// Reads the `Message-ID` back out of rendered source bytes — the transport's half
+/// of the rendered-source seam: there is no structured field to echo, so the
+/// receipt's id comes from the bytes themselves, exactly as the byte-capable
+/// transports do. Handles exactly the shape the `rendered_source` fixture builds.
+fn message_id_of(source: &[u8]) -> Option<MessageIdHeader> {
+    let line = std::str::from_utf8(source)
+        .ok()?
+        .lines()
+        .find(|l| l.starts_with("Message-ID:"))?;
+    let id = line["Message-ID:".len()..].trim().trim_matches(['<', '>']);
+    MessageIdHeader::new(id).ok()
 }
 
 /// A mail provider whose snapshot drops the second message once `dropped` is set —
