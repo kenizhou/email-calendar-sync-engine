@@ -14,9 +14,11 @@
 //! - **Serialized resources** — ops sharing a [`ResourceKey`] are not run concurrently.
 //! - **Ambiguous sends never blind-retry** — an ambiguous outcome enters
 //!   [`PendingOutcome::NeedsConfirmation`], distinct from a plain failure.
-//! - **Tagged submission intents** — a mail-submission op's payload is a [`SubmitPayload`] whose
-//!   `kind` tag distinguishes engine-rendered drafts from caller-rendered MIME, so a future drainer
-//!   can dispatch on it.
+//! - **Tagged intents** — an outbox op's payload is a tagged intent (`OutboxIntent` in
+//!   `engine-sync`, the crate whose drivers produce it) so a drainer dispatches on the tag rather
+//!   than inferring from shape. The submission intent the `submit_mail` verb carries is a
+//!   [`SubmitPayload`], whose `kind` tag distinguishes engine-rendered drafts from caller-rendered
+//!   MIME.
 
 mod submit_payload;
 

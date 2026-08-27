@@ -67,6 +67,9 @@ pub enum OutboxIntent {
     },
     /// Patch one contact card.
     PatchContact {
+        /// The card the patch targets — the intent names its target, so a
+        /// replay re-reads the base by id instead of inferring it.
+        contact: ContactId,
         /// The targeted changes to apply.
         patch: ContactPatch,
     },
@@ -221,7 +224,10 @@ mod tests {
             kind: Some(FieldPatch::Set(ContactKind::Organization)),
             ..ContactPatch::default()
         };
-        OutboxIntent::PatchContact { patch }
+        OutboxIntent::PatchContact {
+            contact: ContactId::new(ProviderKey::new("card-1").unwrap()),
+            patch,
+        }
     }
 
     fn delete_contact() -> OutboxIntent {

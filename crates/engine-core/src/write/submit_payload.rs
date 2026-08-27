@@ -1,11 +1,12 @@
 //! The durable intent of a mail-submission pending op.
 //!
 //! A [`PendingOp`](super::PendingOp) payload is the only record of what an
-//! interrupted submission was meant to send — a future drainer replays it — so
-//! the mail-submission payload is a *tagged* intent ([`SubmitPayload`]) rather
-//! than a bare draft: the `kind` tag tells the dispatcher whether to re-render a
-//! draft or re-send already-rendered bytes, instead of inferring it from the
-//! payload's shape.
+//! interrupted submission was meant to send — a future drainer replays it. That
+//! payload is the tagged `OutboxIntent` envelope (`engine-sync`, whose drivers
+//! produce it); the submission intent its `submit_mail` verb carries is this
+//! *tagged* [`SubmitPayload`] rather than a bare draft: the `kind` tag tells
+//! the dispatcher whether to re-render a draft or re-send already-rendered
+//! bytes, instead of inferring it from the payload's shape.
 
 use serde::{Deserialize, Serialize};
 
@@ -36,8 +37,8 @@ mod base64_bytes {
     }
 }
 
-/// The durable intent of a mail-submission pending op, tagged so a future
-/// drainer can dispatch on it.
+/// The submission intent the outbox envelope's `submit_mail` verb carries,
+/// tagged so the recovery dispatches on it.
 ///
 /// Generic over the draft shape `D` the submitting layer carries (the provider
 /// layer's `Draft`) so this pure contract stays free of provider types: the tag

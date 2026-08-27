@@ -7,7 +7,7 @@ use engine_core::{
     ids::{AccountId, ContactId},
     write::{IdempotencyKey, PendingOp, PendingOpId, PendingOutcome, ResourceKey},
 };
-use engine_provider::{ContactWriteReceipt, ContactsProvider};
+use engine_provider::{ContactWriteReceipt, ContactsProvider, ProviderError};
 use engine_store::{LeasedPendingOp, Store, WorkerId};
 
 use super::{OutboxIntent, enqueue_and_claim, record_failure};
@@ -53,7 +53,12 @@ where
         },
     )
     .await?;
-    resolve(store, leased, provider.create_contact(account, draft).await).await
+    resolve(
+        store,
+        leased,
+        execute_create_contact(provider, account, draft).await,
+    )
+    .await
 }
 
 /// Patches one backing source card.
@@ -87,6 +92,7 @@ where
         idempotency,
         &format!("contact:{}", base.id.as_str()),
         OutboxIntent::PatchContact {
+            contact: base.id.clone(),
             patch: patch.clone(),
         },
     )
@@ -94,7 +100,7 @@ where
     resolve(
         store,
         leased,
-        provider.patch_contact(account, base, patch).await,
+        execute_patch_contact(provider, account, base, patch).await,
     )
     .await
 }
@@ -129,7 +135,7 @@ where
         },
     )
     .await?;
-    match provider.delete_contact(account, base).await {
+    match execute_delete_contact(provider, account, base).await {
         Ok(()) => {
             store
                 .mark_pending_op(
@@ -173,6 +179,43 @@ async fn resolve<S: Store>(
             Err(SyncError::Provider(error))
         }
     }
+}
+
+/// Executes one claimed contact create: the provider call the `create_contact`
+/// verb names. The execution half the inline driver runs and
+/// [`execute_claimed`](super::execute::execute_claimed) replays; outcome
+/// classification and recording stay with the caller.
+pub(crate) async fn execute_create_contact<P: ContactsProvider>(
+    provider: &P,
+    account: &AccountId,
+    draft: &ContactDraft,
+) -> Result<ContactWriteReceipt, ProviderError> {
+    provider.create_contact(account, draft).await
+}
+
+/// Executes one claimed contact patch: the provider call the `patch_contact`
+/// verb names, applied to `base` — the card as the caller read it on the inline
+/// path, re-read from the store on a replay (the intent deliberately carries
+/// only the change and its target).
+pub(crate) async fn execute_patch_contact<P: ContactsProvider>(
+    provider: &P,
+    account: &AccountId,
+    base: &ContactCard,
+    patch: &ContactPatch,
+) -> Result<ContactWriteReceipt, ProviderError> {
+    provider.patch_contact(account, base, patch).await
+}
+
+/// Executes one claimed contact delete: the provider call the `delete_contact`
+/// verb names. `base` arrives exactly as on the patch half; an already-absent
+/// card is the provider verb's own success, which the replay path honors
+/// without a call.
+pub(crate) async fn execute_delete_contact<P: ContactsProvider>(
+    provider: &P,
+    account: &AccountId,
+    base: &ContactCard,
+) -> Result<(), ProviderError> {
+    provider.delete_contact(account, base).await
 }
 
 #[allow(

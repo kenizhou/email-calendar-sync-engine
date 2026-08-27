@@ -1,5 +1,5 @@
-//! Outbox-mediated writes: mail submission and edits ([`mail`]), and calendar writes
-//! ([`calendar`]).
+//! Outbox-mediated writes: mail submission and edits ([`mail`]), contact writes
+//! ([`contact`]), and calendar writes ([`calendar`]).
 //!
 //! Every write is **durable before any provider side effect** (`north-star.md` Write
 //! Contract): the driver records a [`PendingOp`] carrying the request, claims it under a
@@ -14,11 +14,16 @@
 //! re-sending an edit built on a copy the server has moved past. Which adapter renders it,
 //! and how, is not the outbox's business.
 //!
-//! These are the thin per-op drivers — one op, claimed and resolved inline. The background
-//! worker that drains the outbox and honors `depends_on` chains is the later orchestrator.
+//! These are the thin per-op drivers — one op, claimed and resolved inline as
+//! enqueue-and-claim, the verb's execution half, and a mark. That middle half
+//! is shared: [`execute_claimed`](execute::execute_claimed) dispatches on the
+//! claimed op's tagged intent alone, which is what lets the background worker
+//! that drains the outbox replay ops the inline driver never finished — the
+//! later orchestrator.
 
 mod calendar;
 mod contact;
+pub(crate) mod execute;
 mod intent;
 mod mail;
 
@@ -90,13 +95,20 @@ async fn record_failure<S: Store>(
     err: &engine_provider::ProviderError,
 ) -> Result<(), SyncError> {
     store
-        .mark_pending_op(
-            &leased.lease,
-            PendingOutcome::Failed {
-                class: err.class(),
-                retry_after: err.retry_after(),
-            },
-        )
+        .mark_pending_op(&leased.lease, write_failure_outcome(err))
         .await?;
     Ok(())
+}
+
+/// The outcome a failed write with no ambiguous case resolves to: a plain
+/// classified `Failed` with its backoff hint. The one classifier the inline
+/// drivers' `record_failure` and the drainer's
+/// [`execute_claimed`](execute::execute_claimed) share, so a replayed op and
+/// an inline one can never disagree; only a submission has an ambiguous case,
+/// and [`send_failure_outcome`](mail::send_failure_outcome) serves it.
+pub(crate) fn write_failure_outcome(err: &engine_provider::ProviderError) -> PendingOutcome {
+    PendingOutcome::Failed {
+        class: err.class(),
+        retry_after: err.retry_after(),
+    }
 }

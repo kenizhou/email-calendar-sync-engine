@@ -48,6 +48,7 @@ mod contact_sync;
 mod mail_account;
 mod mail_edit;
 mod mail_sync;
+mod outbox_execute;
 mod state_change;
 mod streaming;
 mod streaming_resume;

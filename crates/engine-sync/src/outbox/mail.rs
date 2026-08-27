@@ -13,7 +13,10 @@ use engine_core::{
     ids::{AccountId, MessageIdHeader, ProviderKey},
     write::{IdempotencyKey, PendingOp, PendingOpId, PendingOutcome, ResourceKey, SubmitPayload},
 };
-use engine_provider::{Draft, MailEdit, MessageReport, Provider, ProviderError, SentCopy};
+use engine_provider::{
+    Draft, MailEdit, MailEditReceipt, MessageReport, Provider, ProviderError, ReportReceipt,
+    SentCopy, SubmissionReceipt,
+};
 use engine_store::{LeasedPendingOp, Store, WorkerId};
 
 use super::{OutboxIntent, enqueue_and_claim, record_failure};
@@ -61,9 +64,12 @@ where
     S: Store,
 {
     // Durable record first: the intent in a tagged envelope, idempotent by
-    // Message-ID. The `verb` tag is what a future drainer dispatches on.
+    // Message-ID. The `verb` tag is what a future drainer dispatches on. The
+    // same value feeds the execution half, so the inline path and a replay
+    // send literally the same thing.
+    let submit = SubmitPayload::Draft(draft.clone());
     let payload = serde_json::to_value(OutboxIntent::SubmitMail {
-        payload: SubmitPayload::Draft(draft.clone()),
+        payload: submit.clone(),
     })
     .map_err(|e| SyncError::Outbox(format!("encode draft: {e}")))?;
     let message_id = draft.message_id.as_str();
@@ -81,7 +87,7 @@ where
     .await?;
 
     // Provider side effect, then record the outcome under the lease.
-    match provider.submit_email(account, draft).await {
+    match execute_submit_mail(provider, account, &submit).await {
         Ok(receipt) => {
             store
                 .mark_pending_op(
@@ -175,12 +181,15 @@ where
     // bytes' own Message-ID in the Draft path's namespace — one message, one op,
     // whichever path submits it. The envelope recipients ride in the payload: a
     // drainer replaying this op re-sends to the exact same RCPT TO set rather
-    // than re-deriving it from headers the caller never wrote.
+    // than re-deriving it from headers the caller never wrote. The same value
+    // feeds the execution half, so the inline path and a replay send literally
+    // the same bytes to the same recipients.
+    let submit = SubmitPayload::<Draft>::RenderedSource {
+        rfc5322: source.to_vec(),
+        recipients: recipients.to_vec(),
+    };
     let payload = serde_json::to_value(OutboxIntent::SubmitMail {
-        payload: SubmitPayload::<Draft>::RenderedSource {
-            rfc5322: source.to_vec(),
-            recipients: recipients.to_vec(),
-        },
+        payload: submit.clone(),
     })
     .map_err(|e| SyncError::Outbox(format!("encode rendered source: {e}")))?;
     let idempotency = IdempotencyKey::new(format!("submit:{}", message_id.as_str()))
@@ -198,10 +207,7 @@ where
 
     // Provider side effect, then record the outcome under the lease — the same
     // discipline as the Draft path, including the ambiguous-send parking.
-    match provider
-        .submit_email_source(account, source, recipients)
-        .await
-    {
+    match execute_submit_mail(provider, account, &submit).await {
         Ok(receipt) => {
             store
                 .mark_pending_op(
@@ -237,7 +243,21 @@ async fn record_send_failure<S: Store>(
     leased: &LeasedPendingOp,
     err: &ProviderError,
 ) -> Result<(), SyncError> {
-    let outcome = if err.requires_confirmation() {
+    store
+        .mark_pending_op(&leased.lease, send_failure_outcome(err))
+        .await?;
+    Ok(())
+}
+
+/// The outcome a failed submission resolves to: `NeedsConfirmation` for an
+/// ambiguous send (e.g. a lost post-DATA SMTP ack) — parked, never a plain
+/// retryable failure, so neither the inline driver nor a drainer blind-retries
+/// and risks a double-send (`providers.md`) — otherwise a classified `Failed`
+/// with its backoff hint. The one classifier both halves share; the plain
+/// [`write_failure_outcome`](super::write_failure_outcome) serves the writes
+/// with no ambiguous case.
+pub(super) fn send_failure_outcome(err: &ProviderError) -> PendingOutcome {
+    if err.requires_confirmation() {
         PendingOutcome::NeedsConfirmation {
             detail: err.detail().to_owned(),
         }
@@ -246,9 +266,31 @@ async fn record_send_failure<S: Store>(
             class: err.class(),
             retry_after: err.retry_after(),
         }
-    };
-    store.mark_pending_op(&leased.lease, outcome).await?;
-    Ok(())
+    }
+}
+
+/// Executes one claimed submission: the provider call the `submit_mail` verb
+/// names, dispatching on the payload's own `kind` tag — render-and-send a
+/// draft, or re-send the caller's bytes verbatim to their recorded envelope
+/// (empty set = derive mode). The execution half both submission drivers run
+/// inline and [`execute_claimed`](super::execute::execute_claimed) replays;
+/// outcome classification and recording stay with the caller.
+pub(crate) async fn execute_submit_mail<P: Provider>(
+    provider: &P,
+    account: &AccountId,
+    payload: &SubmitPayload<Draft>,
+) -> Result<SubmissionReceipt, ProviderError> {
+    match payload {
+        SubmitPayload::Draft(draft) => provider.submit_email(account, draft).await,
+        SubmitPayload::RenderedSource {
+            rfc5322,
+            recipients,
+        } => {
+            provider
+                .submit_email_source(account, rfc5322, recipients)
+                .await
+        }
+    }
 }
 
 /// The result of a successful mail edit through the outbox.
@@ -311,7 +353,7 @@ where
     )
     .await?;
 
-    match provider.edit_mail(account, edit).await {
+    match execute_edit_mail(provider, account, edit).await {
         Ok(receipt) => {
             store
                 .mark_pending_op(
@@ -396,7 +438,7 @@ where
     )
     .await?;
 
-    match provider.report_message(account, report).await {
+    match execute_report_message(provider, account, report).await {
         Ok(receipt) => {
             store
                 .mark_pending_op(
@@ -416,4 +458,28 @@ where
             Err(SyncError::Provider(err))
         }
     }
+}
+
+/// Executes one claimed mail edit: the provider call the `edit_mail` verb names.
+/// The execution half the inline driver runs and
+/// [`execute_claimed`](super::execute::execute_claimed) replays; outcome
+/// classification and recording stay with the caller.
+pub(crate) async fn execute_edit_mail<P: Provider>(
+    provider: &P,
+    account: &AccountId,
+    edit: &MailEdit,
+) -> Result<MailEditReceipt, ProviderError> {
+    provider.edit_mail(account, edit).await
+}
+
+/// Executes one claimed message report: the provider call the `report_message`
+/// verb names. The execution half the inline driver runs and
+/// [`execute_claimed`](super::execute::execute_claimed) replays; outcome
+/// classification and recording stay with the caller.
+pub(crate) async fn execute_report_message<P: Provider>(
+    provider: &P,
+    account: &AccountId,
+    report: &MessageReport,
+) -> Result<ReportReceipt, ProviderError> {
+    provider.report_message(account, report).await
 }
