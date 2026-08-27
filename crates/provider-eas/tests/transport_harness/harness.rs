@@ -50,35 +50,6 @@ pub(crate) fn test_config(base_url: &str) -> EasConfig {
     }
 }
 
-/// Test-local base64 encoder (the crate's own `base64` dependency is not
-/// visible to integration tests; the `provider-graph` `base64_decode`
-/// precedent, in the encoding direction).
-pub(crate) fn b64_encode(data: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
-        let bytes = [
-            chunk[0],
-            chunk.get(1).copied().unwrap_or(0),
-            chunk.get(2).copied().unwrap_or(0),
-        ];
-        let n = (u32::from(bytes[0]) << 16) | (u32::from(bytes[1]) << 8) | u32::from(bytes[2]);
-        out.push(ALPHABET[((n >> 18) & 0x3F) as usize] as char);
-        out.push(ALPHABET[((n >> 12) & 0x3F) as usize] as char);
-        out.push(if chunk.len() > 1 {
-            ALPHABET[((n >> 6) & 0x3F) as usize] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            ALPHABET[(n & 0x3F) as usize] as char
-        } else {
-            '='
-        });
-    }
-    out
-}
-
 /// Install the harness's capturing logger (debug level). Called as the
 /// first statement of the wire-level tests: `log::debug!/info!/warn!`
 /// ARGUMENTS (the wire dumps, the redaction previews) only evaluate when a

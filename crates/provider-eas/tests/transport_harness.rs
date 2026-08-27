@@ -40,6 +40,10 @@ mod adapter_email_wire;
 mod adapter_flow;
 #[path = "transport_harness/adapter_folders_flow.rs"]
 mod adapter_folders_flow;
+#[path = "transport_harness/adapter_source_flow.rs"]
+mod adapter_source_flow;
+#[path = "transport_harness/adapter_source_wire.rs"]
+mod adapter_source_wire;
 #[path = "transport_harness/autodiscover_flow.rs"]
 mod autodiscover_flow;
 #[path = "transport_harness/codec_and_parse.rs"]

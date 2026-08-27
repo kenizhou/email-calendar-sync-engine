@@ -46,8 +46,8 @@ async fn pre_connect_connection_info_reports_no_transport_facts() {
     let info = adapter.connection_info();
     assert_eq!(
         info.capabilities,
-        Capabilities::none().with_mail(),
-        "the mail read verbs have landed — the whole domain the bit names"
+        Capabilities::none().with_mail().with_message_source(),
+        "the mail read verbs and the message-source fetch have landed"
     );
     assert_eq!(
         info.tls_version, None,
@@ -113,7 +113,7 @@ async fn options_negotiation_populates_connection_info() {
     );
     assert_eq!(
         info.capabilities,
-        Capabilities::none().with_mail(),
+        Capabilities::none().with_mail().with_message_source(),
         "capabilities are the verb ladder, not the server's advertised command list"
     );
 

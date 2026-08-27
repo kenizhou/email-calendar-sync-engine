@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 //! The trait half of the adapter: what [`EasAdapter`] reports, which scopes
-//! it names, and the verbs that have landed (FolderSync, Sync class Email).
-//! The un-overridden defaults remain the honest behavior for every verb
-//! still to come (the module docs in `super` carry the ladder).
+//! it names, and the verbs that have landed (FolderSync, Sync class Email,
+//! ItemOperations message-source fetch). The un-overridden defaults remain
+//! the honest behavior for every verb still to come (the module docs in
+//! `super` carry the ladder).
 
 use engine_core::{
     ids::AccountId,
-    mail::Mailbox,
+    mail::{Mailbox, Message},
+    raw::RawMime,
     sync::{SyncScope, SyncState, SyncWindow},
 };
 use engine_provider::{ConnectionInfo, EmailStream, Provider, ProviderResult, ScopeSync};
@@ -94,5 +96,21 @@ impl Provider for EasAdapter {
         chunk_size: usize,
     ) -> EmailStream<'a> {
         super::email::stream(&self.client, &self.folder, cursor, fetch_batch, chunk_size)
+    }
+
+    /// ItemOperations Fetch with `MIMESupport`=2 + BodyPreference Type 4
+    /// ([MS-ASCMD] §4.10.2.1) — the whole RFC 5322 bytes of one message.
+    /// Addressing is the T4 identity mapping: the bound folder IS the
+    /// `CollectionId`, the `MessageId` IS the `ServerId`. A truncated answer
+    /// (Truncated flag / Total shortfall) is reassembled from authoritative
+    /// server ranges; a vanished item answers a per-item status classified
+    /// `Conflict` (re-sync, then retry). `super::source` owns the mapping
+    /// and its contract.
+    async fn fetch_message_source(
+        &self,
+        _account: &AccountId,
+        message: &Message,
+    ) -> ProviderResult<RawMime> {
+        super::source::fetch_source(&self.client, &self.folder, message).await
     }
 }

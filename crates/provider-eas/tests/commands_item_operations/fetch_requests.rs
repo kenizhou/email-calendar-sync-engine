@@ -34,6 +34,7 @@ fn item_operations_request_attachment_uses_spec_pages_and_tokens() {
         long_id: None,
         mime: false,
         accept_multipart: false,
+        range: None,
     };
     let tree = build_item_operations_request(&req);
     assert_eq!((tree.page, tree.token), (PAGE_ITEM_OPS, 0x05)); // ItemOperations
@@ -69,6 +70,7 @@ fn item_operations_request_body_fetch_uses_airsync_id_tokens() {
         long_id: None,
         mime: false,
         accept_multipart: false,
+        range: None,
     };
     let tree = build_item_operations_request(&req);
     assert_eq!((tree.page, tree.token), (PAGE_ITEM_OPS, 0x05));
@@ -125,6 +127,7 @@ fn item_operations_request_long_id_fetch_wire_shape() {
         long_id: Some("RgAAAACYWCHnyBZ%2fTq8bujFmR1EPBwBzyWfENpc".to_string()),
         mime: false,
         accept_multipart: false,
+        range: None,
     };
     let tree = build_item_operations_request(&req);
     assert_eq!((tree.page, tree.token), (PAGE_ITEM_OPS, 0x05)); // ItemOperations
@@ -173,6 +176,7 @@ fn item_operations_request_long_id_fetch_round_trips() {
         long_id: Some("RgAAAA==".to_string()),
         mime: false,
         accept_multipart: false,
+        range: None,
     };
     let tree = build_item_operations_request(&req);
     let back = round_trip(&tree);
@@ -192,6 +196,7 @@ fn item_operations_request_file_reference_beats_long_id() {
         long_id: Some("RgAAAA==".to_string()),
         mime: false,
         accept_multipart: false,
+        range: None,
     };
     let tree = build_item_operations_request(&req);
     let fetch = &tree.children[0];
@@ -234,6 +239,7 @@ fn item_operations_request_mime_fetch_wire_shape() {
         long_id: None,
         mime: true,
         accept_multipart: false,
+        range: None,
     };
     let tree = build_item_operations_request(&req);
     assert_eq!((tree.page, tree.token), (PAGE_ITEM_OPS, 0x05)); // ItemOperations
@@ -310,6 +316,7 @@ fn item_operations_request_mime_fetch_round_trips() {
         long_id: None,
         mime: true,
         accept_multipart: false,
+        range: None,
     };
     let tree = build_item_operations_request(&req);
     let back = round_trip(&tree);
@@ -328,6 +335,7 @@ fn item_operations_request_default_fetch_has_no_mime_support() {
         long_id: None,
         mime: false,
         accept_multipart: false,
+        range: None,
     };
     let tree = build_item_operations_request(&req);
     let fetch = &tree.children[0];

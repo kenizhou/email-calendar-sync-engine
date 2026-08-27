@@ -58,7 +58,8 @@
 //! slice. **Bodies are not fetched** (`fetch_body: false`): the stream is
 //! the metadata tier (subject/from/to/cc/reply-to, dates, flags, preview
 //! when the server volunteers one) — the IMAP stream discipline ("previews
-//! are not hydrated here"); whole bodies are T6's `fetch_message_source`.
+//! are not hydrated here"); whole bodies are T5's `fetch_message_source`
+//! (landed — `super::source`).
 
 use engine_core::{
     ids::{MailboxId, MessageId, ProviderKey},
@@ -126,7 +127,7 @@ pub(super) fn stream<'a>(
                     window_size: window_size(fetch_batch),
                     // No wire filter — see the module docs' depth-window note.
                     filter_age_days: 0,
-                    // Metadata tier — bodies are fetch_message_source (T6).
+                    // Metadata tier — bodies are fetch_message_source (T5).
                     fetch_body: false,
                     truncation_size: None,
                     mime_support: None,

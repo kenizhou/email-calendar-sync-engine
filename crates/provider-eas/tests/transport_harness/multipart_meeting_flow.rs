@@ -29,6 +29,7 @@ fn fetch_req(collection: &str, server_id: &str) -> ItemOperationsFetchRequest {
         long_id: None,
         mime: false,
         accept_multipart: true,
+        range: None,
     }
 }
 

@@ -4,12 +4,41 @@
 use crate::commands::{
     AS_COLLECTION_ID, AS_MIME_SUPPORT, AS_SERVER_ID, ItemOperationsFetchRequest,
     ItemOperationsFetchResult, PAGE_AIRSYNC, PAGE_ITEM_OPS, WbxmlElement, WbxmlError, WbxmlValue,
-    base64_encode, pages, tags, text_value, text_value_opt,
+    pages, tags, text_value, text_value_opt,
 };
 
 // ============================================================================
 // ItemOperations (fetch attachments / items)
 // ============================================================================
+
+/// Formats a byte range as the wire `"m-n"` string ([MS-ASCMD] §2.2.3.143.2:
+/// zero-indexed, inclusive).
+pub(crate) fn range_wire_text(range: (u64, u64)) -> String {
+    format!("{}-{}", range.0, range.1)
+}
+
+/// Parses the response's `Properties>Range` text (`"m-n"`, zero-indexed
+/// inclusive). Strict — a malformed span errors rather than being silently
+/// dropped, because a ranged answer whose placement cannot be read must never
+/// flow into a reassembly buffer as if it were positioned.
+fn parse_range_text(text: &str) -> Result<Option<(u64, u64)>, WbxmlError> {
+    let Some((m, n)) = text.split_once('-') else {
+        return Err(WbxmlError::InvalidContent(format!(
+            "ItemOperations Range '{text}' is not m-n"
+        )));
+    };
+    let (Ok(m), Ok(n)) = (m.trim().parse::<u64>(), n.trim().parse::<u64>()) else {
+        return Err(WbxmlError::InvalidContent(format!(
+            "ItemOperations Range '{text}' has non-numeric bounds"
+        )));
+    };
+    if m > n {
+        return Err(WbxmlError::InvalidContent(format!(
+            "ItemOperations Range '{text}' has m > n"
+        )));
+    }
+    Ok(Some((m, n)))
+}
 
 /// Build an ItemOperations Fetch request.
 ///
@@ -39,7 +68,9 @@ use crate::commands::{
 /// eas_io_debug raw dump, 2026-08-02.
 ///
 /// Three fetch forms, in precedence order (first populated wins):
-/// 1. **Attachment fetch** (`file_reference`): Store + airsyncbase:FileReference.
+/// 1. **Attachment fetch** (`file_reference`): Store + airsyncbase:FileReference [+ Options>Range
+///    when `range` is set — §2.2.3.125.3: with FileReference present, Range is the ONLY valid
+///    Options child].
 /// 2. **Search-result fetch** (`long_id`, [MS-ASCMD] §4.10.3.3): Store + search:LongId (page 15,
 ///    0x18) + Options>BodyPreference(Type 2). The search:LongId replaces CollectionId/ServerId
 ///    (§2.2.3.98.1: they MUST NOT accompany it — that rule is stated for MeetingResponse/Source but
@@ -47,7 +78,8 @@ use crate::commands::{
 /// 3. **Body/item fetch** (`collection_id` + `server_id`): Store + airsync:CollectionId +
 ///    airsync:ServerId + Options>BodyPreference(Type 2). With `mime: true` the Options carry
 ///    `airsync:MIMESupport`=2 ahead of the BodyPreference and its Type switches to 4 — the
-///    MIME-fetch shape of [MS-ASCMD] §4.10.2.1.
+///    MIME-fetch shape of [MS-ASCMD] §4.10.2.1. With `range` set the Options also carry `Range`
+///    ("m-n") FIRST — the §2.2.3.125.3 child order (Schema, Range, …, MIMESupport, BodyPreference).
 pub fn build_item_operations_request(req: &ItemOperationsFetchRequest) -> WbxmlElement {
     use tags::item_operations as io;
 
@@ -63,6 +95,19 @@ pub fn build_item_operations_request(req: &ItemOperationsFetchRequest) -> WbxmlE
             tags::base::FILE_REFERENCE,
             file_ref.clone(),
         ));
+        // §2.2.3.125.3: with FileReference present, Range is the only valid
+        // Options child — emit Options only when a range is requested.
+        if let Some(range) = req.range {
+            fetch_children.push(WbxmlElement::container(
+                PAGE_ITEM_OPS,
+                io::OPTIONS,
+                vec![WbxmlElement::text(
+                    PAGE_ITEM_OPS,
+                    io::RANGE,
+                    range_wire_text(range),
+                )],
+            ));
+        }
     } else if let Some(long_id) = &req.long_id {
         fetch_children.push(WbxmlElement::text(
             tags::search::PAGE,
@@ -98,8 +143,17 @@ pub fn build_item_operations_request(req: &ItemOperationsFetchRequest) -> WbxmlE
         // Options children per [MS-ASCMD] §4.10.2.1 (MIME fetch example):
         // `airsync:MIMESupport` (page 0, 0x22) BEFORE
         // `airsyncbase:BodyPreference`. MIME fetches switch the BodyPreference
-        // Type to 4 (MIME BLOB); the default stays Type 2 (HTML).
+        // Type to 4 (MIME BLOB); the default stays Type 2 (HTML). A requested
+        // `Range` goes first (§2.2.3.125.3 child order: Schema, Range, …,
+        // MIMESupport, BodyPreference).
         let mut options_children: Vec<WbxmlElement> = Vec::new();
+        if let Some(range) = req.range {
+            options_children.push(WbxmlElement::text(
+                PAGE_ITEM_OPS,
+                io::RANGE,
+                range_wire_text(range),
+            ));
+        }
         let body_type = if req.mime {
             // Level 2 = "send MIME data for all messages" (§2.2.3.110.3).
             // The spec example uses 1 (S/MIME messages only), but a MIME
@@ -149,6 +203,8 @@ pub fn build_item_operations_request(req: &ItemOperationsFetchRequest) -> WbxmlE
 ///       <Status>1</Status>              <!-- page 20, 0x0D — per-op level -->
 ///       <Properties>                    <!-- page 20, 0x0B -->
 ///         <Data>{base64}</Data>         <!-- page 20, 0x0C -->
+///         <Range>m-n</Range>            <!-- page 20, 0x09 — authoritative span -->
+///         <Total>1200</Total>           <!-- page 20, 0x0A — whole-item size -->
 ///         <airsyncbase:ContentType>../> <!-- page 17, 0x17 (§2.2.3.139.2) -->
 ///       </Properties>
 ///     </Fetch>
@@ -158,11 +214,20 @@ pub fn build_item_operations_request(req: &ItemOperationsFetchRequest) -> WbxmlE
 /// The fetch-level Status overrides the top-level one (more specific wins),
 /// mirroring the Sync parser's collection-status rule.
 ///
+/// `Properties>Range`/`Properties>Total` ([MS-ASCMD] §2.2.3.143.2 /
+/// §2.2.3.184.2) are the ranged-fetch placement facts: the response Range is
+/// the span the Data ACTUALLY covers (the server's range fulfillment is
+/// best-effort), Total the whole item's byte size. `Range` must parse as
+/// `"m-n"` with m ≤ n and `Total` as an integer — a malformed span is an
+/// `InvalidContent` error, never a silent drop (unknowingly-positioned bytes
+/// must not reach a reassembly buffer). `airsyncbase:Body>Truncated`
+/// ([MS-ASAIRS]) surfaces as `truncated`.
+///
 /// # Errors
 ///
 /// Returns `WbxmlError` when the response tree is malformed — an unexpected
-/// root or child tag, non-UTF-8 content, or non-numeric text where a number is
-/// required.
+/// root or child tag, non-UTF-8 content, a non-numeric `Total`, or a
+/// `Range` that is not a parseable `"m-n"` span.
 pub fn parse_item_operations_response(
     root: &WbxmlElement,
 ) -> Result<ItemOperationsFetchResult, WbxmlError> {
@@ -198,10 +263,33 @@ pub fn parse_item_operations_response(
                                     match (prop.page, prop.token) {
                                         (PAGE_ITEM_OPS, io::DATA) => {
                                             result.data = match &prop.value {
-                                                WbxmlValue::Text(t) => Some(t.clone()),
-                                                WbxmlValue::Opaque(b) => Some(base64_encode(b)),
+                                                WbxmlValue::Text(t) => Some(t.clone().into_bytes()),
+                                                WbxmlValue::Opaque(b) => Some(b.clone()),
                                                 WbxmlValue::Empty => None,
                                             };
+                                        }
+                                        // Properties>Range (§2.2.3.143.2): the
+                                        // authoritative span of the returned
+                                        // Data — strict, see the module docs.
+                                        (PAGE_ITEM_OPS, io::RANGE) => {
+                                            if let Ok(text) = text_value(prop) {
+                                                result.range = parse_range_text(&text)?;
+                                            }
+                                        }
+                                        // Properties>Total (§2.2.3.184.2):
+                                        // the whole item's byte size. Strict —
+                                        // an unreadable total must not be
+                                        // mistaken for an unranged answer.
+                                        (PAGE_ITEM_OPS, io::TOTAL) => {
+                                            if let Ok(text) = text_value(prop) {
+                                                result.total = Some(
+                                                    text.trim().parse::<u64>().map_err(|_| {
+                                                        WbxmlError::InvalidContent(format!(
+                                                            "ItemOperations Total '{text}' is not an integer"
+                                                        ))
+                                                    })?,
+                                                );
+                                            }
                                         }
                                         // airsyncbase:ContentType (page 17, 0x17)
                                         (pages::BASE, tags::base::CONTENT_TYPE) => {
@@ -213,10 +301,12 @@ pub fn parse_item_operations_response(
                                         // airsyncbase:Body (page 17, 0x0A) —
                                         // the payload of an item/body fetch.
                                         // Its Data child (page 17, 0x0B)
-                                        // carries the body text; Type tells us
+                                        // carries the body bytes; Type tells us
                                         // whether it is HTML (2) or plain (1),
                                         // which we surface as content_type
                                         // when the server didn't send one.
+                                        // Truncated (page 17, 0x0D) is the
+                                        // body-truncation flag.
                                         (pages::BASE, tags::base::BODY) => {
                                             let mut body_type: Option<u8> = None;
                                             for b in &prop.children {
@@ -227,11 +317,22 @@ pub fn parse_item_operations_response(
                                                     }
                                                     (pages::BASE, tags::base::DATA) => {
                                                         result.data = match &b.value {
-                                                            WbxmlValue::Text(t) => Some(t.clone()),
+                                                            WbxmlValue::Text(t) => {
+                                                                Some(t.clone().into_bytes())
+                                                            }
                                                             WbxmlValue::Opaque(bytes) => {
-                                                                Some(base64_encode(bytes))
+                                                                Some(bytes.clone())
                                                             }
                                                             WbxmlValue::Empty => None,
+                                                        };
+                                                    }
+                                                    (pages::BASE, tags::base::TRUNCATED) => {
+                                                        result.truncated = match &b.value {
+                                                            WbxmlValue::Text(t) => match t.trim() {
+                                                                "1" | "true" => Some(true),
+                                                                _ => Some(false),
+                                                            },
+                                                            _ => None,
                                                         };
                                                     }
                                                     _ => {}
@@ -262,4 +363,28 @@ pub fn parse_item_operations_response(
         }
     }
     Ok(result)
+}
+
+/// Decodes the ItemOperations Fetch status table ([MS-ASCMD] §2.2.3.177.8)
+/// into a human message — the family's `*_status_message` helper (the
+/// `move_items_status_message` precedent).
+#[must_use]
+pub fn item_operations_status_message(status: u32) -> &'static str {
+    match status {
+        1 => "Success",
+        2 => "Protocol error — protocol violation or XML validation error",
+        3 => "Server error",
+        6 => "The object was not found or access was denied",
+        8 => "The byte range is invalid or too large",
+        9 => "The store is unknown or unsupported",
+        10 => "The file is empty",
+        11 => "The requested data size is too large",
+        12 => "Failed to download the file because of an I/O failure",
+        14 => "The item failed conversion",
+        15 => "The attachment or attachment ID is invalid",
+        16 => "Access to the resource is denied",
+        17 => "Partial success — the operation completed partially",
+        18 => "Credentials are required",
+        _ => "unknown ItemOperations status",
+    }
 }

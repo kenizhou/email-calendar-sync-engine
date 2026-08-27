@@ -36,6 +36,18 @@ pub struct ItemOperationsFetchRequest {
     /// keeps pre-Task-3 IPC payloads (no `mime` key) deserializing unchanged.
     #[serde(default)]
     pub mime: bool,
+    /// The byte range to fetch ([MS-ASCMD] §2.2.3.143.2 Range), inclusive and
+    /// zero-indexed — `"m-n"` on the wire. `None` fetches the whole item.
+    /// When set on the attachment branch, `Options` carries `Range` as its
+    /// ONLY child (§2.2.3.125.3: "If FileReference is present, Range is the
+    /// only valid child element of Options"); on the item branch it rides
+    /// the same `Options` as `MIMESupport`/`BodyPreference`. The server's
+    /// answer is best-effort — the RESPONSE's `Properties>Range` is the
+    /// authoritative placement (§2.2.3.143.2), which is what the ranged
+    /// reassembly loop keys on. `#[serde(default)]` keeps pre-Task-5 IPC
+    /// payloads (no `range` key) deserializing unchanged.
+    #[serde(default)]
+    pub range: Option<(u64, u64)>,
     /// Opt in to a multipart response ([MS-ASCMD] §2.2.1.10.1): when true,
     /// the ItemOperations POST carries the `MS-ASAcceptMultiPart: T` header
     /// ([MS-ASHTTP] §2.2.1.1.2.5) and the client accepts a
@@ -49,16 +61,41 @@ pub struct ItemOperationsFetchRequest {
     pub accept_multipart: bool,
 }
 
-/// Result of an ItemOperations → Fetch: the inline payload plus its
-/// content type and status.
+/// Result of an ItemOperations → Fetch: the payload plus its content type,
+/// status, and — when the server ranged or truncated the answer — the
+/// placement facts a reassembly loop needs.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ItemOperationsFetchResult {
     /// `itemoperations:Status` (1 = success).
     pub status: u8,
-    /// Raw base64-encoded bytes for attachment fetches, or item fields for item fetches.
-    pub data: Option<String>,
+    /// The fetched payload as **exact bytes**: an inline string's UTF-8
+    /// bytes (bodies and MIME arrive as WBXML inline text) or an OPAQUE
+    /// blob's raw bytes (attachments). Byte-exact by design — the ranged
+    /// reassembly loop (T5) places these against `range`/`total` offsets,
+    /// which a base64-or-text string cannot survive. (Task 5 changed this
+    /// from a base64-string `Option<String>`; the only engine-repo consumers
+    /// were tests.)
+    pub data: Option<Vec<u8>>,
     /// `airsyncbase:ContentType` of the fetched data, when present.
     pub content_type: Option<String>,
+    /// The response's `Properties>Range` ([MS-ASCMD] §2.2.3.143.2): the
+    /// byte span the returned `data` ACTUALLY covers — authoritative, since
+    /// the server's range fulfillment is best-effort and may be shorter
+    /// than requested. `None` when the element is absent (an unranged
+    /// answer covers a prefix starting at 0).
+    #[serde(default)]
+    pub range: Option<(u64, u64)>,
+    /// The response's `Properties>Total` ([MS-ASCMD] §2.2.3.184.2): the
+    /// total size in bytes of the item's data — the truncation signal a
+    /// reassembly loop compares against what it has assembled.
+    #[serde(default)]
+    pub total: Option<u64>,
+    /// `airsyncbase:Body>Truncated` ([MS-ASAIRS]): the server truncated the
+    /// body. A truncation signal independent of `total` (an unranged
+    /// answer may carry no `Total` at all), so the loop can enter range
+    /// mode on the flag alone. `None` when the element is absent.
+    #[serde(default)]
+    pub truncated: Option<bool>,
 }
 
 // ---------- ItemOperations EmptyFolderContents ----------

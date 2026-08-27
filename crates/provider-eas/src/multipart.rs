@@ -132,10 +132,10 @@ pub fn parse_multipart_response(bytes: &[u8]) -> Result<MultipartParts, EasError
 /// Resolve `itemoperations:Part` elements ([MS-ASCMD] §2.2.3.130) inside
 /// `airsyncbase:Body` containers against the parsed parts. Each Part
 /// element is replaced by an `airsyncbase:Data` child carrying the
-/// referenced part's bytes as base64 TEXT — matching the existing inline
-/// convention (`parse_item_operations_response` reads Data as text base64
-/// or opaque bytes and surfaces a base64 string either way), so everything
-/// downstream (`ItemOperationsFetchResult.data`) is unchanged.
+/// referenced part's bytes as an OPAQUE value — byte-exact, matching what
+/// `parse_item_operations_response` surfaces for inline OPAQUE payloads, so
+/// everything downstream (`ItemOperationsFetchResult.data`) receives the
+/// part's exact bytes with no base64 detour.
 ///
 /// Bodies without a Part child pass through untouched. A non-numeric index
 /// or an index beyond the parts vector is a descriptive error — a server
@@ -175,10 +175,10 @@ pub fn resolve_part_elements(root: &mut WbxmlElement, parts: &[Vec<u8>]) -> Resu
                     parts.len()
                 ))
             })?;
-        root.children.push(WbxmlElement::text(
+        root.children.push(WbxmlElement::opaque(
             pages::BASE,
             tags::base::DATA,
-            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, part_bytes),
+            part_bytes.clone(),
         ));
     }
     for child in &mut root.children {
@@ -382,7 +382,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_replaces_part_with_base64_data_child() {
+    fn resolve_replaces_part_with_opaque_data_child() {
         let mut root = synthetic_fetch_tree("1");
         let parts = vec![b"<wbxml>".to_vec(), b"hello body".to_vec()];
         resolve_part_elements(&mut root, &parts).expect("resolve must succeed");
@@ -398,9 +398,10 @@ mod tests {
             .iter()
             .find(|c| c.page == pages::BASE && c.token == tags::base::DATA)
             .expect("Body must gain a Data child");
-        // base64("hello body") — the existing Data convention for binary
-        // payloads (matches parse_item_operations_response's Opaque arm).
-        assert_eq!(data.value, WbxmlValue::Text("aGVsbG8gYm9keQ==".to_string()));
+        // The part's exact bytes, as OPAQUE — byte-exact end to end, no
+        // base64 detour (T5: ranged reassembly keys Data against byte
+        // offsets, so the payload path must never re-encode).
+        assert_eq!(data.value, WbxmlValue::Opaque(b"hello body".to_vec()));
     }
 
     #[test]
@@ -446,7 +447,8 @@ mod tests {
 
     /// End-to-end at the parser level: the spec blob's WBXML part, resolved
     /// against the parts vector, must feed `parse_item_operations_response`
-    /// exactly as if the server had inlined the body as base64 Data.
+    /// with the part's exact bytes — as if the server had inlined the body
+    /// as OPAQUE Data.
     #[test]
     fn spec_example_resolved_tree_feeds_item_operations_parser() {
         let parsed = parse_multipart_response(&spec_blob()).expect("parse");
@@ -455,8 +457,10 @@ mod tests {
         let result =
             crate::commands::parse_item_operations_response(&tree).expect("item operations parse");
         assert_eq!(result.status, 1);
-        // base64("This is the body.\r\n")
-        assert_eq!(result.data.as_deref(), Some("VGhpcyBpcyB0aGUgYm9keS4NCg=="));
+        assert_eq!(
+            result.data.as_deref(),
+            Some(b"This is the body.\r\n".as_slice())
+        );
         // Body Type 1 → text/plain fallback when the server sent no
         // airsyncbase:ContentType (existing parser convention).
         assert_eq!(result.content_type.as_deref(), Some("text/plain"));

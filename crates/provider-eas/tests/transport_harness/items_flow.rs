@@ -23,7 +23,7 @@ use provider_eas::{
 
 use super::{
     fixtures::{fetch_body_response, fetch_part_response, fetch_response, multipart_tree},
-    harness::{b64_encode, client_at},
+    harness::client_at,
     server::{CapturedRequest, Handler, MockResponse, MockServer},
 };
 
@@ -35,6 +35,7 @@ fn fetch_req(collection: &str, server_id: &str) -> ItemOperationsFetchRequest {
         long_id: None,
         mime: false,
         accept_multipart: false,
+        range: None,
     }
 }
 
@@ -51,7 +52,7 @@ async fn item_operations_fetches_an_inline_body() {
         .await
         .expect("fetch parses");
     assert_eq!(result.status, 1);
-    assert_eq!(result.data.as_deref(), Some("aGVsbG8="));
+    assert_eq!(result.data.as_deref(), Some(b"aGVsbG8=" as &[u8]));
     assert_eq!(result.content_type.as_deref(), Some("text/plain"));
     // The request asked for an HTML body via BodyPreference (page 17).
     let tree = server.request(1).wbxml_tree().expect("request decodes");
@@ -70,7 +71,7 @@ async fn item_operations_fetches_a_typed_body() {
         .item_operations(&fetch_req("fid-inbox", "srv:2"))
         .await
         .expect("fetch parses");
-    assert_eq!(result.data.as_deref(), Some("PGI+aGk8L2I+"));
+    assert_eq!(result.data.as_deref(), Some(b"PGI+aGk8L2I+" as &[u8]));
     assert_eq!(
         result.content_type.as_deref(),
         Some("text/html"),
@@ -80,8 +81,8 @@ async fn item_operations_fetches_a_typed_body() {
 
 /// The multipart opt-in: the request carries `MS-ASAcceptMultiPart: T`, the
 /// answer is a `application/vnd.ms-sync.multipart` envelope, and the
-/// `itemoperations:Part` reference is resolved into an inline base64 Data —
-/// the payload bytes the server sent as part 1.
+/// `itemoperations:Part` reference is resolved into an inline OPAQUE Data —
+/// the payload bytes the server sent as part 1, byte-exact.
 #[tokio::test]
 async fn item_operations_multipart_part_is_reassembled_inline() {
     super::harness::init_logger();
@@ -97,8 +98,8 @@ async fn item_operations_multipart_part_is_reassembled_inline() {
         .item_operations(&req)
         .await
         .expect("multipart parses");
-    // Part 1's bytes surface as base64 through the same `data` field.
-    assert_eq!(result.data.as_deref(), Some(b64_encode(payload).as_str()));
+    // Part 1's exact bytes surface through the same `data` field.
+    assert_eq!(result.data.as_deref(), Some(payload));
     // The opt-in header actually went out.
     assert_eq!(
         server.request(1).header("ms-asacceptmultipart"),

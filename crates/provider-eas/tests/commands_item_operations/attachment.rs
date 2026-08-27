@@ -12,6 +12,7 @@ fn item_operations_request_attachment_round_trips() {
         long_id: None,
         mime: false,
         accept_multipart: false,
+        range: None,
     };
     let tree = build_item_operations_request(&req);
     let back = round_trip(&tree);
@@ -47,5 +48,5 @@ fn item_operations_response_parses_attachment_data() {
     let parsed = parse_item_operations_response(&response).expect("parse");
     assert_eq!(parsed.status, 1);
     assert_eq!(parsed.content_type.as_deref(), Some("image/png"));
-    assert_eq!(parsed.data.as_deref(), Some("QkFTRTY0REFUQQ=="));
+    assert_eq!(parsed.data.as_deref(), Some(b"QkFTRTY0REFUQQ==" as &[u8]));
 }

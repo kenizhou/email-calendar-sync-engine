@@ -10,6 +10,8 @@ mod attachment;
 mod conversation_move;
 #[path = "commands_item_operations/empty_folder_contents.rs"]
 mod empty_folder_contents;
+#[path = "commands_item_operations/fetch_range_requests.rs"]
+mod fetch_range_requests;
 #[path = "commands_item_operations/fetch_requests.rs"]
 mod fetch_requests;
 #[path = "commands_item_operations/fetch_responses.rs"]

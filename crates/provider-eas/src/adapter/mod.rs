@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 //! The [`Provider`](engine_provider::Provider) adapter over the EAS client —
 //! connection facts, the EAS scope overrides, and the read verbs
-//! (FolderSync containers, Sync class Email messages).
+//! (FolderSync containers, Sync class Email messages, ItemOperations
+//! message-source fetch).
 //!
 //! ## Binding
 //!
@@ -56,16 +57,18 @@
 //! The `mail` bit is **on** in this slice: `sync_mailboxes` (the
 //! containers) and `stream_email` (the messages) are both live, which is
 //! the whole mail read domain the bit names — IMAP/Graph advertise it only
-//! with every mail verb live, and this slice reaches that bar. The bits
-//! that name domains beyond it stay off until their verbs land:
-//! `mail_writes` (`edit_mail`), `message_source`
-//! (`fetch_message_source`), `submission` (`submit_email`), and the
+//! with every mail verb live, and this slice reaches that bar. The
+//! `message_source` bit is **on** too: `fetch_message_source` (the
+//! ItemOperations MIME fetch with range reassembly) landed. The bits that
+//! name domains beyond them stay off until their verbs land:
+//! `mail_writes` (`edit_mail`), `submission` (`submit_email`), and the
 //! calendar/contacts families.
 
 mod connection;
 mod email;
 mod error;
 mod mailboxes;
+mod source;
 
 use engine_core::ids::MailboxId;
 use engine_provider::Capabilities;
@@ -146,9 +149,9 @@ impl EasAdapter {
             client: tokio::sync::Mutex::new(client),
             folder,
             // The honest ladder: `mail` names containers AND messages —
-            // both read verbs are live in this slice, so the bit is on
-            // (module docs).
-            capabilities: Capabilities::none().with_mail(),
+            // both read verbs are live, so the bit is on; ditto
+            // `message_source` now that its verb is (module docs).
+            capabilities: Capabilities::none().with_mail().with_message_source(),
             protocol_version: None,
         }
     }
