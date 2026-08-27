@@ -18,7 +18,7 @@ use engine_provider::{
 };
 use engine_store::{LeasedPendingOp, Store, WorkerId};
 
-use super::{enqueue_and_claim, record_failure};
+use super::{OutboxIntent, enqueue_and_claim, record_failure};
 use crate::SyncError;
 
 /// The result of a successful calendar write through the outbox.
@@ -68,8 +68,18 @@ where
     P: Provider,
     S: Store,
 {
-    let leased =
-        enqueue_calendar_op(store, account, worker, ttl, idempotency, &draft.uid, draft).await?;
+    let leased = enqueue_calendar_op(
+        store,
+        account,
+        worker,
+        ttl,
+        idempotency,
+        &draft.uid,
+        OutboxIntent::CreateEvent {
+            draft: draft.clone(),
+        },
+    )
+    .await?;
     resolve(store, leased, provider.create_event(account, draft).await).await
 }
 
@@ -111,8 +121,16 @@ where
     S: Store,
 {
     let edit = EventEdit::new(base, target, patch);
-    let leased =
-        enqueue_calendar_op(store, account, worker, ttl, idempotency, &edit.uid, &edit).await?;
+    let leased = enqueue_calendar_op(
+        store,
+        account,
+        worker,
+        ttl,
+        idempotency,
+        &edit.uid,
+        OutboxIntent::PatchEvent { edit: edit.clone() },
+    )
+    .await?;
     resolve(
         store,
         leased,
@@ -146,8 +164,18 @@ where
     P: Provider,
     S: Store,
 {
-    let leased =
-        enqueue_calendar_op(store, account, worker, ttl, idempotency, &write.uid, write).await?;
+    let leased = enqueue_calendar_op(
+        store,
+        account,
+        worker,
+        ttl,
+        idempotency,
+        &write.uid,
+        OutboxIntent::PutEventDoc {
+            write: write.clone(),
+        },
+    )
+    .await?;
     resolve(store, leased, provider.put_event(account, write).await).await
 }
 
@@ -194,8 +222,16 @@ where
     P: Provider,
     S: Store,
 {
-    let leased =
-        enqueue_calendar_op(store, account, worker, ttl, idempotency, &rsvp.uid, rsvp).await?;
+    let leased = enqueue_calendar_op(
+        store,
+        account,
+        worker,
+        ttl,
+        idempotency,
+        &rsvp.uid,
+        OutboxIntent::RsvpEvent { rsvp: rsvp.clone() },
+    )
+    .await?;
     resolve(
         store,
         leased,
@@ -248,7 +284,9 @@ where
         ttl,
         idempotency,
         &deletion.uid,
-        deletion,
+        OutboxIntent::DeleteEvent {
+            deletion: deletion.clone(),
+        },
     )
     .await?;
 
@@ -302,8 +340,9 @@ async fn resolve<S: Store>(
     }
 }
 
-/// Builds and claims a calendar write op: the serialized request under a caller-minted
-/// idempotency key, serialized on the event's `UID` so writes to one event never race.
+/// Builds and claims a calendar write op: the intent in a tagged envelope
+/// under a caller-minted idempotency key, serialized on the event's `UID` so
+/// writes to one event never race.
 ///
 /// `idempotency` must be **unique per write intent** — the store dedups by `(account, key)`
 /// across every op state, so a key derived only from the event would wrongly collapse two
@@ -311,16 +350,16 @@ async fn resolve<S: Store>(
 /// provider id, because the `UID` is the one identity that exists *before* a create has an
 /// id and survives a transport that assigns its own — so a create and a follow-up edit of
 /// the same event serialize against each other on either provider.
-async fn enqueue_calendar_op<S: Store, T: serde::Serialize>(
+async fn enqueue_calendar_op<S: Store>(
     store: &S,
     account: &AccountId,
     worker: WorkerId,
     ttl: Duration,
     idempotency: &str,
     uid: &Uid,
-    request: &T,
+    intent: OutboxIntent,
 ) -> Result<LeasedPendingOp, SyncError> {
-    let payload = serde_json::to_value(request)
+    let payload = serde_json::to_value(&intent)
         .map_err(|e| SyncError::Outbox(format!("encode calendar write: {e}")))?;
     let idempotency_key =
         IdempotencyKey::new(idempotency).map_err(|e| SyncError::Outbox(e.to_string()))?;

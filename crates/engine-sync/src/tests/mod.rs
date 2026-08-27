@@ -36,8 +36,8 @@ use engine_store::{
 use store_sqlite::SqliteStore;
 
 use super::{
-    AccountId, AccountProgress, IgnoreCommits, StreamTuning, SyncCommit, SyncObserver,
-    create_calendar_event, delete_calendar_event, edit_mail, expand_calendar_horizon,
+    AccountId, AccountProgress, IgnoreCommits, OutboxIntent, StreamTuning, SyncCommit,
+    SyncObserver, create_calendar_event, delete_calendar_event, edit_mail, expand_calendar_horizon,
     patch_calendar_event, put_calendar_document, reconcile_calendar_events, refresh_folders,
     rsvp_calendar_event, submit_mail, submit_mail_source, sync_calendar, sync_mail,
 };

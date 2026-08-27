@@ -10,7 +10,7 @@ use engine_core::{
 use engine_provider::{ContactWriteReceipt, ContactsProvider};
 use engine_store::{LeasedPendingOp, Store, WorkerId};
 
-use super::{enqueue_and_claim, record_failure};
+use super::{OutboxIntent, enqueue_and_claim, record_failure};
 use crate::SyncError;
 
 /// Successful contact write identity.
@@ -41,8 +41,18 @@ where
     S: Store,
 {
     let resource = format!("contact-create:{}", draft.address_book.as_str());
-    let leased =
-        enqueue_contact_op(store, account, worker, ttl, idempotency, &resource, draft).await?;
+    let leased = enqueue_contact_op(
+        store,
+        account,
+        worker,
+        ttl,
+        idempotency,
+        &resource,
+        OutboxIntent::CreateContact {
+            draft: draft.clone(),
+        },
+    )
+    .await?;
     resolve(store, leased, provider.create_contact(account, draft).await).await
 }
 
@@ -76,7 +86,9 @@ where
         ttl,
         idempotency,
         &format!("contact:{}", base.id.as_str()),
-        patch,
+        OutboxIntent::PatchContact {
+            patch: patch.clone(),
+        },
     )
     .await?;
     resolve(
@@ -112,7 +124,9 @@ where
         ttl,
         idempotency,
         &format!("contact:{}", base.id.as_str()),
-        &base.id,
+        OutboxIntent::DeleteContact {
+            contact: base.id.clone(),
+        },
     )
     .await?;
     match provider.delete_contact(account, base).await {
@@ -165,16 +179,16 @@ async fn resolve<S: Store>(
     clippy::too_many_arguments,
     reason = "outbox lease parameters and serialized operation identity"
 )]
-async fn enqueue_contact_op<S: Store, T: serde::Serialize>(
+async fn enqueue_contact_op<S: Store>(
     store: &S,
     account: &AccountId,
     worker: WorkerId,
     ttl: Duration,
     idempotency: &str,
     resource: &str,
-    request: &T,
+    intent: OutboxIntent,
 ) -> Result<LeasedPendingOp, SyncError> {
-    let payload = serde_json::to_value(request)
+    let payload = serde_json::to_value(&intent)
         .map_err(|error| SyncError::Outbox(format!("encode contact write: {error}")))?;
     let idempotency =
         IdempotencyKey::new(idempotency).map_err(|error| SyncError::Outbox(error.to_string()))?;

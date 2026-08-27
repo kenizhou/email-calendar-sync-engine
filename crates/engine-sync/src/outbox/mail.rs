@@ -16,7 +16,7 @@ use engine_core::{
 use engine_provider::{Draft, MailEdit, MessageReport, Provider, ProviderError, SentCopy};
 use engine_store::{LeasedPendingOp, Store, WorkerId};
 
-use super::{enqueue_and_claim, record_failure};
+use super::{OutboxIntent, enqueue_and_claim, record_failure};
 use crate::SyncError;
 
 /// The result of a successful submission through the outbox.
@@ -60,10 +60,12 @@ where
     P: Provider,
     S: Store,
 {
-    // Durable record first: the draft as a tagged pending-op payload, idempotent by
-    // Message-ID. The `kind` tag is what a future drainer dispatches on.
-    let payload = serde_json::to_value(SubmitPayload::Draft(draft))
-        .map_err(|e| SyncError::Outbox(format!("encode draft: {e}")))?;
+    // Durable record first: the intent in a tagged envelope, idempotent by
+    // Message-ID. The `verb` tag is what a future drainer dispatches on.
+    let payload = serde_json::to_value(OutboxIntent::SubmitMail {
+        payload: SubmitPayload::Draft(draft.clone()),
+    })
+    .map_err(|e| SyncError::Outbox(format!("encode draft: {e}")))?;
     let message_id = draft.message_id.as_str();
     let idempotency = IdempotencyKey::new(format!("submit:{message_id}"))
         .map_err(|e| SyncError::Outbox(e.to_string()))?;
@@ -115,10 +117,12 @@ where
 /// The op's keys are minted from the bytes' **own** `Message-ID` and share the
 /// Draft path's namespace (`submit:{id}` / `draft:{id}` — the resource key keeps
 /// its `draft:` name deliberately), so the same message submitted through either
-/// path collapses to one op. The payload is
+/// path collapses to one op. The payload is an
+/// [`OutboxIntent::SubmitMail`](super::OutboxIntent) around
 /// [`SubmitPayload::RenderedSource`](engine_core::write::SubmitPayload) — the
-/// bytes ride in the op itself, tagged so a future drainer re-sends them verbatim
-/// instead of re-rendering.
+/// bytes **and the envelope recipients** ride in the op itself, tagged so a
+/// future drainer re-sends them verbatim (to the same recipients) instead of
+/// re-rendering.
 ///
 /// Two cheap validations run **before** the enqueue, so permanently-invalid bytes
 /// never enter the outbox: the bytes must carry a `Message-ID` (the host must
@@ -167,11 +171,16 @@ where
         ));
     }
 
-    // Durable record first: the bytes as a tagged pending-op payload, idempotent by
-    // the bytes' own Message-ID in the Draft path's namespace — one message, one op,
-    // whichever path submits it.
-    let payload = serde_json::to_value(SubmitPayload::<Draft>::RenderedSource {
-        rfc5322: source.to_vec(),
+    // Durable record first: the intent in a tagged envelope, idempotent by the
+    // bytes' own Message-ID in the Draft path's namespace — one message, one op,
+    // whichever path submits it. The envelope recipients ride in the payload: a
+    // drainer replaying this op re-sends to the exact same RCPT TO set rather
+    // than re-deriving it from headers the caller never wrote.
+    let payload = serde_json::to_value(OutboxIntent::SubmitMail {
+        payload: SubmitPayload::<Draft>::RenderedSource {
+            rfc5322: source.to_vec(),
+            recipients: recipients.to_vec(),
+        },
     })
     .map_err(|e| SyncError::Outbox(format!("encode rendered source: {e}")))?;
     let idempotency = IdempotencyKey::new(format!("submit:{}", message_id.as_str()))
@@ -287,7 +296,7 @@ where
     P: Provider,
     S: Store,
 {
-    let payload = serde_json::to_value(edit)
+    let payload = serde_json::to_value(OutboxIntent::EditMail { edit: edit.clone() })
         .map_err(|e| SyncError::Outbox(format!("encode mail edit: {e}")))?;
     let idempotency_key =
         IdempotencyKey::new(idempotency).map_err(|e| SyncError::Outbox(e.to_string()))?;
@@ -370,8 +379,10 @@ where
     P: Provider,
     S: Store,
 {
-    let payload = serde_json::to_value(report)
-        .map_err(|e| SyncError::Outbox(format!("encode message report: {e}")))?;
+    let payload = serde_json::to_value(OutboxIntent::ReportMessage {
+        report: report.clone(),
+    })
+    .map_err(|e| SyncError::Outbox(format!("encode message report: {e}")))?;
     let idempotency_key =
         IdempotencyKey::new(idempotency).map_err(|e| SyncError::Outbox(e.to_string()))?;
     let resource = ResourceKey::new(format!("mail:{}", report.target.as_str()))

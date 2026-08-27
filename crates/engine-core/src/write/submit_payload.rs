@@ -49,7 +49,8 @@ mod base64_bytes {
 /// `RenderedSource` is the host-crypto seam: the bytes are the caller's final
 /// MIME (already signed/encrypted), the engine sends them verbatim and never
 /// re-renders. Because the payload is the only record left after a crash, the
-/// bytes ride in the payload itself.
+/// bytes **and the envelope recipients they must be sent to** ride in the
+/// payload itself.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SubmitPayload<D> {
@@ -60,6 +61,13 @@ pub enum SubmitPayload<D> {
         /// The final RFC 5322 message, exactly as the engine must send it.
         #[serde(with = "base64_bytes")]
         rfc5322: Vec<u8>,
+        /// The envelope recipients — the exact `RCPT TO` set, where Bcc lives
+        /// without ever entering the bytes. Empty means derive mode: the sender
+        /// derives the envelope from the bytes' own `To`/`Cc` headers. A replay
+        /// re-sends to this exact set rather than re-deriving it, so the payload
+        /// must carry it (the crash-recovery seam).
+        #[serde(default)]
+        recipients: Vec<String>,
     },
 }
 
@@ -104,12 +112,17 @@ mod tests {
     }
 
     #[test]
-    fn rendered_source_round_trips_non_utf8_bytes_as_base64() {
+    fn rendered_source_round_trips_non_utf8_bytes_and_recipients() {
         // Signed/encrypted MIME is arbitrary bytes, not guaranteed UTF-8 — the
-        // payload must carry it losslessly (crash recovery re-sends from it alone).
+        // payload must carry it losslessly (crash recovery re-sends from it alone) —
+        // and the envelope recipients must ride beside it: a replay re-sends to the
+        // exact same RCPT TO set (where Bcc lives without ever entering the bytes)
+        // instead of re-deriving it from headers the caller never wrote.
         let bytes: Vec<u8> = vec![0xFF, 0xC3, 0x28, 0x00, b'\r', b'\n', 0x80, 0xFE, 0x41];
+        let recipients = vec!["bob@test.local".to_owned(), "carol@test.local".to_owned()];
         let payload = SubmitPayload::RenderedSource {
             rfc5322: bytes.clone(),
+            recipients: recipients.clone(),
         };
         let value = serde_json::to_value(&payload).unwrap();
         assert_eq!(value["kind"], json!("rendered_source"));
@@ -122,9 +135,28 @@ mod tests {
                 .unwrap(),
             bytes
         );
+        assert_eq!(value["recipients"], json!(recipients));
         assert_eq!(
             serde_json::from_value::<SubmitPayload<TestDraft>>(value).unwrap(),
             payload
+        );
+    }
+
+    #[test]
+    fn rendered_source_without_recipients_decodes_to_derive_mode() {
+        // A payload serialized before the field existed must decode, not error:
+        // an absent set is the documented derive mode (the sender derives the
+        // envelope from the bytes' own To/Cc headers), never a corrupt op.
+        let legacy = json!({
+            "kind": "rendered_source",
+            "rfc5322": "SGVsbG8=",
+        });
+        assert_eq!(
+            serde_json::from_value::<SubmitPayload<TestDraft>>(legacy).unwrap(),
+            SubmitPayload::<TestDraft>::RenderedSource {
+                rfc5322: b"Hello".to_vec(),
+                recipients: Vec::new(),
+            }
         );
     }
 

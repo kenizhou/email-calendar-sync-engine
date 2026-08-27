@@ -290,27 +290,41 @@ fn the_durable_payload_records_the_intent_not_the_rendered_bytes() {
     // changed*, so a retry re-applies it to a freshly fetched base. Had it stored the
     // document the edit produced, the retry would re-send bytes built on the very copy the
     // server has moved past — reverting somebody else's edit with a write it accepts.
+    // Each intent travels inside the tagged envelope, under the verb a drainer dispatches
+    // on — same constructions the drivers serialize.
     let base = stored("/cal/default/evt-7.ics", "evt-7@test.local");
-    let edit = EventEdit::new(
-        &base,
-        PatchTarget::Series,
-        EventPatch::new(stamp()).summary("Renamed").end(at(11)),
-    );
-    let payload = serde_json::to_value(&edit).unwrap();
-    assert_eq!(serde_json::from_value::<EventEdit>(payload).unwrap(), edit);
-
-    let draft = draft("evt-7@test.local");
-    let payload = serde_json::to_value(&draft).unwrap();
+    let intent = OutboxIntent::PatchEvent {
+        edit: EventEdit::new(
+            &base,
+            PatchTarget::Series,
+            EventPatch::new(stamp()).summary("Renamed").end(at(11)),
+        ),
+    };
+    let payload = serde_json::to_value(&intent).unwrap();
+    assert_eq!(payload["verb"], serde_json::json!("patch_event"));
     assert_eq!(
-        serde_json::from_value::<EventDraft>(payload).unwrap(),
-        draft
+        serde_json::from_value::<OutboxIntent>(payload).unwrap(),
+        intent
     );
 
-    let deletion = EventDeletion::of(&base);
-    let payload = serde_json::to_value(&deletion).unwrap();
+    let intent = OutboxIntent::CreateEvent {
+        draft: draft("evt-7@test.local"),
+    };
+    let payload = serde_json::to_value(&intent).unwrap();
+    assert_eq!(payload["verb"], serde_json::json!("create_event"));
     assert_eq!(
-        serde_json::from_value::<EventDeletion>(payload).unwrap(),
-        deletion
+        serde_json::from_value::<OutboxIntent>(payload).unwrap(),
+        intent
+    );
+
+    let intent = OutboxIntent::DeleteEvent {
+        deletion: EventDeletion::of(&base),
+    };
+    let payload = serde_json::to_value(&intent).unwrap();
+    assert_eq!(payload["verb"], serde_json::json!("delete_event"));
+    assert_eq!(
+        serde_json::from_value::<OutboxIntent>(payload).unwrap(),
+        intent
     );
 }
 

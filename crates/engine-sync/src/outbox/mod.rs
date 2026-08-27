@@ -19,6 +19,7 @@
 
 mod calendar;
 mod contact;
+mod intent;
 mod mail;
 
 use core::time::Duration;
@@ -33,6 +34,7 @@ use engine_core::{
     write::{PendingOp, PendingOutcome},
 };
 use engine_store::{LeaseRequest, LeasedPendingOp, Store, WorkerId};
+pub use intent::OutboxIntent;
 pub use mail::{
     MailEditOutcome, ReportOutcome, SubmitOutcome, edit_mail, report_message, submit_mail,
     submit_mail_source,

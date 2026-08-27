@@ -107,34 +107,55 @@ async fn submit_mail_parks_an_ambiguous_send_for_confirmation() {
 
 #[test]
 fn submit_payload_round_trips_through_a_durable_op() {
-    // The outbox stores the submission intent as a tagged payload (`kind`), so a
-    // recovery worker can dispatch on it: re-render a draft, or re-send rendered
-    // bytes. The draft must survive that encoding intact — same construction
-    // `submit_mail` uses.
+    // The outbox stores the submission intent inside the tagged envelope
+    // (`verb`), with the payload's own `kind` tag nested inside it, so a
+    // recovery worker can dispatch on both: the verb picks the driver, the kind
+    // picks re-render-a-draft vs re-send-bytes. The draft must survive that
+    // encoding intact — same construction `submit_mail` uses.
     let original = draft("durable@test.local");
-    let payload = serde_json::to_value(SubmitPayload::Draft(&original)).unwrap();
-    assert_eq!(payload["kind"], serde_json::json!("draft"));
-    let restored: SubmitPayload<Draft> = serde_json::from_value(payload).unwrap();
-    assert_eq!(restored, SubmitPayload::Draft(original));
+    let payload = serde_json::to_value(OutboxIntent::SubmitMail {
+        payload: SubmitPayload::Draft(original.clone()),
+    })
+    .unwrap();
+    assert_eq!(payload["verb"], serde_json::json!("submit_mail"));
+    assert_eq!(payload["payload"]["kind"], serde_json::json!("draft"));
+    assert_eq!(
+        serde_json::from_value::<OutboxIntent>(payload).unwrap(),
+        OutboxIntent::SubmitMail {
+            payload: SubmitPayload::Draft(original)
+        }
+    );
 }
 
 #[test]
 fn rendered_source_payload_round_trips_through_a_durable_op() {
-    // Same construction `submit_mail_source` uses: the bytes themselves are the
-    // durable intent, tagged `rendered_source`, so a recovery worker re-sends them
-    // verbatim instead of re-rendering. Non-UTF-8 bytes (signed/encrypted MIME)
-    // ride as base64 — pinned in engine-core; this pins the tagged round-trip a
-    // drainer's decode depends on.
+    // Same construction `submit_mail_source` uses: the bytes themselves — and
+    // the envelope recipients they must be sent to — are the durable intent,
+    // tagged `rendered_source`, so a recovery worker re-sends them verbatim to
+    // the same RCPT TO set instead of re-rendering. Non-UTF-8 bytes
+    // (signed/encrypted MIME) ride as base64 — pinned in engine-core; this pins
+    // the tagged round-trip a drainer's decode depends on.
     let bytes = rendered_source("durable-source@test.local");
-    let payload = serde_json::to_value(SubmitPayload::<Draft>::RenderedSource {
-        rfc5322: bytes.clone(),
+    let payload = serde_json::to_value(OutboxIntent::SubmitMail {
+        payload: SubmitPayload::<Draft>::RenderedSource {
+            rfc5322: bytes.clone(),
+            recipients: vec!["bob@test.local".to_owned()],
+        },
     })
     .unwrap();
-    assert_eq!(payload["kind"], serde_json::json!("rendered_source"));
-    let restored: SubmitPayload<Draft> = serde_json::from_value(payload).unwrap();
+    assert_eq!(payload["verb"], serde_json::json!("submit_mail"));
     assert_eq!(
-        restored,
-        SubmitPayload::<Draft>::RenderedSource { rfc5322: bytes }
+        payload["payload"]["kind"],
+        serde_json::json!("rendered_source")
+    );
+    assert_eq!(
+        serde_json::from_value::<OutboxIntent>(payload).unwrap(),
+        OutboxIntent::SubmitMail {
+            payload: SubmitPayload::<Draft>::RenderedSource {
+                rfc5322: bytes,
+                recipients: vec!["bob@test.local".to_owned()],
+            }
+        }
     );
 }
 

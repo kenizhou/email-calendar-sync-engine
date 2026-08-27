@@ -118,17 +118,22 @@ async fn distinct_idempotency_keys_let_two_edits_of_one_message_both_run() {
 
 #[test]
 fn edit_round_trips_through_a_durable_payload() {
-    // The outbox stores the edit as a JSON payload; every variant must survive intact
-    // for a recovery worker to re-apply it.
+    // The outbox stores the edit inside the tagged envelope; every variant must
+    // survive the encoding intact for a recovery worker to re-apply it — same
+    // construction `edit_mail` uses.
     let dest = MailboxId::try_from("Trash").unwrap();
-    for original in [
+    for edit in [
         MailEdit::mark_seen(target(), true),
         MailEdit::set_flagged(target(), false),
         MailEdit::move_to(target(), dest),
         MailEdit::delete(target()),
     ] {
-        let payload = serde_json::to_value(&original).unwrap();
-        let restored: MailEdit = serde_json::from_value(payload).unwrap();
-        assert_eq!(restored, original);
+        let intent = OutboxIntent::EditMail { edit };
+        let payload = serde_json::to_value(&intent).unwrap();
+        assert_eq!(payload["verb"], serde_json::json!("edit_mail"));
+        assert_eq!(
+            serde_json::from_value::<OutboxIntent>(payload).unwrap(),
+            intent
+        );
     }
 }
