@@ -13,7 +13,7 @@ coverage this crate is built on.
   `SPDX-License-Identifier: MPL-2.0` header.
 - Provenance: ported into the Kylins client (kylins-client commit `0dc611d`),
   then imported into this engine as a standalone crate (engine import commit
-  `f7db44d`) and retrofitted to engine standards (edition 2024, workspace
+  `d961954`) and retrofitted to engine standards (edition 2024, workspace
   lints, the 500-line module split, the `engine-tls` transport).
 
 Ported modules (under `src/`, post-split layout):

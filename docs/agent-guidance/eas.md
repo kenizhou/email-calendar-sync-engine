@@ -11,7 +11,7 @@
 
 This document covers the **Exchange ActiveSync 16.1 (negotiated down to 12.0) mail +
 calendar + contacts provider** — the `provider-eas` crate imported from the Kylins
-client (upstream commit `0dc611d`, engine import commit `f7db44d`) and since
+client (upstream commit `0dc611d`, engine import commit `d961954`) and since
 retrofitted to engine standards: a standalone protocol client with no
 `engine_provider` dependency yet. Read it alongside `providers.md` (the Provider
 Contract), `store-and-sync.md` (scopes/cursors/apply), `tls.md` (trust policy), and
