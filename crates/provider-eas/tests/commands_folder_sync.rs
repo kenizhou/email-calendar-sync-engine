@@ -104,6 +104,42 @@ fn folder_sync_status_message_falls_back_to_common_table() {
     assert_eq!(folder_sync_status_message(999), "unknown status code");
 }
 
+/// The full [MS-ASFolderSync] §2.2.3 Type→class table. The user-created
+/// non-mail folders (13-17) previously fell into "Email" — a live server
+/// sending them would have polluted the adapter's mail container scope
+/// (`adapter/mailboxes.rs` filters by class); the spec values are pinned
+/// here so the classifier cannot regress.
+#[test]
+fn folder_type_to_class_covers_the_spec_table() {
+    // Default folders.
+    let cases = [
+        ("1", "Email"), // user-created mail
+        ("2", "Email"), // Inbox
+        ("3", "Email"), // Drafts
+        ("4", "Email"), // Deleted Items
+        ("5", "Email"), // Sent Items
+        ("6", "Email"), // Outbox
+        ("7", "Tasks"), // default tasks
+        ("8", "Calendar"),
+        ("9", "Contacts"),
+        ("10", "Notes"), // journal → Notes (MVP does not sync it)
+        ("11", "Notes"),
+        ("12", "Email"), // user-created mail
+        // User-created non-mail ([MS-ASFolderSync] §2.2.3):
+        ("13", "Calendar"),
+        ("14", "Contacts"),
+        ("15", "Tasks"),
+        ("16", "Notes"),
+        ("17", "Notes"), // journal → Notes
+        ("19", "Email"), // observed mail folder type (crate note)
+    ];
+    for (typ, class) in cases {
+        assert_eq!(folder_type_to_class(typ), class, "Type {typ}");
+    }
+    // Unrecognized types stay mail by default (the defensive fallback).
+    assert_eq!(folder_type_to_class("99"), "Email");
+}
+
 // ---- top_level_status (generic in-body provision-retry support) ----
 //
 // NOTE on constants: the ItemOperations and ComposeMail rows use

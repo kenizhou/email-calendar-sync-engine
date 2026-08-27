@@ -1,14 +1,16 @@
 # EAS (Exchange ActiveSync) Client Guidance
 
-> **Protocol client landed; adapter skeleton stood (connection facts + scopes),
-> verbs pending.** The per-verb verdicts below come from the trait-shape spike
+> **Protocol client landed; adapter standing up verb by verb — connection
+> facts + scopes + FolderSync (`sync_mailboxes`) are in; the message verbs
+> are pending.** The per-verb verdicts below come from the trait-shape spike
 > (Plan B Task 3, 2026-08-24) and are stable. The relocation series has since
 > brought the crate to engine quality — edition 2024, workspace lints, module
 > split under the 500-line cap, the engine-tls transport, normalized live gating —
-> and `EasAdapter` (`src/adapter/`) now implements `engine_provider::Provider`'s
-> `connection_info` and the EAS scope overrides, advertising `Capabilities::none()`
-> until each verb slice lands and flips its own bit (the verb ladder — a bit never
-> precedes its verb). Everything marked *fork decision* or *P2* stays unimplemented
+> and `EasAdapter` (`src/adapter/`) implements `engine_provider::Provider`'s
+> `connection_info`, the EAS scope overrides, and `sync_mailboxes` (FolderSync),
+> advertising `Capabilities::none()` until the slice that completes each
+> capability's verbs lands (the verb ladder — a bit never precedes its verb).
+> Everything marked *fork decision* or *P2* stays unimplemented
 > until Plan C/P2 says otherwise. Update this file as the adapter's verbs land —
 > it is intended to become authoritative for `provider-eas`, peer of
 > `imap-smtp.md` / `graph.md`.
@@ -37,9 +39,18 @@ table behind every verdict here.
   IMAP/Graph precedent, with `negotiate()` as the connection-time OPTIONS
   exchange (protocol version negotiated, applied to the client's
   `MS-ASProtocolVersion`, held adapter-side — never `ConnectionInfo`).
-- The adapter **skeleton** implements `connection_info` and the mail scope
-  overrides; no verb is implemented yet (`ContactsProvider` and `Watch` not
-  started). Capabilities follow the verb ladder: `none()` until each slice lands.
+- The adapter implements `connection_info`, the mail scope overrides, and the
+  first verb: `sync_mailboxes` (FolderSync — `adapter/mailboxes.rs`). The
+  client sits behind a `tokio::sync::Mutex` (the verb lock): command methods
+  rotate session state in place (hierarchy key, policy key, adopted URL), so
+  verbs serialize onto one client — the IMAP connection-lock precedent — while
+  `connection_info` reads the `ObservedHttpVersion` funnel through an `Arc`
+  handle (`EasClient::http_version_handle`), lock-free.
+  Capabilities follow the verb ladder: `none()` until each capability's verbs
+  have all landed — `sync_mailboxes` alone does **not** flip `mail`, because
+  that bit names the whole mail read domain (containers *and* messages) and
+  IMAP/Graph advertise it only with every mail verb live; it turns on with the
+  message verbs (`stream_email`).
   The spike's job was to decide whether the verbs *can* map without engine API
   changes. Answer: **one required engine change (new
   `SyncScope` variants — since landed, see the fork-decision records), everything
@@ -210,7 +221,7 @@ document; this is the summary.
 | --- | --- | --- |
 | `connection_info` | **landed** (skeleton): composed per call — caps from the verb ladder (`none()` until each verb slice lands), `http_version` from the transport's `ObservedHttpVersion` (recorded by `options()` and every command send, shared across client clones, most-recent-wins; `None` before the `negotiate` OPTIONS first contact — the JMAP/CalDAV connect-time precedent), `concurrent_fetches` the default 1 until a measured per-server ceiling exists | no gap |
 | `mailbox_scope` / `email_scope` | **landed** (skeleton): the adapter returns `SyncScope::EasFolderList` / `EasFolder` (+ `EasCalendarList`/`EasCalendar` and `EasContactList`/`EasContact` siblings exist in `engine-core` for the calendar/contacts slices, whose id bindings differ), exactly as IMAP (`ImapMailboxList`/`ImapMailbox`) and Graph (`GraphFolderList`/`GraphFolder`) did | no gap |
-| `sync_mailboxes` | `FolderSync`; hierarchy sync key is the cursor; status 9 → `needs_resync` → bootstrap `"0"` snapshot | no gap (JMAP `container_sync` is the code precedent) |
+| `sync_mailboxes` | **landed**: `FolderSync` (`adapter/mailboxes.rs`); the hierarchy SyncKey is the cursor (`None`/empty → bootstrap `"0"` → snapshot of the full hierarchy; `Some(key)` → Add/Update/Delete delta); status 9 invalidation recovers **inside the call** — one re-bootstrap from `"0"` returning a snapshot (the JMAP needs-resync→snapshot-fallback precedent; a server answering 9 to `"0"` itself surfaces as `needs_resync`); non-mail classes (Calendar/Contacts/Tasks/Notes) are filtered out — `Mailbox` is the *mail* container type and those folders belong to the calendar/contacts scopes (the wire's Delete element carries no class, so delta deletions pass through unfiltered — tombstoning a key the mail scope never held is a store no-op); a success response omitting its SyncKey keeps the request's key (the Sync empty-body invariant — an empty key would poison the cursor); `Type`-derived roles (2 Inbox / 3 Drafts / 4 Trash / 5 Sent; Outbox and user types carry none, the raw type survives in `extended["eas/*"]`); **does not flip `mail`** — see the crate section | no gap (JMAP `container_sync` is the code precedent) |
 | `stream_email` | Sync class Email; cursor = collection sync key (`None` → `"0"`); per-round chunks are `Additive` with `advance_to` = rotated key; status 3 restarts the pass in `Reconcile` mode | no gap (`PassMode::Reconcile` matches SyncKey invalidation cleanly — JMAP `cannotCalculateChanges` recovery is the precedent) |
 | `default_sync_window` / `SyncWindow` | `FilterType` day-ladder (coarse) + `admits` tighten | no gap (mapping note) |
 | `fetch_message_source` | `ItemOperations` Fetch with `MIMESupport=2` + `BodyPreference` type 4 (raw MIME); multipart opt-in | no gap in contract; **EAS-local TODO**: `Options>Range` pagination/reassembly for oversized items is not implemented in the crate yet (P2; adapter-internal loop) |

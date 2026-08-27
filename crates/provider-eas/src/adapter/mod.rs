@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 //! The [`Provider`](engine_provider::Provider) adapter over the EAS client —
-//! the skeleton slice: connection facts and the EAS scope overrides.
+//! connection facts, the EAS scope overrides, and the FolderSync verb.
 //!
 //! ## Binding
 //!
@@ -23,6 +23,23 @@
 //! facts the exchange learned. Nothing goes out before that: reading
 //! connection facts or scopes is free.
 //!
+//! ## The verb lock
+//!
+//! [`EasClient`]'s command methods take `&mut self` — the retry layers adopt
+//! redirects and rotate policy keys in place, and FolderSync rotates the
+//! cached hierarchy key — while the trait's verbs take `&self`. The verb
+//! slice therefore holds the client behind a [`tokio::sync::Mutex`]: the
+//! IMAP precedent (its session sits "behind an async `Mutex` — concurrent
+//! `stream_email` calls serialize onto one connection"). For EAS the
+//! serialized state is the client's *session* facts (hierarchy key, policy
+//! key, adopted URL), not an exclusive socket. The one sync reader,
+//! [`connection_info`](engine_provider::Provider::connection_info), must not
+//! take that lock (an async lock from a sync method), so the adapter holds
+//! the [`ObservedHttpVersion`] funnel directly — the same `Arc` the client
+//! records every response into, taken as a handle at construction
+//! ([`EasClient::http_version_handle`]) — and reads the live,
+//! most-recent-wins fact lock-free.
+//!
 //! ## The verb ladder (capabilities stay honest)
 //!
 //! Capabilities follow the **verbs that have landed**, never the server's
@@ -30,22 +47,18 @@
 //! implemented, because the trait's un-overridden defaults reject —
 //! advertising a bit without its verb would point a capability-checking
 //! caller straight at that rejection (`provider.rs`: "the default rejects,
-//! so a capability-checking caller never relies on it"). This skeleton
-//! lands connection + scopes only, so it advertises `Capabilities::none()`;
-//! the mail verbs (FolderSync, Sync) and their bits land in later slices,
-//! each flipping its bit here in the same move.
+//! so a capability-checking caller never relies on it").
 //!
-//! ## Interior mutability is deliberately absent
-//!
-//! [`EasClient`]'s command methods take `&mut self` (the retry layers adopt
-//! redirects and rotate policy keys in place), while the trait's verbs take
-//! `&self`. This skeleton overrides no async verb, so it holds the client
-//! plainly and [`EasAdapter::negotiate`] takes `&mut self` like any
-//! connect-time step. The first verb slice (FolderSync) will introduce the
-//! lock it actually needs — with the shape its calls demand — rather than a
-//! speculative one here.
+//! FolderSync (`sync_mailboxes`) has landed, but it does **not** flip the
+//! `mail` bit: that bit names the whole mail read domain — containers *and*
+//! messages (`stream_email`, whose default yields a classified `Err`) — and
+//! IMAP/Graph advertise it only with every mail verb live. The bit turns on
+//! in the slice that lands the message verbs; until then the adapter stays
+//! at `Capabilities::none()`.
 
 mod connection;
+mod error;
+mod mailboxes;
 
 use engine_core::ids::MailboxId;
 use engine_provider::Capabilities;
@@ -69,18 +82,23 @@ pub const CLIENT_KNOWN_PROTOCOL_VERSIONS: [&str; 3] = ["14.1", "16.0", "16.1"];
 /// email syncs under the bound folder's
 /// [`SyncScope::EasFolder`](engine_core::sync::SyncScope::EasFolder).
 pub struct EasAdapter {
-    /// The protocol client this adapter drives. Held plainly (see the module
-    /// docs): the skeleton overrides no async verb, and `negotiate` is a
-    /// connect-time `&mut self` step.
-    client: EasClient,
+    /// The protocol client this adapter drives, behind the verb lock (see
+    /// the module docs): command methods rotate session state in place, so
+    /// verbs serialize onto one client — the IMAP connection-lock precedent.
+    client: tokio::sync::Mutex<EasClient>,
+    /// The transport-facts funnel, shared with the locked client — the
+    /// lock-free read side of [`connection_info`](Provider::connection_info)
+    /// (a sync method cannot take the async lock). Never sends anything.
+    http: std::sync::Arc<engine_provider::ObservedHttpVersion>,
     /// The bound folder — the `Sync` `CollectionId` (a folder ServerId) this
     /// adapter's email scope names, per the IMAP/Graph one-folder binding.
     folder: MailboxId,
     /// The verb ladder, read by
     /// [`connection_info`](engine_provider::Provider::connection_info):
-    /// `none()` until a verb slice lands and flips its own bit (see the
-    /// module docs). Deliberately not a constructor parameter — a host must
-    /// not be able to advertise a verb this adapter does not implement.
+    /// `none()` until the slice that lands the message verbs flips `mail`
+    /// (see the module docs). Deliberately not a constructor parameter — a
+    /// host must not be able to advertise a verb this adapter does not
+    /// implement.
     capabilities: Capabilities,
     /// The OPTIONS-negotiated protocol version ("16.1"-shaped), or `None`
     /// before [`EasAdapter::negotiate`]. Adapter-held by design: a host must
@@ -95,6 +113,10 @@ impl std::fmt::Debug for EasAdapter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EasAdapter")
             .field("client", &self.client)
+            // The funnel's Debug is its atomic's — the observed version or
+            // None — no secret either; omitted fields would hide the
+            // lock-free read side from panic inspection.
+            .field("http", &self.http.get())
             .field("folder", &self.folder)
             .field("capabilities", &self.capabilities)
             .field("protocol_version", &self.protocol_version)
@@ -110,10 +132,14 @@ impl EasAdapter {
     #[must_use]
     pub fn new(client: EasClient, folder: MailboxId) -> Self {
         Self {
-            client,
+            // The lock the FolderSync slice demanded (module docs): verbs
+            // serialize onto the client's in-place session mutations, while
+            // the funnel handle keeps connection_info lock-free.
+            http: client.http_version_handle(),
+            client: tokio::sync::Mutex::new(client),
             folder,
-            // The honest ladder: this slice implements no verb, so nothing
-            // is advertised. Verb slices flip their bits here as they land.
+            // The honest ladder: `mail` names containers AND messages, so it
+            // stays off until the message verbs land (module docs).
             capabilities: Capabilities::none(),
             protocol_version: None,
         }
@@ -129,6 +155,10 @@ impl EasAdapter {
     /// [`connection_info`](engine_provider::Provider::connection_info)
     /// reports the HTTP version that response spoke.
     ///
+    /// Still `&mut self` (the connect-time shape, like any dial): a host
+    /// negotiates before spawning sync work, so the verb lock is
+    /// uncontended by construction.
+    ///
     /// A server sharing no version with the client is an explicit
     /// connect-time failure — never a silent fall back to the configured
     /// default version, which would only defer the mismatch to the first
@@ -139,7 +169,8 @@ impl EasAdapter {
     /// Returns [`EasError`] from the OPTIONS round-trip itself, or
     /// `EasError::Transport` when the intersection is empty.
     pub async fn negotiate(&mut self) -> Result<String, EasError> {
-        let options = self.client.options().await?;
+        let mut client = self.client.lock().await;
+        let options = client.options().await?;
         let advertised = options.protocol_versions.join(", ");
         let Some(version) = pick_protocol_version(&advertised, &CLIENT_KNOWN_PROTOCOL_VERSIONS)
         else {
@@ -148,7 +179,8 @@ impl EasAdapter {
                 CLIENT_KNOWN_PROTOCOL_VERSIONS.join(", ")
             )));
         };
-        self.client.set_protocol_version(version.clone());
+        client.set_protocol_version(version.clone());
+        drop(client);
         self.protocol_version = Some(version.clone());
         Ok(version)
     }

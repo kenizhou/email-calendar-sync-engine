@@ -244,14 +244,17 @@ fn parse_folder_element(folder_el: &WbxmlElement) -> Result<EasFolder, WbxmlErro
 }
 
 /// Map EAS folder type number (per [MS-ASFolderSync] section 2.2.3) to item class string.
-/// Types 1-6, 12, 19 are mail folders; 7=tasks, 8=calendar, 9=contacts, 10=journal,
-/// 11=notes. We map journal/notes to Notes for now; MVP doesn't sync them.
+/// Default folders: 2=Inbox, 3=Drafts, 4=DeletedItems, 5=Sent, 6=Outbox (all
+/// mail), 7=tasks, 8=calendar, 9=contacts, 10=journal, 11=notes. User-created
+/// folders: 1/12=mail, 13=calendar, 14=contacts, 15=tasks, 16=notes, 17=journal.
+/// We map journal/notes to Notes for now; MVP doesn't sync them. Mail folder
+/// types and anything unrecognized fall back to Email.
 pub fn folder_type_to_class(type_str: &str) -> String {
     match type_str {
-        "7" => "Tasks".to_string(),
-        "8" => "Calendar".to_string(),
-        "9" => "Contacts".to_string(),
-        "10" | "11" => "Notes".to_string(),
+        "7" | "15" => "Tasks".to_string(),
+        "8" | "13" => "Calendar".to_string(),
+        "9" | "14" => "Contacts".to_string(),
+        "10" | "11" | "16" | "17" => "Notes".to_string(),
         // Mail folder types (1-6, 12, 19) and anything unrecognized.
         _ => "Email".to_string(),
     }

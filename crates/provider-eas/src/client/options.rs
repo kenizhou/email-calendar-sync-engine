@@ -58,6 +58,16 @@ impl EasClient {
             .and_then(|v| v.to_str().ok());
         parse_options_headers(versions, commands)
     }
+
+    /// The shared transport-facts funnel this client records every response's
+    /// HTTP version into — an `Arc` handle onto the same funnel
+    /// [`Self::http_version`] reads, so a **sync** reader (the adapter's
+    /// `connection_info`, which cannot take the async lock the verb path
+    /// holds) still observes the live, most-recent-wins fact.
+    #[must_use]
+    pub fn http_version_handle(&self) -> std::sync::Arc<engine_provider::ObservedHttpVersion> {
+        std::sync::Arc::clone(&self.http_version)
+    }
 }
 
 /// Pick the protocol version to negotiate with the server. Ports Android's

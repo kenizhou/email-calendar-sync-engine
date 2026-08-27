@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
-//! The trait half of the skeleton: what [`EasAdapter`] reports and which
-//! scopes it names. No verb is overridden — the trait's rejecting defaults
-//! are the honest behavior until each verb slice lands (the module docs in
-//! `super` carry the ladder).
+//! The trait half of the adapter: what [`EasAdapter`] reports, which scopes
+//! it names, and the verbs that have landed (FolderSync). The un-overridden
+//! defaults remain the honest behavior for every verb still to come (the
+//! module docs in `super` carry the ladder).
 
-use engine_core::{ids::AccountId, sync::SyncScope};
-use engine_provider::{ConnectionInfo, Provider};
+use engine_core::{
+    ids::AccountId,
+    mail::Mailbox,
+    sync::{SyncScope, SyncState},
+};
+use engine_provider::{ConnectionInfo, Provider, ProviderResult, ScopeSync};
 
 use super::EasAdapter;
 
@@ -16,12 +20,13 @@ impl Provider for EasAdapter {
     /// version fact is live (most-recent observation) rather than latched.
     ///
     /// * **Capabilities are `none()` in this slice** — they follow the verbs that have landed, not
-    ///   the server's OPTIONS answer; each verb slice flips its own bit as it implements its trait
-    ///   method.
+    ///   the server's OPTIONS answer. FolderSync alone does not flip `mail`: that bit names the
+    ///   whole mail read domain (containers *and* messages), so it turns on with the message verbs.
     /// * **`http_version`** is `None` until the [`EasAdapter::negotiate`] OPTIONS exchange (EAS's
     ///   session-discovery step — the JMAP/CalDAV connect-time precedent; Graph, which has no
     ///   discovery step, stays `None` until its first fetch), then whatever the transport most
-    ///   recently observed.
+    ///   recently observed. Read from the funnel handle — the sync lock-free read side (see the
+    ///   module docs' verb-lock section).
     /// * **`tls_version`** is always `None`: reqwest exposes only the peer certificate, never the
     ///   negotiated protocol version (`docs/agent-guidance/tls.md`).
     /// * **`concurrent_fetches`** stays the `ConnectionInfo` default (1) until a measured
@@ -29,7 +34,7 @@ impl Provider for EasAdapter {
     ///   live throttling evidence.
     fn connection_info(&self) -> ConnectionInfo {
         ConnectionInfo {
-            http_version: self.client.http_version(),
+            http_version: self.http.get(),
             ..ConnectionInfo::new(self.capabilities)
         }
     }
@@ -51,5 +56,21 @@ impl Provider for EasAdapter {
             account: account.clone(),
             folder: self.folder.clone(),
         }
+    }
+
+    /// FolderSync ([MS-ASFolderSync]): the hierarchy SyncKey is the cursor —
+    /// `None` bootstraps from `"0"` (a snapshot of the full hierarchy), a
+    /// `Some(key)` round returns the wire's Add/Update/Delete delta, and a
+    /// status-9 invalidation recovers as a re-bootstrapped snapshot inside
+    /// this one call. Non-mail classes (calendar/contacts/tasks/notes) are
+    /// filtered out — `Mailbox` is the mail container type and those folders
+    /// belong to the calendar/contacts scopes. `super::mailboxes` owns the
+    /// mapping and its contract.
+    async fn sync_mailboxes(
+        &self,
+        _account: &AccountId,
+        cursor: Option<&SyncState>,
+    ) -> ProviderResult<ScopeSync<Mailbox>> {
+        super::mailboxes::sync(&self.client, cursor).await
     }
 }
