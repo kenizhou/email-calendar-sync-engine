@@ -24,19 +24,30 @@
 //! *both* delivery and filing (Graph `sendMail`) uses the filed variant, since the
 //! server strips the `Bcc` header before delivery itself.
 //!
+//! # Reading bytes back
+//!
+//! [`parse_message_id`] is the inverse seam for the already-rendered path: a caller
+//! that submits its own final MIME still owes the engine the message's `Message-ID`,
+//! and that id lives in the bytes. The emit/read pair lives in this one crate so the
+//! two cannot drift apart.
+//!
 //! # Hostile input
 //!
 //! Every header-interpolated value is screened for CR/LF/NUL (RFC 5322 §2.2), so a
 //! hostile draft cannot inject extra headers or split the downstream command stream;
 //! a rejected value is a [`ProviderError::permanent`](engine_provider::ProviderError::permanent)
 //! (the message will never assemble unchanged). Non-ASCII subjects and display names
-//! become RFC 2047 `B` encoded-words, never raw 8-bit header bytes.
+//! become RFC 2047 `B` encoded-words, never raw 8-bit header bytes. Read-side parsing
+//! ([`header_values`]) decodes lossily and never panics — mail is hostile input there
+//! too.
 
 mod assemble;
 mod base64;
 mod mime;
+mod parse;
 
 pub use assemble::{assemble_filed_message, assemble_message};
+pub use parse::{header_values, parse_message_id};
 
 /// Standard RFC 4648 base64 of `bytes`.
 ///

@@ -228,6 +228,21 @@ is authoritative for the `provider-caldav` calendar client.
 - **`submit_email`** runs the conversation `EHLO → [AUTH] → MAIL FROM → RCPT TO* →
   DATA`, then files the sent copy. The pre-generated `Message-ID` is on the message
   so the sent copy reconciles by it.
+- **`submit_email_source`** (`crate::smtp_source`) is the same send + file for the
+  caller's **already-rendered bytes** — the host-crypto seam: the caller renders,
+  signs/encrypts, and submits final MIME, which this adapter sends **verbatim**
+  (`DATA`) and files as the Sent copy with **the same bytes** (`APPEND` — no
+  `assemble_filed_message`, so the wire copy and the sender's copy are one and the
+  same; a `Bcc` header inside the bytes reaches every recipient, which is the
+  caller's to strip). The envelope (`MAIL FROM`/`RCPT TO`) and the receipt's
+  `Message-ID` are read back out of the bytes' own headers via `engine-rfc5322`'s
+  parse side (`parse_message_id`/`header_values`); bytes with no `Message-ID` (the
+  caller must stamp one — the same Write Contract as a draft) or no `From` are
+  refused **before any dial** with a `Permanent`. Delivery classification, the
+  Sent-placement retry, and the `Unfiled` receipt semantics are the draft path's,
+  shared through `crate::filing` (`ensure_delivered`, `file_and_receipt`). Providers
+  whose submission verb re-renders from structured fields (JMAP) keep the trait's
+  rejecting default for this verb — `submission` does not imply it.
 - **Message assembly (`engine_rfc5322::assemble_message`)** lives in the shared
   **`engine-rfc5322`** crate (the Graph adapter reuses it for `sendMail` in MIME
   format — `graph.md`), returning the engine-neutral `ProviderError`; `provider-imap`

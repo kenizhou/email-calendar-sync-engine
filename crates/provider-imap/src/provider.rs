@@ -416,6 +416,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
         self.submit(draft).await
     }
 
+    /// Submits the caller's rendered `source` bytes verbatim and files the SAME bytes
+    /// as the Sent copy (`crate::smtp_source`, which owns the contract and its tests).
+    async fn submit_email_source(
+        &self,
+        _account: &AccountId,
+        source: &[u8],
+    ) -> ProviderResult<SubmissionReceipt> {
+        self.submit_source(source).await
+    }
+
     /// Files the Sent copy of an already-delivered message, for a host repairing a
     /// submission that came back `Unfiled` (`crate::filing`). Idempotent: it probes for the
     /// copy before placing one, on the standing session and on a freshly dialed retry.
@@ -479,14 +489,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Provider for ImapProvider<S> {
 #[path = "provider_tests.rs"]
 mod tests;
 
-// The `submit_over` submission tests live in a sibling file so `provider_tests.rs`
-// stays under the line limit.
+// Sibling test files, split so `provider_tests.rs` stays under the line limit; the
+// STARTTLS one carries its own cert/server harness (it drives a real TLS server).
 #[cfg(test)]
 #[path = "provider_submit_over_tests.rs"]
 mod submit_over_tests;
 
-// The STARTTLS connect path drives a real in-process TLS server, so it lives in its own
-// sibling file (with its own cert/server harness).
 #[cfg(test)]
 #[path = "provider_starttls_tests.rs"]
 mod starttls_tests;

@@ -75,6 +75,7 @@ mod provider;
 mod qresync;
 mod report;
 mod smtp;
+mod smtp_source;
 mod stream;
 mod sync;
 mod target;

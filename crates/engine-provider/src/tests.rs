@@ -160,6 +160,23 @@ async fn submit_email_defaults_to_unsupported() {
     assert_eq!(err.class(), FailureClass::InvalidState);
 }
 
+#[tokio::test]
+async fn submit_email_source_defaults_to_unsupported() {
+    use engine_core::error::FailureClass;
+
+    let provider = FakeJmap {
+        info: ConnectionInfo::new(Capabilities::none().with_mail()),
+    };
+    // A provider that did not override source submission rejects the call, so a
+    // capability-checking caller never depends on the default — the same guarantee
+    // `submit_email`'s default makes for drafts.
+    let err = provider
+        .submit_email_source(&account(), b"Message-ID: <rendered@host>\r\n\r\nbody\r\n")
+        .await
+        .unwrap_err();
+    assert_eq!(err.class(), FailureClass::InvalidState);
+}
+
 /// A provider implementing only the required `connection_info`, leaving every other
 /// method to its trait default — so boxing it exercises the blanket impl's
 /// delegation to the *defaults*, not just to an adapter's overrides.
@@ -261,6 +278,15 @@ async fn box_dyn_provider_delegates_overrides_and_defaults() {
     );
     assert_eq!(
         bare.submit_email(&account(), &draft)
+            .await
+            .unwrap_err()
+            .class(),
+        FailureClass::InvalidState
+    );
+    // The source-submission default rejects through the box too: the blanket impl
+    // delegates to the inner's default, not a rendering of its own.
+    assert_eq!(
+        bare.submit_email_source(&account(), b"Message-ID: <rendered@host>\r\n\r\n")
             .await
             .unwrap_err()
             .class(),

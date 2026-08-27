@@ -3,8 +3,9 @@
 //! The submission *conversation* lives in [`crate::smtp`] and the `APPEND` itself in
 //! [`crate::place`]; this module is the `Provider`-side glue that runs the send and then
 //! files the resulting copy into the account's real Sent/Drafts folder. It is the
-//! [`ImapProvider`] half that `submit_email` delegates to, kept out of
-//! [`crate::provider`] so that file stays under the size limit.
+//! [`ImapProvider`] half that `submit_email` delegates to (the caller-rendered-bytes
+//! variant, `submit_email_source`, lives in [`crate::smtp_source`] over the same filing
+//! helpers), kept out of [`crate::provider`] so that file stays under the size limit.
 //!
 //! **Delivering and filing are two operations, and the second one can fail on its own.**
 //! SMTP dials a fresh connection per send, so a delivery succeeds over a session that has
@@ -19,7 +20,7 @@
 
 use std::collections::HashSet;
 
-use engine_core::ids::ProviderKey;
+use engine_core::ids::{MessageIdHeader, ProviderKey};
 use engine_provider::{Draft, ProviderError, ProviderResult, SubmissionReceipt};
 use engine_rfc5322::{assemble_filed_message, assemble_message};
 use time::OffsetDateTime;
@@ -253,21 +254,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
         sub: &Submission,
         draft: &Draft,
     ) -> ProviderResult<SubmissionReceipt> {
-        match result.disposition {
-            Disposition::Delivered => {}
-            Disposition::RejectedPermanent(text) => {
-                return Err(ProviderError::permanent(format!("SMTP rejected: {text}")));
-            }
-            Disposition::RejectedTransient(text) => {
-                return Err(ProviderError::retryable(format!("SMTP deferred: {text}")));
-            }
-            Disposition::Ambiguous(text) => {
-                return Err(ProviderError::needs_confirmation(format!(
-                    "SMTP outcome ambiguous: {text}"
-                )));
-            }
-        }
-
+        ensure_delivered(&result)?;
         // The filed Sent copy INCLUDES the Bcc header (it is APPENDed locally, never
         // transmitted), so the sender's Sent folder records whom they Bcc'd — Outlook/
         // Thunderbird behavior. Identical to the wire message when there's no Bcc, so only
@@ -277,18 +264,27 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
         } else {
             assemble_filed_message(draft, sub.now)?
         };
+        self.file_and_receipt(&filed, &draft.message_id).await
+    }
+
+    /// Files the delivered copy in Sent and builds the receipt around the outcome —
+    /// the shared tail of both submission paths (draft and source), which differ
+    /// only in which bytes they file and where the `Message-ID` came from.
+    ///
+    /// Never an `Err` for a filing failure: the message has already reached its
+    /// recipients, and a caller that saw one would re-send it.
+    pub(crate) async fn file_and_receipt(
+        &self,
+        filed: &[u8],
+        message_id: &MessageIdHeader,
+    ) -> ProviderResult<SubmissionReceipt> {
         // The Sent folder is resolved by its `\Sent` SPECIAL-USE role (falling back to
         // the conventional "Sent"), so the copy lands in the account's real Sent
         // folder — not a stray one on servers that name it differently.
-        match self.file_sent_copy(&filed, draft).await {
+        match self.file_sent_copy(filed, message_id).await {
             Ok((folder, append_uid)) => Ok(SubmissionReceipt::filed(
-                placed_key(
-                    &folder,
-                    Filing::Sent.key_prefix(),
-                    append_uid,
-                    &draft.message_id,
-                ),
-                draft.message_id.clone(),
+                placed_key(&folder, Filing::Sent.key_prefix(), append_uid, message_id),
+                message_id.clone(),
             )),
             // Delivered, but the copy is not in Sent and no later sync can find it — there
             // is nothing on the server to reconcile against. Never an `Err`: the message
@@ -299,9 +295,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
                     Filing::Sent.default_folder(),
                     Filing::Sent.key_prefix(),
                     None,
-                    &draft.message_id,
+                    message_id,
                 ),
-                draft.message_id.clone(),
+                message_id.clone(),
                 detail,
             )),
         }
@@ -322,7 +318,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
     async fn file_sent_copy(
         &self,
         filed: &[u8],
-        draft: &Draft,
+        message_id: &MessageIdHeader,
     ) -> Result<(String, Option<(u32, u32)>), String> {
         let first = {
             let mut connection = self.connection.lock().await;
@@ -335,7 +331,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
         let Some(redial) = self.redial.as_ref() else {
             return Err(format!("{first}"));
         };
-        self.refile_on_a_fresh_session(redial, filed, draft)
+        self.refile_on_a_fresh_session(redial, filed, message_id)
             .await
             .map_err(|retry| format!("{first}; retry on a fresh session: {retry}"))
     }
@@ -349,14 +345,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
         &self,
         redial: &Redial,
         filed: &[u8],
-        draft: &Draft,
+        message_id: &MessageIdHeader,
     ) -> ProviderResult<(String, Option<(u32, u32)>)> {
         let (mut connection, _) = connect_session(&redial.config, &redial.connector)
             .await
             .map_err(ProviderError::from)?;
         // `APPEND` is not idempotent, so the probe inside asks before placing: a first
         // attempt that committed and lost its response must not become two copies.
-        place_if_absent(&mut connection, Filing::Sent, &draft.message_id, filed).await
+        place_if_absent(&mut connection, Filing::Sent, message_id, filed).await
     }
 
     /// Files the Sent copy of a message that **has already been delivered** — the repair a
@@ -384,7 +380,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
             Ok(placed) => placed,
             Err(standing) => match self.redial.as_ref() {
                 Some(redial) => {
-                    self.refile_on_a_fresh_session(redial, &filed, draft)
+                    self.refile_on_a_fresh_session(redial, &filed, &draft.message_id)
                         .await?
                 }
                 None => return Err(standing),
@@ -429,10 +425,33 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
     }
 }
 
+/// Classifies a send's outcome: `Ok` only when the message was delivered, the
+/// classified error every rejection maps to — permanent (5xx, never retry), transient
+/// (4xx, retry later), or the post-`DATA` ambiguity that must be confirmed, never
+/// blind-retried. Shared by the draft and source submission paths.
+///
+/// # Errors
+///
+/// A classified [`ProviderError`] matching the disposition.
+pub(crate) fn ensure_delivered(result: &SmtpResult) -> ProviderResult<()> {
+    match &result.disposition {
+        Disposition::Delivered => Ok(()),
+        Disposition::RejectedPermanent(text) => {
+            Err(ProviderError::permanent(format!("SMTP rejected: {text}")))
+        }
+        Disposition::RejectedTransient(text) => {
+            Err(ProviderError::retryable(format!("SMTP deferred: {text}")))
+        }
+        Disposition::Ambiguous(text) => Err(ProviderError::needs_confirmation(format!(
+            "SMTP outcome ambiguous: {text}"
+        ))),
+    }
+}
+
 /// TLS-wraps `tcp` with `connector`, presenting `server_name` (SNI/cert name; may
 /// differ from a loopback address). Shared by the implicit-TLS and post-STARTTLS
-/// submission paths.
-async fn tls_connect(
+/// submission paths of both the draft and the source submission.
+pub(crate) async fn tls_connect(
     connector: &TlsConnector,
     server_name: &str,
     tcp: TcpStream,

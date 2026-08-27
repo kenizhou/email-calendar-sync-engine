@@ -1,10 +1,14 @@
 //! The [`Provider`] trait: the one seam every adapter implements.
 //!
-//! Lifted out of the crate root purely for size — the trait is the crate's whole surface,
-//! and the root now carries the module docs, the module tree and the re-exports. Nothing
-//! about it changed in the move.
+//! Lifted out of the crate root purely for size — the trait is the crate's whole
+//! surface; the root carries the module docs, the module tree and the re-exports.
 
 use async_trait::async_trait;
+#[allow(
+    unused_imports,
+    reason = "named by intra-doc links on the trait's methods"
+)]
+use engine_core::error::FailureClass;
 use engine_core::{
     calendar::{Calendar, Event},
     ids::{AccountId, ProviderKey},
@@ -13,19 +17,17 @@ use engine_core::{
     sync::{JmapDataType, SyncScope, SyncState, SyncWindow},
 };
 
-// `Capabilities`, `EmailChunk` and `PageToken` are named only by the doc links here, but
-// rustdoc resolves those against the *module's* scope — a link that worked in the crate root
-// silently breaks on a move, and this crate denies rustdoc warnings, so the move would fail
-// the build rather than quietly produce dead links.
+// The names below are used only by doc links, but rustdoc resolves those against the
+// module's scope, and this crate denies rustdoc warnings — a broken link fails the build.
 #[allow(
     unused_imports,
     reason = "named by intra-doc links on the trait's methods"
 )]
 use crate::{Capabilities, EmailChunk, PageToken, PassMode, ReportControls, RsvpControls};
 use crate::{
-    ConnectionInfo, DEFAULT_DRAIN_PAGE, Draft, EmailStream, EventDeletion, EventDraft, EventEdit,
-    EventRsvp, EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt, MessageReport,
-    ProviderError, ProviderResult, ReportReceipt, ScopeSync, SubmissionReceipt, error::unsupported,
+    ConnectionInfo, Draft, EmailStream, EventDeletion, EventDraft, EventEdit, EventRsvp,
+    EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt, MessageReport, ProviderError,
+    ProviderResult, ReportReceipt, ScopeSync, SubmissionReceipt, error::unsupported,
 };
 
 /// A read/sync provider adapter for one account's mail (and, as slices land,
@@ -79,9 +81,8 @@ pub trait Provider: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns a [`ProviderError`] classified per
-    /// [`FailureClass`](engine_core::error::FailureClass): transport/auth/rate-limit/conflict/
-    /// invalid-state/needs-resync/permanent.
+    /// Returns a [`ProviderError`] classified per [`FailureClass`]:
+    /// transport/auth/rate-limit/conflict/invalid-state/needs-resync/permanent.
     async fn sync_mailboxes(
         &self,
         account: &AccountId,
@@ -103,21 +104,11 @@ pub trait Provider: Send + Sync {
 
     /// Streams one email sync pass since `cursor`, bounded by `window`, as
     /// incremental [`EmailChunk`]s — the paged primitive every mail adapter
-    /// implements.
-    ///
-    /// The two knobs it separates (`store-and-sync.md`):
-    /// - `fetch_batch` bounds each **network round trip** (an IMAP `UID FETCH` window, a JMAP
-    ///   `Email/get` page, a Graph `$top`); `0` means the adapter's protocol maximum.
-    /// - `chunk_size` bounds how many messages accumulate before a chunk is **yielded** — the
-    ///   streaming granularity a host commits and renders; `0` means one chunk per batch.
-    ///
-    /// A large `fetch_batch` with a small `chunk_size` gives *both* few round trips
-    /// *and* row-as-it-arrives commits. The returned [`EmailStream`] borrows `self`
-    /// and the arguments; the adapter's fetch advances only as the stream is polled
-    /// (backpressure). Each chunk carries a [`PassMode`] and an optional
-    /// [`advance_to`](EmailChunk::advance_to) checkpoint telling the orchestrator
-    /// how to apply and how far to advance the cursor, so a killed cold sync resumes
-    /// (`store-and-sync.md`).
+    /// implements. The two knobs (`fetch_batch` bounding each **network round
+    /// trip**, `chunk_size` each **yielded** chunk; `0` = the adapter's maximum /
+    /// one chunk per batch) and the chunk contract (apply [`PassMode`], resume from
+    /// [`advance_to`](EmailChunk::advance_to), backpressure) are specified in
+    /// `crate::stream`, the module that owns them (`store-and-sync.md`).
     ///
     /// Mail providers ([`Capabilities::mail`]) override this; the default yields a
     /// single classified `Err`, so a capability-checking caller never relies on it.
@@ -147,21 +138,13 @@ pub trait Provider: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns a [`ProviderError`] classified per
-    /// [`FailureClass`](engine_core::error::FailureClass).
+    /// Returns a [`ProviderError`] classified per [`FailureClass`].
     async fn sync_email(
         &self,
         account: &AccountId,
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Message>> {
-        crate::stream::drain_email(self.stream_email(
-            account,
-            cursor,
-            self.default_sync_window(),
-            DEFAULT_DRAIN_PAGE,
-            0,
-        ))
-        .await
+        crate::stream::drain_whole_scope(self, account, cursor).await
     }
 
     /// Sends `draft`: creates the message and submits it, filing the sent copy.
@@ -174,7 +157,7 @@ pub trait Provider: Send + Sync {
     /// # Errors
     ///
     /// Returns a classified [`ProviderError`]. The default returns
-    /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState).
+    /// [`FailureClass::InvalidState`].
     async fn submit_email(
         &self,
         account: &AccountId,
@@ -182,6 +165,39 @@ pub trait Provider: Send + Sync {
     ) -> ProviderResult<SubmissionReceipt> {
         let _ = (account, draft);
         Err(unsupported("mail submission"))
+    }
+
+    /// Submits `source`: the caller's **own final MIME bytes** — e.g. a rendered
+    /// message the host then signed or encrypted — sent **verbatim**, never
+    /// re-rendered by the adapter (contrast [`Provider::submit_email`], where the
+    /// adapter renders the `Draft`). A transport that files the Sent copy itself
+    /// files **the same bytes** — and a `Bcc` header inside the bytes reaches every
+    /// recipient: the caller that rendered them owns stripping what stays private.
+    ///
+    /// [`SubmissionReceipt::message_id`] is parsed from the bytes' own `Message-ID`
+    /// header, per the Write Contract of [`Provider::submit_email`]: the caller
+    /// stamps the id **before** submitting. Bytes with no `Message-ID` — or no
+    /// `From` to derive an envelope sender from, where the transport reads its
+    /// envelope off the bytes (SMTP) — are rejected.
+    ///
+    /// A transport that can carry caller-rendered bytes verbatim (IMAP/SMTP)
+    /// overrides this; one that re-renders from structured fields (JMAP) keeps the
+    /// rejecting default *even though it advertises [`Capabilities::submission`]* —
+    /// the capability covers [`Provider::submit_email`], not this; outbox-mediated
+    /// by the caller like it (`providers.md`).
+    ///
+    /// # Errors
+    ///
+    /// Returns a classified [`ProviderError`]: [`FailureClass::Permanent`] for
+    /// bytes this seam cannot send, otherwise [`Provider::submit_email`]'s
+    /// delivery classes; the default returns [`FailureClass::InvalidState`].
+    async fn submit_email_source(
+        &self,
+        account: &AccountId,
+        source: &[u8],
+    ) -> ProviderResult<SubmissionReceipt> {
+        let _ = (account, source);
+        Err(unsupported("mail submission from a rendered source"))
     }
 
     /// Files the sender's copy of an **already-delivered** message, repairing a submission
@@ -195,9 +211,8 @@ pub trait Provider: Send + Sync {
     ///
     /// # Errors
     ///
-    /// A classified [`ProviderError`] when the copy could not be filed; the caller may offer
-    /// the retry again. The default returns
-    /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState).
+    /// A classified [`ProviderError`] when the copy could not be filed; the caller
+    /// may offer the retry again. The default returns [`FailureClass::InvalidState`].
     async fn file_sent_copy(
         &self,
         account: &AccountId,
@@ -220,10 +235,8 @@ pub trait Provider: Send + Sync {
     /// # Errors
     ///
     /// Returns a classified [`ProviderError`]. A stale target — e.g. an IMAP UID
-    /// whose mailbox `UIDVALIDITY` has since changed — is
-    /// [`FailureClass::Conflict`](engine_core::error::FailureClass::Conflict)
-    /// (re-sync, then retry); the default returns
-    /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState).
+    /// whose mailbox `UIDVALIDITY` has since changed — is [`FailureClass::Conflict`]
+    /// (re-sync, then retry); the default returns [`FailureClass::InvalidState`].
     async fn edit_mail(
         &self,
         account: &AccountId,
@@ -250,10 +263,8 @@ pub trait Provider: Send + Sync {
     /// # Errors
     ///
     /// Returns a classified [`ProviderError`]. A stale target — e.g. an IMAP UID
-    /// whose mailbox `UIDVALIDITY` has since changed — is
-    /// [`FailureClass::Conflict`](engine_core::error::FailureClass::Conflict)
-    /// (re-sync, then retry); the default returns
-    /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState).
+    /// whose mailbox `UIDVALIDITY` has since changed — is [`FailureClass::Conflict`]
+    /// (re-sync, then retry); the default returns [`FailureClass::InvalidState`].
     async fn fetch_message_source(
         &self,
         account: &AccountId,
@@ -273,10 +284,10 @@ pub trait Provider: Send + Sync {
     /// # Errors
     ///
     /// Returns a classified [`ProviderError`].
-    /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState)
+    /// [`FailureClass::InvalidState`]
     /// for a verdict the transport cannot express (via [`ReportControls::accept`]); a
     /// stale target — an IMAP UID under a changed `UIDVALIDITY` — is
-    /// [`FailureClass::Conflict`](engine_core::error::FailureClass::Conflict), so the
+    /// [`FailureClass::Conflict`], so the
     /// caller re-syncs and retries.
     async fn report_message(
         &self,
@@ -311,7 +322,7 @@ pub trait Provider: Send + Sync {
     /// # Errors
     ///
     /// Returns a classified [`ProviderError`]; the default returns
-    /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState).
+    /// [`FailureClass::InvalidState`].
     async fn sync_calendars(
         &self,
         account: &AccountId,
@@ -327,7 +338,7 @@ pub trait Provider: Send + Sync {
     /// # Errors
     ///
     /// Returns a classified [`ProviderError`]; the default returns
-    /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState).
+    /// [`FailureClass::InvalidState`].
     async fn sync_events(
         &self,
         account: &AccountId,
@@ -352,9 +363,9 @@ pub trait Provider: Send + Sync {
     /// # Errors
     ///
     /// Returns a classified [`ProviderError`]. An event already existing at the target is a
-    /// [`FailureClass::Conflict`](engine_core::error::FailureClass::Conflict); the default
+    /// [`FailureClass::Conflict`]; the default
     /// returns
-    /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState).
+    /// [`FailureClass::InvalidState`].
     async fn create_event(
         &self,
         account: &AccountId,
@@ -383,12 +394,12 @@ pub trait Provider: Send + Sync {
     /// # Errors
     ///
     /// Returns a classified [`ProviderError`]. A guard failure — the server copy moved on —
-    /// is [`FailureClass::Conflict`](engine_core::error::FailureClass::Conflict): refetch,
+    /// is [`FailureClass::Conflict`]: refetch,
     /// re-apply the edit to the fresh base, resubmit; **never** blind-retry. A patch that
     /// would change the event's time *form* (silently converting a zoned event to a UTC
     /// instant, or an all-day event to a timed one) is rejected, not converted. The default
     /// returns
-    /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState).
+    /// [`FailureClass::InvalidState`].
     async fn patch_event(
         &self,
         account: &AccountId,
@@ -411,9 +422,9 @@ pub trait Provider: Send + Sync {
     /// # Errors
     ///
     /// Returns a classified [`ProviderError`]. A guard failure is
-    /// [`FailureClass::Conflict`](engine_core::error::FailureClass::Conflict); an adapter
+    /// [`FailureClass::Conflict`]; an adapter
     /// with no document verb returns
-    /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState), as
+    /// [`FailureClass::InvalidState`], as
     /// does the default.
     async fn put_event(
         &self,
@@ -442,11 +453,11 @@ pub trait Provider: Send + Sync {
     /// # Errors
     ///
     /// Returns a classified [`ProviderError`]. A guard failure is
-    /// [`FailureClass::Conflict`](engine_core::error::FailureClass::Conflict) — refetch and
+    /// [`FailureClass::Conflict`] — refetch and
     /// re-answer, **never** blind-retry. An event with no `ATTENDEE` for that address, or a
     /// request for a control this transport does not honour (a `comment`, or
     /// `notify_organizer: false`, against [`RsvpControls`]), is
-    /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState) —
+    /// [`FailureClass::InvalidState`] —
     /// refused rather than silently dropped. The default returns the same.
     async fn rsvp_event(
         &self,
@@ -474,9 +485,9 @@ pub trait Provider: Send + Sync {
     /// # Errors
     ///
     /// Returns a classified [`ProviderError`]; a guard failure is
-    /// [`FailureClass::Conflict`](engine_core::error::FailureClass::Conflict), and the
+    /// [`FailureClass::Conflict`], and the
     /// default returns
-    /// [`FailureClass::InvalidState`](engine_core::error::FailureClass::InvalidState).
+    /// [`FailureClass::InvalidState`].
     async fn delete_event(
         &self,
         account: &AccountId,

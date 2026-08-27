@@ -21,13 +21,13 @@
 use std::collections::BTreeSet;
 
 use engine_core::{
-    ids::ProviderKey,
+    ids::{AccountId, ProviderKey},
     mail::{MailStateChange, Message},
     sync::{SyncState, SyncUpdate},
 };
 use futures_core::stream::Stream;
 
-use crate::{ProviderError, ProviderResult, ScopeSync};
+use crate::{Provider, ProviderError, ProviderResult, ScopeSync};
 
 /// How the orchestrator must apply a pass's chunks — set by the adapter, constant
 /// across every chunk of one pass.
@@ -327,6 +327,25 @@ pub(crate) async fn drain_email(mut stream: EmailStream<'_>) -> ProviderResult<S
         PassMode::Additive => SyncUpdate::delta(changed, removed).with_patched(patched),
     };
     Ok(ScopeSync::new(update, next_cursor))
+}
+
+/// Drains a provider's whole email scope in one [`ScopeSync`] under the provider's
+/// own [`Provider::default_sync_window`] and the default drain page — the body of
+/// [`Provider::sync_email`]'s convenience default, kept here beside the drain
+/// machinery it drives (the trait file holds the seam, not the implementation).
+pub(crate) async fn drain_whole_scope<P: Provider + ?Sized>(
+    provider: &P,
+    account: &AccountId,
+    cursor: Option<&SyncState>,
+) -> ProviderResult<ScopeSync<Message>> {
+    drain_email(provider.stream_email(
+        account,
+        cursor,
+        provider.default_sync_window(),
+        crate::DEFAULT_DRAIN_PAGE,
+        0,
+    ))
+    .await
 }
 
 #[cfg(test)]
