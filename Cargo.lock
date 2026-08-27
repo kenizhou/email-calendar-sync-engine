@@ -609,6 +609,7 @@ dependencies = [
  "engine-mime",
  "engine-provider",
  "engine-recurrence",
+ "engine-rfc5322",
  "engine-store",
  "futures-util",
  "rusqlite",

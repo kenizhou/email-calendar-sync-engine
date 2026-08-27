@@ -39,7 +39,7 @@ use super::{
     AccountId, AccountProgress, IgnoreCommits, StreamTuning, SyncCommit, SyncObserver,
     create_calendar_event, delete_calendar_event, edit_mail, expand_calendar_horizon,
     patch_calendar_event, put_calendar_document, reconcile_calendar_events, refresh_folders,
-    rsvp_calendar_event, submit_mail, sync_calendar, sync_mail,
+    rsvp_calendar_event, submit_mail, submit_mail_source, sync_calendar, sync_mail,
 };
 
 mod calendar_sync;
@@ -237,6 +237,32 @@ impl Provider for FakeMail {
             Ok(SubmissionReceipt::filed(
                 ProviderKey::new("sent-1").unwrap(),
                 draft.message_id.clone(),
+            ))
+        }
+    }
+
+    async fn submit_email_source(
+        &self,
+        _account: &AccountId,
+        source: &[u8],
+        _recipients: &[String],
+    ) -> ProviderResult<SubmissionReceipt> {
+        // The same delivery faults as the draft path — the seam shares its outcome
+        // handling — but the receipt's id is read back out of the bytes, exactly as
+        // the real transports do (there is no structured field to echo).
+        if self.fails(Fault::AmbiguousSubmit) {
+            Err(ProviderError::needs_confirmation(
+                "post-DATA acknowledgement lost",
+            ))
+        } else if self.fails(Fault::Submit) {
+            Err(ProviderError::rate_limited("slow down", None))
+        } else {
+            let message_id = engine_rfc5322::parse_message_id(source).ok_or_else(|| {
+                ProviderError::permanent("the submitted bytes carry no Message-ID")
+            })?;
+            Ok(SubmissionReceipt::filed(
+                ProviderKey::new("sent-1").unwrap(),
+                message_id,
             ))
         }
     }

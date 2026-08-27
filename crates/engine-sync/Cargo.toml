@@ -13,6 +13,9 @@ engine-store = { workspace = true }
 engine-provider = { workspace = true }
 engine-recurrence = { workspace = true }
 engine-mime = { workspace = true }
+# `parse_message_id` reads the `Message-ID` out of a caller-rendered submission —
+# the id the source path's idempotency and resource keys are minted from.
+engine-rfc5322 = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

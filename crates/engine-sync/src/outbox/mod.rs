@@ -35,6 +35,7 @@ use engine_core::{
 use engine_store::{LeaseRequest, LeasedPendingOp, Store, WorkerId};
 pub use mail::{
     MailEditOutcome, ReportOutcome, SubmitOutcome, edit_mail, report_message, submit_mail,
+    submit_mail_source,
 };
 
 use crate::SyncError;

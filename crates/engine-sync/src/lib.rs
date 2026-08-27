@@ -55,8 +55,9 @@ pub enum SyncError {
     /// The store rejected or could not commit the apply.
     #[error("store error: {0}")]
     Store(#[from] StoreError),
-    /// An outbox bookkeeping failure (payload encoding, or a just-enqueued op that
-    /// was not claimable).
+    /// An outbox bookkeeping failure (a submission refused before its enqueue — e.g.
+    /// rendered bytes with no `Message-ID` — payload encoding, or a just-enqueued op
+    /// that was not claimable, which is how a resolved duplicate surfaces).
     #[error("outbox error: {0}")]
     Outbox(String),
     /// A stored object payload could not be deserialized back into its domain type
@@ -338,7 +339,7 @@ pub use outbox::{
     CalendarWriteOutcome, ContactWriteOutcome, MailEditOutcome, ReportOutcome, SubmitOutcome,
     create_calendar_event, create_contact, delete_calendar_event, delete_contact, edit_mail,
     patch_calendar_event, patch_contact, put_calendar_document, report_message,
-    rsvp_calendar_event, submit_mail,
+    rsvp_calendar_event, submit_mail, submit_mail_source,
 };
 pub use progress::{AccountProgress, ProgressSnapshot};
 pub use stream::StreamTuning;
