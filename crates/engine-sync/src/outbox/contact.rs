@@ -182,9 +182,9 @@ async fn resolve<S: Store>(
 }
 
 /// Executes one claimed contact create: the provider call the `create_contact`
-/// verb names. The execution half the inline driver runs and
-/// [`execute_claimed`](super::execute::execute_claimed) replays; outcome
-/// classification and recording stay with the caller.
+/// verb names. The execution half the inline driver runs and the contact
+/// dispatcher ([`execute_claimed_contact`](super::execute::execute_claimed_contact))
+/// replays; outcome classification and recording stay with the caller.
 pub(crate) async fn execute_create_contact<P: ContactsProvider>(
     provider: &P,
     account: &AccountId,
@@ -196,7 +196,10 @@ pub(crate) async fn execute_create_contact<P: ContactsProvider>(
 /// Executes one claimed contact patch: the provider call the `patch_contact`
 /// verb names, applied to `base` — the card as the caller read it on the inline
 /// path, re-read from the store on a replay (the intent deliberately carries
-/// only the change and its target).
+/// only the change and its target). The execution half the inline driver runs
+/// and the contact dispatcher
+/// ([`execute_claimed_contact`](super::execute::execute_claimed_contact))
+/// replays; outcome classification and recording stay with the caller.
 pub(crate) async fn execute_patch_contact<P: ContactsProvider>(
     provider: &P,
     account: &AccountId,
@@ -209,7 +212,9 @@ pub(crate) async fn execute_patch_contact<P: ContactsProvider>(
 /// Executes one claimed contact delete: the provider call the `delete_contact`
 /// verb names. `base` arrives exactly as on the patch half; an already-absent
 /// card is the provider verb's own success, which the replay path honors
-/// without a call.
+/// without a call. The execution half the inline driver runs and the contact
+/// dispatcher ([`execute_claimed_contact`](super::execute::execute_claimed_contact))
+/// replays; outcome classification and recording stay with the caller.
 pub(crate) async fn execute_delete_contact<P: ContactsProvider>(
     provider: &P,
     account: &AccountId,

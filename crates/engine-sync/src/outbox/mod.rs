@@ -16,13 +16,16 @@
 //!
 //! These are the thin per-op drivers — one op, claimed and resolved inline as
 //! enqueue-and-claim, the verb's execution half, and a mark. That middle half
-//! is shared: [`execute_claimed`](execute::execute_claimed) dispatches on the
-//! claimed op's tagged intent alone, which is what lets the background worker
-//! that drains the outbox replay ops the inline driver never finished — the
-//! later orchestrator.
+//! is shared: the dispatchers ([`execute_claimed_mail`](execute::execute_claimed_mail)
+//! and [`execute_claimed_contact`](execute::execute_claimed_contact)) dispatch
+//! on the claimed op's tagged intent alone, which is what lets the outbox
+//! drainer ([`drain_mail_ops`](drain::drain_mail_ops) /
+//! [`drain_contact_ops`](drain::drain_contact_ops)) replay ops the inline
+//! driver never finished.
 
 mod calendar;
 mod contact;
+pub(crate) mod drain;
 pub(crate) mod execute;
 mod intent;
 mod mail;
@@ -34,6 +37,7 @@ pub use calendar::{
     put_calendar_document, rsvp_calendar_event,
 };
 pub use contact::{ContactWriteOutcome, create_contact, delete_contact, patch_contact};
+pub use drain::{drain_contact_ops, drain_mail_ops};
 use engine_core::{
     ids::AccountId,
     write::{PendingOp, PendingOutcome},
@@ -102,10 +106,12 @@ async fn record_failure<S: Store>(
 
 /// The outcome a failed write with no ambiguous case resolves to: a plain
 /// classified `Failed` with its backoff hint. The one classifier the inline
-/// drivers' `record_failure` and the drainer's
-/// [`execute_claimed`](execute::execute_claimed) share, so a replayed op and
-/// an inline one can never disagree; only a submission has an ambiguous case,
-/// and [`send_failure_outcome`](mail::send_failure_outcome) serves it.
+/// drivers' `record_failure` and the drainer's dispatch halves
+/// ([`execute_claimed_mail`](execute::execute_claimed_mail),
+/// [`execute_claimed_contact`](execute::execute_claimed_contact)) share, so a
+/// replayed op and an inline one can never disagree; only a submission has an
+/// ambiguous case, and [`send_failure_outcome`](mail::send_failure_outcome)
+/// serves it.
 pub(crate) fn write_failure_outcome(err: &engine_provider::ProviderError) -> PendingOutcome {
     PendingOutcome::Failed {
         class: err.class(),

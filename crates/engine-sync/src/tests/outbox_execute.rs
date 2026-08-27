@@ -1,10 +1,10 @@
-//! Direct execute-half tests: the dispatch entry a drainer replays a claimed op
-//! through, exercised with no inline driver above it. A hand-enqueued,
-//! hand-claimed op plus the shared fakes reproduce the drainer's exact inputs —
-//! an ambiguous send parks as `NeedsConfirmation`, a calendar op is refused
-//! without any accounting, an undecodable payload is a terminal error, and a
-//! contact delete whose base card is already gone from the store completes
-//! idempotently.
+//! Direct execute-half tests: the two dispatch entries a drainer replays a
+//! claimed op through, exercised with no inline driver above it. A
+//! hand-enqueued, hand-claimed op plus the shared fakes reproduce the
+//! drainer's exact inputs — an ambiguous send parks as `NeedsConfirmation`, a
+//! foreign-scope verb is classified out of scope without any accounting, an
+//! undecodable payload is classified poison, and a contact delete whose base
+//! card is already gone from the store completes idempotently.
 
 use engine_core::{
     calendar::Event,
@@ -13,17 +13,11 @@ use engine_core::{
     time::{CalendarDateTime, LocalDateTime},
     write::PendingOutcome,
 };
-use engine_provider::{ContactsProvider, EventDeletion};
+use engine_provider::EventDeletion;
 use engine_store::LeasedPendingOp;
 
 use super::*;
-use crate::outbox::execute::execute_claimed;
-
-/// The dispatch entry serves every verb, so the fake must carry the contacts
-/// surface too. The trait's defaults error, which no mail-verb test here
-/// reaches — the delete test never reaches the provider at all.
-#[async_trait::async_trait]
-impl ContactsProvider for FakeMail {}
+use crate::outbox::execute::{ExecuteFailure, execute_claimed_contact, execute_claimed_mail};
 
 /// Enqueues `payload` and claims it back — the exact state a drainer holds when
 /// it calls the execute half: a lease-wrapped op whose payload is the only
@@ -60,9 +54,9 @@ async fn hand_claimed(
 
 #[tokio::test]
 async fn an_ambiguous_hand_claimed_submit_parks_for_confirmation() {
-    // The never-blind-retry red line, driven through the dispatch entry alone:
-    // the same NeedsConfirmation parking the inline driver records — proved
-    // here without an inline driver in sight.
+    // The never-blind-retry red line, driven through the mail dispatch entry
+    // alone: the same NeedsConfirmation parking the inline driver records —
+    // proved here without an inline driver in sight.
     let provider = FakeMail::new(vec![], vec![]).failing(Fault::AmbiguousSubmit);
     let store = SqliteStore::open_in_memory(clock()).unwrap();
     let leased = hand_claimed(
@@ -76,7 +70,7 @@ async fn an_ambiguous_hand_claimed_submit_parks_for_confirmation() {
     )
     .await;
 
-    let outcome = execute_claimed(&provider, &store, &account(), &leased)
+    let outcome = execute_claimed_mail(&provider, &account(), &leased)
         .await
         .unwrap();
     assert!(matches!(outcome, PendingOutcome::NeedsConfirmation { .. }));
@@ -99,7 +93,7 @@ async fn a_hand_claimed_submit_succeeds_and_resolves_to_the_sent_key() {
     )
     .await;
 
-    let outcome = execute_claimed(&provider, &store, &account(), &leased)
+    let outcome = execute_claimed_mail(&provider, &account(), &leased)
         .await
         .unwrap();
     assert_eq!(
@@ -111,10 +105,11 @@ async fn a_hand_claimed_submit_succeeds_and_resolves_to_the_sent_key() {
 }
 
 #[tokio::test]
-async fn a_calendar_op_is_refused_without_any_accounting() {
+async fn a_calendar_op_is_classified_out_of_scope_without_any_accounting() {
     // Calendar replay needs a re-fetched base and conflict recovery this phase
-    // does not build; the dispatcher refuses, and the refusal resolves nothing
-    // — the op stays lease-held for the caller's accounting.
+    // does not build; the dispatcher classifies the verb out of scope, and that
+    // classification resolves nothing — the op stays lease-held for the
+    // caller's accounting (the drain's skip).
     let provider = FakeMail::new(vec![], vec![]);
     let store = SqliteStore::open_in_memory(clock()).unwrap();
     let leased = hand_claimed(
@@ -128,26 +123,26 @@ async fn a_calendar_op_is_refused_without_any_accounting() {
     )
     .await;
 
-    let err = execute_claimed(&provider, &store, &account(), &leased)
+    let failure = execute_claimed_mail(&provider, &account(), &leased)
         .await
         .unwrap_err();
-    match err {
-        crate::SyncError::Outbox(detail) => {
-            assert_eq!(detail, "calendar ops are not replayable in this phase");
-        }
-        other => panic!("expected an outbox refusal, got {other:?}"),
-    }
+    assert!(
+        matches!(failure, ExecuteFailure::OutOfScope),
+        "got: {failure:?}"
+    );
     assert_eq!(
         store.pending_op_state(leased.id).await.unwrap(),
         Some(PendingOpState::InFlight),
-        "a refused op must not be resolved by the dispatcher"
+        "an out-of-scope op must not be resolved by the dispatcher"
     );
 }
 
 #[tokio::test]
-async fn an_undecodable_payload_is_a_terminal_error() {
+async fn an_undecodable_payload_is_classified_poison() {
     // A payload that does not decode as a tagged intent cannot be executed;
-    // the dispatcher reports it and resolves nothing — the caller decides.
+    // the dispatcher classifies it poison with the decode detail — the caller
+    // (the drain) decides the accounting, which for poison is a terminal
+    // `Failed` mark.
     let provider = FakeMail::new(vec![], vec![]);
     let store = SqliteStore::open_in_memory(clock()).unwrap();
     let leased = hand_claimed(
@@ -158,18 +153,19 @@ async fn an_undecodable_payload_is_a_terminal_error() {
     )
     .await;
 
-    let err = execute_claimed(&provider, &store, &account(), &leased)
+    let failure = execute_claimed_mail(&provider, &account(), &leased)
         .await
         .unwrap_err();
-    match err {
-        crate::SyncError::Outbox(detail) => {
+    match failure {
+        ExecuteFailure::Undecodable(detail) => {
             assert!(detail.contains("undecodable"), "got: {detail}");
         }
-        other => panic!("expected an outbox error, got {other:?}"),
+        other => panic!("expected poison, got {other:?}"),
     }
     assert_eq!(
         store.pending_op_state(leased.id).await.unwrap(),
-        Some(PendingOpState::InFlight)
+        Some(PendingOpState::InFlight),
+        "the dispatcher resolves nothing; the drain's mark is the accounting"
     );
 }
 
@@ -193,7 +189,7 @@ async fn a_delete_of_an_already_gone_card_completes_idempotently() {
     )
     .await;
 
-    let outcome = execute_claimed(&provider, &store, &account(), &leased)
+    let outcome = execute_claimed_contact(&provider, &store, &account(), &leased)
         .await
         .unwrap();
     assert_eq!(

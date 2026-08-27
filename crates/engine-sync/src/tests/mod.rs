@@ -14,6 +14,7 @@ use std::{
 
 use engine_core::{
     calendar::{Calendar, Event, Frequency, Recurrence, RecurrenceBound, RecurrenceRule},
+    contact::ContactDraft,
     ids::{CalendarId, EventId, MailboxId, MessageId, MessageIdHeader, ProviderKey, Uid},
     mail::{EmailAddress, MailStateChange, Mailbox, MailboxRole, Message},
     membership::Memberships,
@@ -24,10 +25,10 @@ use engine_core::{
     write::{IdempotencyKey, PendingOp, ResourceKey, SubmitPayload},
 };
 use engine_provider::{
-    Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, EventDeletion, EventDraft,
-    EventEdit, EventPatch, EventRsvp, EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt,
-    OverrideSurvival, PatchTarget, Provider, ProviderError, ProviderResult, RsvpResponse,
-    ScopeSync, SubmissionReceipt, WriteGuard,
+    Capabilities, ConnectionInfo, ContactWriteReceipt, ContactsProvider, Draft, EmailChunk,
+    EmailStream, EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, EventWrite,
+    EventWriteReceipt, MailEdit, MailEditReceipt, OverrideSurvival, PatchTarget, Provider,
+    ProviderError, ProviderResult, RsvpResponse, ScopeSync, SubmissionReceipt, WriteGuard,
 };
 use engine_recurrence::Horizon;
 use engine_store::{
@@ -45,6 +46,7 @@ use super::{
 mod calendar_sync;
 mod calendar_write;
 mod contact_sync;
+mod drain;
 mod mail_account;
 mod mail_edit;
 mod mail_sync;
@@ -389,6 +391,22 @@ impl Provider for FakeMail {
             return Err(ProviderError::conflict("UIDVALIDITY changed"));
         }
         Ok(MailEditReceipt::new(edit.target().clone()))
+    }
+}
+
+/// The fake carries the contacts surface too, so the outbox dispatch and drain
+/// tests can drive contact verbs through it: a create returns a canned receipt
+/// echoing the draft's card id (the one verb a happy-path contact drive needs).
+/// Every other contact verb keeps the trait's erroring defaults, which no test
+/// here should reach — the gone-card paths resolve without a provider call.
+#[async_trait::async_trait]
+impl ContactsProvider for FakeMail {
+    async fn create_contact(
+        &self,
+        _account: &AccountId,
+        draft: &ContactDraft,
+    ) -> ProviderResult<ContactWriteReceipt> {
+        Ok(ContactWriteReceipt::new(draft.card.id.clone()))
     }
 }
 

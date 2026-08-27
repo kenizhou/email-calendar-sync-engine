@@ -64,7 +64,7 @@ where
     S: Store,
 {
     // Durable record first: the intent in a tagged envelope, idempotent by
-    // Message-ID. The `verb` tag is what a future drainer dispatches on. The
+    // Message-ID. The `verb` tag is what the drainer dispatches on. The
     // same value feeds the execution half, so the inline path and a replay
     // send literally the same thing.
     let submit = SubmitPayload::Draft(draft.clone());
@@ -273,7 +273,8 @@ pub(super) fn send_failure_outcome(err: &ProviderError) -> PendingOutcome {
 /// names, dispatching on the payload's own `kind` tag — render-and-send a
 /// draft, or re-send the caller's bytes verbatim to their recorded envelope
 /// (empty set = derive mode). The execution half both submission drivers run
-/// inline and [`execute_claimed`](super::execute::execute_claimed) replays;
+/// inline and the mail dispatcher
+/// ([`execute_claimed_mail`](super::execute::execute_claimed_mail)) replays;
 /// outcome classification and recording stay with the caller.
 pub(crate) async fn execute_submit_mail<P: Provider>(
     provider: &P,
@@ -461,9 +462,9 @@ where
 }
 
 /// Executes one claimed mail edit: the provider call the `edit_mail` verb names.
-/// The execution half the inline driver runs and
-/// [`execute_claimed`](super::execute::execute_claimed) replays; outcome
-/// classification and recording stay with the caller.
+/// The execution half the inline driver runs and the mail dispatcher
+/// ([`execute_claimed_mail`](super::execute::execute_claimed_mail)) replays;
+/// outcome classification and recording stay with the caller.
 pub(crate) async fn execute_edit_mail<P: Provider>(
     provider: &P,
     account: &AccountId,
@@ -473,9 +474,9 @@ pub(crate) async fn execute_edit_mail<P: Provider>(
 }
 
 /// Executes one claimed message report: the provider call the `report_message`
-/// verb names. The execution half the inline driver runs and
-/// [`execute_claimed`](super::execute::execute_claimed) replays; outcome
-/// classification and recording stay with the caller.
+/// verb names. The execution half the inline driver runs and the mail
+/// dispatcher ([`execute_claimed_mail`](super::execute::execute_claimed_mail))
+/// replays; outcome classification and recording stay with the caller.
 pub(crate) async fn execute_report_message<P: Provider>(
     provider: &P,
     account: &AccountId,
