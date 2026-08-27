@@ -44,6 +44,11 @@ impl EasClient {
             .send()
             .await?;
 
+        // The OPTIONS exchange is EAS's session-discovery step — the JMAP/CalDAV
+        // connect precedent — so it is the first response whose HTTP version the
+        // transport observes (most-recent-wins, `ObservedHttpVersion`).
+        self.http_version.record(response.version());
+
         let headers = response.headers();
         let versions = headers
             .get("MS-ASProtocolVersions")

@@ -8,6 +8,14 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+# The adapter skeleton implements `engine_provider::Provider` (connection
+# facts + the EAS scope overrides), over the engine's ids and sync scopes.
+engine-core = { workspace = true }
+# `http` enables `ObservedHttpVersion` / `HttpVersion::from_http` — the one
+# place a reqwest response's version maps onto the neutral
+# `ConnectionInfo::http_version`, the same feature the JMAP/CalDAV/Graph
+# transports hold it for.
+engine-provider = { workspace = true, features = ["http"] }
 # One TLS trust policy for every provider (`docs/agent-guidance/tls.md`): the
 # transport builds its `reqwest::Client` from the host-supplied `TlsClientConfig`,
 # exactly like Graph/JMAP. `reqwest` enables the preconfigured-client builder

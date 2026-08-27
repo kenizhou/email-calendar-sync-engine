@@ -171,6 +171,10 @@ impl EasClient {
             request = request.timeout(d);
         }
         let response = request.send().await?;
+        // Every response through this single command funnel refreshes the
+        // transport's observed HTTP version (most-recent-wins,
+        // `ObservedHttpVersion`) — the JMAP/CalDAV/Graph send-funnel seam.
+        self.http_version.record(response.version());
 
         let status = response.status().as_u16();
 

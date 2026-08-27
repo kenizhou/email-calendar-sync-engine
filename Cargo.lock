@@ -1649,6 +1649,8 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64",
+ "engine-core",
+ "engine-provider",
  "engine-tls",
  "env_logger",
  "hex",

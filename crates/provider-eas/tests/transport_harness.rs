@@ -32,6 +32,8 @@ mod harness;
 #[path = "transport_harness/server.rs"]
 mod server;
 
+#[path = "transport_harness/adapter_flow.rs"]
+mod adapter_flow;
 #[path = "transport_harness/autodiscover_flow.rs"]
 mod autodiscover_flow;
 #[path = "transport_harness/codec_and_parse.rs"]

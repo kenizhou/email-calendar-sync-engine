@@ -21,6 +21,7 @@ mod settings;
 mod sync;
 mod transport;
 
+use engine_provider::ObservedHttpVersion;
 use engine_tls::TlsClientConfig;
 
 use crate::{
@@ -148,6 +149,13 @@ pub struct EasClient {
     /// successful round to persist the adopted endpoint into
     /// `accounts.eas_url`, mirroring the policy-key persistence.
     adopted_url: Option<String>,
+    /// The HTTP version most recently observed on this transport — the fourth
+    /// HTTP adapter's hold of the JMAP/CalDAV/Graph seam
+    /// (`ConnectionInfo::http_version`; `connection.rs` there owns the
+    /// most-recent-wins semantics). `Arc` so the clones a per-folder adapter
+    /// fan-out shares all observe through one funnel: every response
+    /// `options()` and `send_command_no_retry` receive is recorded here.
+    http_version: std::sync::Arc<ObservedHttpVersion>,
 }
 
 /// Manual redacting Debug — the `EasAuth` precedent: `config` carries the
@@ -160,6 +168,7 @@ impl std::fmt::Debug for EasClient {
             .field("http", &self.http)
             .field("hierarchy_sync_key", &self.hierarchy_sync_key)
             .field("adopted_url", &self.adopted_url)
+            .field("http_version", &self.http_version.get())
             .finish()
     }
 }
@@ -193,6 +202,7 @@ impl EasClient {
             http,
             hierarchy_sync_key: String::new(),
             adopted_url: None,
+            http_version: std::sync::Arc::new(ObservedHttpVersion::default()),
         })
     }
 }

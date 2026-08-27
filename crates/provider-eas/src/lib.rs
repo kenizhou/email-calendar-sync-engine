@@ -4,6 +4,9 @@
 //! Standalone crate: no kylins dependencies. Modules land here slice by
 //! slice (see docs/superpowers/plans/2026-08-12-m0-m3-provider-eas-crate.md).
 
+/// The `Provider` trait adapter over the client (skeleton: connection
+/// facts + the EAS scope overrides; verbs land slice by slice).
+pub mod adapter;
 /// Auth payloads (Basic header vs OAuth bearer) the transport sends.
 pub mod auth;
 /// Autodiscover ([MS-ASAUTOD]): resolve a user's EAS endpoint URL.
@@ -32,3 +35,5 @@ pub mod status;
 pub mod types;
 /// The MS-ASWBXML codec (serializer, deserializer, code pages, tags).
 pub mod wbxml;
+
+pub use adapter::{CLIENT_KNOWN_PROTOCOL_VERSIONS, EasAdapter};

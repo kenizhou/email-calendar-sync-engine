@@ -1,19 +1,23 @@
 # EAS (Exchange ActiveSync) Client Guidance
 
-> **Protocol client landed; adapter pending.** The per-verb verdicts below come
-> from the trait-shape spike (Plan B Task 3, 2026-08-24) and are stable. The
-> relocation series has since brought the crate to engine quality — edition 2024,
-> workspace lints, module split under the 500-line cap, the engine-tls transport,
-> normalized live gating — but nothing in it implements `engine_provider` traits
-> yet: everything marked *fork decision* or *P2* stays unimplemented until Plan
-> C/P2 says otherwise. Update this file as the adapter lands — it is intended to
-> become authoritative for `provider-eas`, peer of `imap-smtp.md` / `graph.md`.
+> **Protocol client landed; adapter skeleton stood (connection facts + scopes),
+> verbs pending.** The per-verb verdicts below come from the trait-shape spike
+> (Plan B Task 3, 2026-08-24) and are stable. The relocation series has since
+> brought the crate to engine quality — edition 2024, workspace lints, module
+> split under the 500-line cap, the engine-tls transport, normalized live gating —
+> and `EasAdapter` (`src/adapter/`) now implements `engine_provider::Provider`'s
+> `connection_info` and the EAS scope overrides, advertising `Capabilities::none()`
+> until each verb slice lands and flips its own bit (the verb ladder — a bit never
+> precedes its verb). Everything marked *fork decision* or *P2* stays unimplemented
+> until Plan C/P2 says otherwise. Update this file as the adapter's verbs land —
+> it is intended to become authoritative for `provider-eas`, peer of
+> `imap-smtp.md` / `graph.md`.
 
 This document covers the **Exchange ActiveSync 16.1 (negotiated down to 12.0) mail +
 calendar + contacts provider** — the `provider-eas` crate imported from the Kylins
 client (upstream commit `0dc611d`, engine import commit `d961954`) and since
-retrofitted to engine standards: a standalone protocol client with no
-`engine_provider` dependency yet. Read it alongside `providers.md` (the Provider
+retrofitted to engine standards: a protocol client plus its `Provider` adapter
+skeleton. Read it alongside `providers.md` (the Provider
 Contract), `store-and-sync.md` (scopes/cursors/apply), `tls.md` (trust policy), and
 the spike findings in the Kylins repo
 (`docs/superpowers/research/p0-eas-trait-spike.md`), which carries the full evidence
@@ -29,9 +33,15 @@ table behind every verdict here.
   (status classification), `provision.rs`, `auth.rs`, `autodiscover/`, `types/`
   (wire-shaped request/result structs), plus `calendar/` / `calendar_write/` /
   `contacts/` (class-typed conversion) and `meeting_uid.rs` / `multipart.rs`.
-- It is **not yet an adapter**: nothing in it implements `Provider`,
-  `ContactsProvider`, or `Watch`. The spike's job was to decide whether it *can*
-  without engine API changes. Answer: **one required engine change (new
+  `adapter/` holds the `Provider` seam: `EasAdapter`, bound to one folder per the
+  IMAP/Graph precedent, with `negotiate()` as the connection-time OPTIONS
+  exchange (protocol version negotiated, applied to the client's
+  `MS-ASProtocolVersion`, held adapter-side — never `ConnectionInfo`).
+- The adapter **skeleton** implements `connection_info` and the mail scope
+  overrides; no verb is implemented yet (`ContactsProvider` and `Watch` not
+  started). Capabilities follow the verb ladder: `none()` until each slice lands.
+  The spike's job was to decide whether the verbs *can* map without engine API
+  changes. Answer: **one required engine change (new
   `SyncScope` variants — since landed, see the fork-decision records), everything
   else maps within the existing trait surface.**
 
@@ -198,8 +208,8 @@ document; this is the summary.
 
 | Trait verb | EAS mapping | Verdict |
 | --- | --- | --- |
-| `connection_info` | composed post-connect (OPTIONS + Provision + first FolderSync); caps static thereafter; `http_version` from the shared client; `concurrent_fetches` from a per-server ceiling | no gap |
-| `mailbox_scope` / `email_scope` | FolderSync hierarchy scope + per-folder Sync scope | **landed**: `SyncScope::EasFolderList` / `EasFolder` (+ `EasCalendarList`/`EasCalendar` and `EasContactList`/`EasContact` siblings), exactly as IMAP (`ImapMailboxList`/`ImapMailbox`) and Graph (`GraphFolderList`/`GraphFolder`) did; the adapter still has to override the `*_scope` methods to return them |
+| `connection_info` | **landed** (skeleton): composed per call — caps from the verb ladder (`none()` until each verb slice lands), `http_version` from the transport's `ObservedHttpVersion` (recorded by `options()` and every command send, shared across client clones, most-recent-wins; `None` before the `negotiate` OPTIONS first contact — the JMAP/CalDAV connect-time precedent), `concurrent_fetches` the default 1 until a measured per-server ceiling exists | no gap |
+| `mailbox_scope` / `email_scope` | **landed** (skeleton): the adapter returns `SyncScope::EasFolderList` / `EasFolder` (+ `EasCalendarList`/`EasCalendar` and `EasContactList`/`EasContact` siblings exist in `engine-core` for the calendar/contacts slices, whose id bindings differ), exactly as IMAP (`ImapMailboxList`/`ImapMailbox`) and Graph (`GraphFolderList`/`GraphFolder`) did | no gap |
 | `sync_mailboxes` | `FolderSync`; hierarchy sync key is the cursor; status 9 → `needs_resync` → bootstrap `"0"` snapshot | no gap (JMAP `container_sync` is the code precedent) |
 | `stream_email` | Sync class Email; cursor = collection sync key (`None` → `"0"`); per-round chunks are `Additive` with `advance_to` = rotated key; status 3 restarts the pass in `Reconcile` mode | no gap (`PassMode::Reconcile` matches SyncKey invalidation cleanly — JMAP `cannotCalculateChanges` recovery is the precedent) |
 | `default_sync_window` / `SyncWindow` | `FilterType` day-ladder (coarse) + `admits` tighten | no gap (mapping note) |
@@ -226,8 +236,9 @@ for the full table):
    `engine-core` (`EasFolderList`/`EasFolder`, `EasCalendarList`/`EasCalendar`,
    `EasContactList`/`EasContact`, in `engine-core/src/sync/scope.rs`; member
    scopes carry the folder ServerId as a `MailboxId`/`CalendarId`/`AddressBookId`
-   exactly as the sibling families do). Remaining adapter work: override the
-   `*_scope` trait methods to return them. Survey: every non-JMAP provider
+   exactly as the sibling families do). The adapter's mail `*_scope` overrides
+   now return them; the calendar/contacts overrides land with their adapter
+   slices. Survey: every non-JMAP provider
    (IMAP, Graph, Gmail, CalDAV/CardDAV) added its own variants; EAS is the sixth
    and the pattern is mechanical.
 2. **[Optional, deferred] `Provider::watch()` accessor** — there is no trait seam

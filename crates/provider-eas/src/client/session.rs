@@ -54,6 +54,36 @@ impl EasClient {
         self.adopted_url.as_deref()
     }
 
+    /// The HTTP protocol version most recently observed on this transport,
+    /// or `None` before any response — the fourth HTTP adapter's hold of the
+    /// seam every JMAP/CalDAV/Graph client already exposes for
+    /// `ConnectionInfo::http_version`. Recorded by `options()` and every
+    /// command send, shared across this client's cheap clones (the
+    /// per-folder adapter fan-out), most-recent-wins.
+    pub fn http_version(&self) -> Option<engine_provider::HttpVersion> {
+        self.http_version.get()
+    }
+
+    /// The protocol version this client puts in the `MS-ASProtocolVersion`
+    /// header of every command — the config default ("16.1") until
+    /// `set_protocol_version` applies an OPTIONS-negotiated one. The source
+    /// layer reads it to persist the negotiated version alongside the policy
+    /// key. Avoids leaking the full `EasConfig` (which carries secrets).
+    pub fn protocol_version(&self) -> &str {
+        &self.config.protocol_version
+    }
+
+    /// Apply the protocol version negotiated over the account-setup OPTIONS
+    /// exchange (`pick_protocol_version`) so every later command carries it
+    /// as `MS-ASProtocolVersion`. An empty string is ignored (the
+    /// `set_hierarchy_sync_key` precedent: a garbage prime must not wipe a
+    /// working version).
+    pub fn set_protocol_version(&mut self, version: String) {
+        if !version.is_empty() {
+            self.config.protocol_version = version;
+        }
+    }
+
     /// Adopt an HTTP 451 `X-MS-Location` redirect target ([MS-ASHTTP]
     /// §2.2.1.1.2.4 / §3.1.5.2): validate the location via
     /// `endpoint_from_x_ms_location`, switch this client's base URL to the
@@ -198,6 +228,45 @@ mod tests {
         assert_eq!(client.hierarchy_key(), "0", "empty prime must be a no-op");
         client.set_hierarchy_sync_key("hier-7".to_string());
         assert_eq!(client.hierarchy_key(), "hier-7");
+    }
+
+    /// The negotiated-version application half of the adapter's OPTIONS
+    /// negotiation: `set_protocol_version` replaces the header value every
+    /// later command carries, and an empty string never wipes a working one
+    /// (the `set_hierarchy_sync_key` no-op precedent).
+    #[test]
+    fn set_protocol_version_applies_and_ignores_empty() {
+        let mut client = EasClient::new(EasConfig::default(), &TlsClientConfig::bundled())
+            .expect("bundled-roots client build");
+        assert_eq!(
+            client.protocol_version(),
+            "16.1",
+            "the config default until negotiation applies its own"
+        );
+        client.set_protocol_version("14.1".to_string());
+        assert_eq!(client.protocol_version(), "14.1");
+        client.set_protocol_version(String::new());
+        assert_eq!(
+            client.protocol_version(),
+            "14.1",
+            "empty prime must be a no-op"
+        );
+    }
+
+    /// The transport-fact half of `ConnectionInfo::http_version`: nothing is
+    /// observed before the first response, and the clones a per-folder
+    /// adapter fan-out shares observe through the one shared funnel (the
+    /// `Arc` in `EasClient::http_version`).
+    #[test]
+    fn http_version_starts_unobserved_and_is_shared_across_clones() {
+        let client = EasClient::new(EasConfig::default(), &TlsClientConfig::bundled())
+            .expect("bundled-roots client build");
+        assert_eq!(client.http_version(), None);
+        let clone = client.clone();
+        // The observation itself needs a response (the harness drives it
+        // end-to-end); here the share is the testable half: one funnel, two
+        // handles, the same (still empty) fact.
+        assert_eq!(clone.http_version(), None);
     }
 
     #[test]
