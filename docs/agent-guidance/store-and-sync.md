@@ -679,8 +679,12 @@ delete it: another account's row may name the same hash. The file half is a mark
 
 Pending ops are durable before any side effect and are claimed with the same
 fencing discipline as scopes. The thin inline drivers built on this are
-`engine_sync::{submit_mail, submit_mail_source, edit_mail, create_calendar_event,
-patch_calendar_event, delete_calendar_event, put_calendar_document}`. `edit_mail` applies
+`engine_sync::{submit_mail, submit_mail_source, edit_mail, create_contact,
+patch_contact, delete_contact, create_calendar_event, patch_calendar_event,
+delete_calendar_event, put_calendar_document}`, each resolving the op it enqueues in the
+same call; the **outbox drainer** — `engine_sync::{drain_mail_ops, drain_contact_ops}`,
+`Engine::drain_mail_ops` / `Engine::drain_contact_ops` — is the background counterpart
+that resolves the ops no inline driver finished. `edit_mail` applies
 a `MailEdit`
 (mark-read/flag, move, or permanent delete) and serializes on the target message key
 (`mail:{key}`), recording a plain classified `Failed` on error (no `NeedsConfirmation`: a
@@ -694,8 +698,10 @@ one event never race on either provider.
   `EventEdit` — which occurrence, and what changed — never the document it produced. That is
   what makes a `Conflict` recoverable: the retry re-applies the edit to a **freshly fetched**
   base. Re-sending bytes built from the copy the server has moved past would silently revert
-  somebody else's edit with a write the server happily accepts. (The drainer that will do
-  that recovery is issue #60; today a `Conflict` is recorded and surfaced to the caller.)
+  somebody else's edit with a write the server happily accepts. (Drainer-side calendar
+  replay — re-applying the edit to a freshly fetched base — is registered, not built: the
+  landed drainer covers mail and contact verbs only, and today a `Conflict` is recorded
+  and surfaced to the caller.)
 
 - **A mail submission's payload is a *tagged* intent (`SubmitPayload`), and for
   caller-rendered bytes the tag is the dispatch key.** `kind: "draft"` carries the
@@ -711,6 +717,25 @@ one event never race on either provider.
   the message's `Message-ID` in one namespace (`submit:{id}` / `draft:{id}`), so the
   same message through either path collapses to one op.
 
+- **The drainer (issue #60 Phase 1, landed) replays mail and contact ops; calendar
+  replay is registered, not built.** An inline driver resolves the op it enqueues in the
+  same call; `drain_mail_ops` / `drain_contact_ops` resolve the ops nobody finished — an
+  unstarted `Pending` op, or a crash orphan (an `InFlight` op whose lease expired) — by
+  claiming one bounded batch and replaying each op through the same execute halves the
+  inline path runs (the dispatch is on the tagged intent alone, which is what makes
+  replay possible at all), settling each under its lease. Two entry points because the
+  split is the providers' own: a mail-only provider (IMAP) cannot satisfy
+  `ContactsProvider` yet still has mail ops to drain. A drain reports the ops it drove to
+  a recorded outcome; an op of the other drain's scope (claims are scope-blind) is
+  skipped **unmarked** — it waits out the lease, one TTL of unrunnability per skip, so a
+  host schedules the two drains with clean claim windows between them — and a mark that
+  lost its lease to another worker is dropped silently. Registered, not built:
+  `Failed`-retry backoff (`Failed` is terminal — never re-claimed; any retry is a host
+  decision), calendar replay with its base re-fetch, a `NeedsConfirmation` reconciliation
+  planner (a parked op is never re-driven; the host confirms), and outcome-data
+  persistence (a replayed submission's `SentCopy` fact is lost — the op state is the
+  record a host observes).
+
 - **A write does not update the store; a *reconcile* does** (issue #65). The drivers are
   deliberately pure: they record the op, call the provider, record the outcome. They never
   touch the stored object — a write's response is a receipt, not a document, and the store's
@@ -719,8 +744,9 @@ one event never race on either provider.
   which re-delivers the object the server now holds, tombstones a delete, and advances the
   cursor — one round trip, no new provider verb. The `Engine` facade runs it after every
   calendar write (`engine-api.md`), so a host gets read-your-writes by construction while the
-  drivers stay usable by a **headless** caller — the #60 drainer has no host `horizon`/zone
-  and cannot expand occurrences, which is exactly why the reconcile is not folded into them.
+  drivers stay usable by a **headless** caller — the drainer (`drain_*_ops`) has no host
+  `horizon`/zone and cannot expand occurrences, which is exactly why the reconcile is not
+  folded into them.
   It can never fail the write: a write that landed but did not reconcile is still a write,
   reported as `Reconciled::{Busy, Failed}` rather than as an error.
 

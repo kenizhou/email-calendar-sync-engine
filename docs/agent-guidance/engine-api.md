@@ -37,7 +37,11 @@ Read it before touching `engine-api` or adding a binding/reference-host seam.
   rendered — e.g. signed/encrypted — MIME bytes; see "Who renders the MIME" below) /
   `edit_mail` (mark-read/flag, move, delete) /
   `create_calendar_event` / `patch_calendar_event` / `delete_calendar_event`
-  (+ `put_calendar_document`, the iMIP RSVP escape hatch) / `pending_op_state`.
+  (+ `put_calendar_document`, the iMIP RSVP escape hatch) / `pending_op_state`;
+  and recover stranded writes with the periodic `drain_mail_ops` /
+  `drain_contact_ops` — the background half of the outbox, replaying the mail /
+  contact ops no inline write resolved (a crash orphan or an unstarted op;
+  `store-and-sync.md` → "The outbox").
   Contact hosts use `sync_address_books`, source-bound `sync_contact_cards`, or
   combined `sync_contacts`; browse via generation-bound `people_page` and
   `person`; write one explicit destination with `create_contact` /
@@ -249,6 +253,18 @@ Step 6 lands in small, tested slices. Order and status:
    `EventDeletion` — returning a `CalendarWrite` / `CalendarDelete`. These carry **intent**: the host never assembles
    iCalendar, mints an href, or touches an `ETag`, and the same call drives CalDAV and JMAP
    (`providers.md`). The write types are re-exported from `engine-api`.
+   - **The drains are the background half of the same outbox.**
+     `Engine::drain_mail_ops` / `Engine::drain_contact_ops` resolve the ops no inline
+     write did — an unstarted op or a crash orphan — by claiming one bounded batch
+     (16 ops, the facade's own `DRAIN_LIMIT`, chosen to match the inline drivers' claim
+     window without sharing their constant) and replaying each through the same execute
+     halves with the inline semantics (a caller-rendered submission re-sends verbatim; an
+     ambiguous send parks `NeedsConfirmation`). Calendar verbs are excluded this phase, a
+     `Failed` (including a poison payload's terminal mark) is never re-claimed, and the
+     return is the count of ops driven to a recorded outcome — so a host (kylins P1) runs
+     both on a timer, calling again while non-zero, and schedules them apart so each gets
+     a clean claim window (a scope-blind claim of the other drain's verb costs one lease
+     TTL). Details and the registered-not-built list: `store-and-sync.md` → "The outbox".
    - **Read `Capabilities::calendar_write_guard()` before writing.** `WriteGuard::Enforced`
      (CalDAV) means a stale edit is refused — a `412` surfaces as a `Conflict`, to be
      recovered by re-syncing and re-applying, never a blind retry. `WriteGuard::Absent`
@@ -405,7 +421,12 @@ reads back `None`. The rendered-source seam gets the same treatment —
 `submit_mail_source` commits its op `Succeeded` with the receipt's id read back out
 of the bytes, and bytes with no `Message-ID` are refused as `ApiError::Sync` before
 anything enqueues. A `sync_mail` with a closure observer then asserts
-one `SyncCommit` lands with `fetched == total == 2`. Run the standard gate (`AGENTS.md`):
+one `SyncCommit` lands with `fetched == total == 2`. The drains are covered in-crate
+(`engine/drain.rs`): a facade write always resolves its op inline, so the unstarted op a
+drain consumes has no public constructor — the tests enqueue one through the
+crate-internal store (exactly the state an inline enqueue half leaves behind), drive it
+through `drain_mail_ops` / `drain_contact_ops`, and read the outcome back through
+`pending_op_state`. Run the standard gate (`AGENTS.md`):
 `cargo +nightly fmt --check`, `cargo clippy --workspace --all-targets --all-features -- -D
 warnings`, `cargo test --workspace --all-features`, `cargo doc`. `engine-api`'s own
 lines run ≈94% under the offline metric (no live provider needed); the uncovered
