@@ -14,9 +14,15 @@
 //! - **Serialized resources** — ops sharing a [`ResourceKey`] are not run concurrently.
 //! - **Ambiguous sends never blind-retry** — an ambiguous outcome enters
 //!   [`PendingOutcome::NeedsConfirmation`], distinct from a plain failure.
+//! - **Tagged submission intents** — a mail-submission op's payload is a [`SubmitPayload`] whose
+//!   `kind` tag distinguishes engine-rendered drafts from caller-rendered MIME, so a future drainer
+//!   can dispatch on it.
+
+mod submit_payload;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+pub use submit_payload::SubmitPayload;
 
 use crate::{error::FailureClass, ids::ProviderKey, time::Duration};
 

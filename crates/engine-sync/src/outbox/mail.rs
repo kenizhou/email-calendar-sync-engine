@@ -8,7 +8,7 @@ use core::time::Duration;
 
 use engine_core::{
     ids::{AccountId, MessageIdHeader, ProviderKey},
-    write::{IdempotencyKey, PendingOp, PendingOpId, PendingOutcome, ResourceKey},
+    write::{IdempotencyKey, PendingOp, PendingOpId, PendingOutcome, ResourceKey, SubmitPayload},
 };
 use engine_provider::{Draft, MailEdit, MessageReport, Provider, SentCopy};
 use engine_store::{Store, WorkerId};
@@ -57,9 +57,10 @@ where
     P: Provider,
     S: Store,
 {
-    // Durable record first: the draft as a pending op, idempotent by Message-ID.
-    let payload =
-        serde_json::to_value(draft).map_err(|e| SyncError::Outbox(format!("encode draft: {e}")))?;
+    // Durable record first: the draft as a tagged pending-op payload, idempotent by
+    // Message-ID. The `kind` tag is what a future drainer dispatches on.
+    let payload = serde_json::to_value(SubmitPayload::Draft(draft))
+        .map_err(|e| SyncError::Outbox(format!("encode draft: {e}")))?;
     let message_id = draft.message_id.as_str();
     let idempotency = IdempotencyKey::new(format!("submit:{message_id}"))
         .map_err(|e| SyncError::Outbox(e.to_string()))?;

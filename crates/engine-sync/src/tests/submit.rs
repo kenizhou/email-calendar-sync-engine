@@ -1,7 +1,8 @@
 //! Mail-submission outbox-driver tests: enqueue-then-send success recording,
 //! failure recorded without a blind retry, an ambiguous post-DATA send parked for
-//! confirmation, and durable draft-payload round-trip. Uses the shared fakes and
-//! helpers from the parent module via `use super::*`.
+//! confirmation, and the tagged submit-payload round-trip a recovery worker
+//! depends on. Uses the shared fakes and helpers from the parent module via
+//! `use super::*`.
 
 use super::*;
 
@@ -103,11 +104,14 @@ async fn submit_mail_parks_an_ambiguous_send_for_confirmation() {
 }
 
 #[test]
-fn draft_round_trips_through_a_durable_payload() {
-    // The outbox stores the draft as a JSON payload; it must survive intact for a
-    // recovery worker to re-submit it.
+fn submit_payload_round_trips_through_a_durable_op() {
+    // The outbox stores the submission intent as a tagged payload (`kind`), so a
+    // recovery worker can dispatch on it: re-render a draft, or re-send rendered
+    // bytes. The draft must survive that encoding intact — same construction
+    // `submit_mail` uses.
     let original = draft("durable@test.local");
-    let payload = serde_json::to_value(&original).unwrap();
-    let restored: Draft = serde_json::from_value(payload).unwrap();
-    assert_eq!(restored, original);
+    let payload = serde_json::to_value(SubmitPayload::Draft(&original)).unwrap();
+    assert_eq!(payload["kind"], serde_json::json!("draft"));
+    let restored: SubmitPayload<Draft> = serde_json::from_value(payload).unwrap();
+    assert_eq!(restored, SubmitPayload::Draft(original));
 }
