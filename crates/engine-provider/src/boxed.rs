@@ -91,8 +91,11 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
         &self,
         account: &AccountId,
         source: &[u8],
+        recipients: &[String],
     ) -> ProviderResult<SubmissionReceipt> {
-        (**self).submit_email_source(account, source).await
+        (**self)
+            .submit_email_source(account, source, recipients)
+            .await
     }
 
     async fn file_sent_copy(

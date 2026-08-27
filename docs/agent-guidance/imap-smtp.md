@@ -233,16 +233,25 @@ is authoritative for the `provider-caldav` calendar client.
   signs/encrypts, and submits final MIME, which this adapter sends **verbatim**
   (`DATA`) and files as the Sent copy with **the same bytes** (`APPEND` — no
   `assemble_filed_message`, so the wire copy and the sender's copy are one and the
-  same; a `Bcc` header inside the bytes reaches every recipient, which is the
-  caller's to strip). The envelope (`MAIL FROM`/`RCPT TO`) and the receipt's
-  `Message-ID` are read back out of the bytes' own headers via `engine-rfc5322`'s
-  parse side (`parse_message_id`/`header_values`); bytes with no `Message-ID` (the
-  caller must stamp one — the same Write Contract as a draft) or no `From` are
-  refused **before any dial** with a `Permanent`. Delivery classification, the
-  Sent-placement retry, and the `Unfiled` receipt semantics are the draft path's,
-  shared through `crate::filing` (`ensure_delivered`, `file_and_receipt`). Providers
-  whose submission verb re-renders from structured fields (JMAP) keep the trait's
-  rejecting default for this verb — `submission` does not imply it.
+  same). The receipt's `Message-ID` and `MAIL FROM` are read back out of the bytes'
+  own headers via `engine-rfc5322`'s parse side (`parse_message_id`/
+  `header_values`); the `RCPT TO` set comes from the call's **`recipients`
+  argument**: non-empty it is the **exact** envelope — where Bcc lives, so Bcc
+  recipients are delivered with no `Bcc` header ever entering the bytes — and empty
+  it is derived from the bytes' own `To`/`Cc` headers, in which case a `Bcc` header
+  left in the bytes is honored **and travels verbatim** (visible in every
+  recipient's copy), while a stripped `Bcc` header omitted from `recipients` means
+  those recipients are **not** delivered: an explicit caller choice, never a silent
+  one. Three properties of the bytes are refused **before any dial** with a
+  `Permanent`: no `Message-ID` (the caller must stamp one — the same Write Contract
+  as a draft), no `From` to derive `MAIL FROM` from, and no trailing line terminator
+  (SMTP's `DATA` terminator would corrupt the last line — the byte-equality
+  invariant rules unterminated bytes out), plus an envelope that names no recipient
+  at all. Delivery classification, the Sent-placement retry, and the `Unfiled`
+  receipt semantics are the draft path's, shared through `crate::filing`
+  (`ensure_delivered`, `file_and_receipt`). Providers whose submission verb
+  re-renders from structured fields (JMAP) keep the trait's rejecting default for
+  this verb — `submission` does not imply it.
 - **Message assembly (`engine_rfc5322::assemble_message`)** lives in the shared
   **`engine-rfc5322`** crate (the Graph adapter reuses it for `sendMail` in MIME
   format — `graph.md`), returning the engine-neutral `ProviderError`; `provider-imap`

@@ -266,6 +266,7 @@ async fn submit_source_over_implicit_tls_delivers_the_exact_bytes() {
         .submit_email_source(
             &engine_core::ids::AccountId::try_from("acct-1").unwrap(),
             &source,
+            &[],
         )
         .await
         .expect("implicit-TLS source submit delivers");
@@ -292,6 +293,7 @@ async fn submit_source_over_starttls_delivers_the_exact_bytes() {
         .submit_email_source(
             &engine_core::ids::AccountId::try_from("acct-1").unwrap(),
             &source,
+            &[],
         )
         .await
         .expect("STARTTLS source submit delivers");

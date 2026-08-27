@@ -171,7 +171,7 @@ async fn submit_email_source_defaults_to_unsupported() {
     // capability-checking caller never depends on the default — the same guarantee
     // `submit_email`'s default makes for drafts.
     let err = provider
-        .submit_email_source(&account(), b"Message-ID: <rendered@host>\r\n\r\nbody\r\n")
+        .submit_email_source(&account(), b"Message-ID: <r@host>\r\n\r\nbody\r\n", &[])
         .await
         .unwrap_err();
     assert_eq!(err.class(), FailureClass::InvalidState);
@@ -286,7 +286,7 @@ async fn box_dyn_provider_delegates_overrides_and_defaults() {
     // The source-submission default rejects through the box too: the blanket impl
     // delegates to the inner's default, not a rendering of its own.
     assert_eq!(
-        bare.submit_email_source(&account(), b"Message-ID: <rendered@host>\r\n\r\n")
+        bare.submit_email_source(&account(), b"Message-ID: <r@host>\r\n\r\n", &[])
             .await
             .unwrap_err()
             .class(),

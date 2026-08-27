@@ -46,14 +46,14 @@ pub trait Provider: Send + Sync {
     /// transport versions the server negotiated.
     ///
     /// The one post-connect seam — callers read facts from it and never switch on
-    /// provider kind (`providers.md`). The returned value is a cheap `Copy`, so an
-    /// adapter may either store it or compose it per call.
+    /// provider kind (`providers.md`). A cheap `Copy`, so an adapter may store it
+    /// or compose it per call.
     fn connection_info(&self) -> ConnectionInfo;
 
     /// The scope the account's mail collections (mailboxes/folders/labels) sync
     /// under. Defaults to the JMAP `(account, Mailbox)` scope; mail providers with
-    /// a different granularity (IMAP) override it. A calendar-only provider never
-    /// has this consulted (its [`Capabilities::mail`] is false).
+    /// a different granularity (IMAP) override it. A calendar-only provider never has
+    /// this consulted (its [`Capabilities::mail`] is false).
     fn mailbox_scope(&self, account: &AccountId) -> SyncScope {
         SyncScope::JmapType {
             account: account.clone(),
@@ -96,8 +96,7 @@ pub trait Provider: Send + Sync {
     /// convenience fetches under, when a caller does not stream with an explicit
     /// one. Defaults to the full history; a provider whose depth is configured at
     /// construction (IMAP `with_since`) overrides it. The streaming path takes its
-    /// window explicitly (see [`Provider::stream_email`]), so a host changes depth
-    /// per sync without reconnecting.
+    /// window explicitly, so a host changes depth per sync without reconnecting.
     fn default_sync_window(&self) -> SyncWindow {
         SyncWindow::full()
     }
@@ -106,9 +105,9 @@ pub trait Provider: Send + Sync {
     /// incremental [`EmailChunk`]s — the paged primitive every mail adapter
     /// implements. The two knobs (`fetch_batch` bounding each **network round
     /// trip**, `chunk_size` each **yielded** chunk; `0` = the adapter's maximum /
-    /// one chunk per batch) and the chunk contract (apply [`PassMode`], resume from
-    /// [`advance_to`](EmailChunk::advance_to), backpressure) are specified in
-    /// `crate::stream`, the module that owns them (`store-and-sync.md`).
+    /// one chunk per batch) and the chunk contract (apply [`PassMode`], resume
+    /// from [`advance_to`](EmailChunk::advance_to), backpressure) are
+    /// `crate::stream`'s to specify (`store-and-sync.md`).
     ///
     /// Mail providers ([`Capabilities::mail`]) override this; the default yields a
     /// single classified `Err`, so a capability-checking caller never relies on it.
@@ -133,8 +132,8 @@ pub trait Provider: Send + Sync {
     /// This default **drains** [`Provider::stream_email`] into one [`ScopeSync`], so
     /// adapters implement only the streaming primitive. Callers that want a
     /// responsive, incrementally-applied sync drive [`Provider::stream_email`]
-    /// directly (see `engine-sync`'s streaming loop) rather than this whole-scope
-    /// convenience. It fetches under [`Provider::default_sync_window`].
+    /// directly (see `engine-sync`'s streaming loop), not this whole-scope
+    /// convenience; it fetches under [`Provider::default_sync_window`].
     ///
     /// # Errors
     ///
@@ -149,10 +148,10 @@ pub trait Provider: Send + Sync {
 
     /// Sends `draft`: creates the message and submits it, filing the sent copy.
     ///
-    /// Providers advertising [`Capabilities::submission`] override this; the
-    /// default rejects, so a caller that checked capabilities first never relies
-    /// on it. Submission is outbox-mediated by the caller (a durable pending op
-    /// precedes this side effect); this method performs only the provider call.
+    /// Providers advertising [`Capabilities::submission`] override this; the default
+    /// rejects, so a caller that checked capabilities first never relies on it.
+    /// Submission is outbox-mediated by the caller (a durable pending op precedes
+    /// this side effect); this method performs only the provider call.
     ///
     /// # Errors
     ///
@@ -169,34 +168,36 @@ pub trait Provider: Send + Sync {
 
     /// Submits `source`: the caller's **own final MIME bytes** — e.g. a rendered
     /// message the host then signed or encrypted — sent **verbatim**, never
-    /// re-rendered by the adapter (contrast [`Provider::submit_email`], where the
-    /// adapter renders the `Draft`). A transport that files the Sent copy itself
-    /// files **the same bytes** — and a `Bcc` header inside the bytes reaches every
-    /// recipient: the caller that rendered them owns stripping what stays private.
+    /// re-rendered (contrast [`Provider::submit_email`], which renders a `Draft`),
+    /// and filed as the Sent copy with **the same bytes** where the transport
+    /// files it. [`SubmissionReceipt::message_id`] is the bytes' own `Message-ID`
+    /// header — the Write Contract: **stamp the id before submitting**.
     ///
-    /// [`SubmissionReceipt::message_id`] is parsed from the bytes' own `Message-ID`
-    /// header, per the Write Contract of [`Provider::submit_email`]: the caller
-    /// stamps the id **before** submitting. Bytes with no `Message-ID` — or no
-    /// `From` to derive an envelope sender from, where the transport reads its
-    /// envelope off the bytes (SMTP) — are rejected.
+    /// `recipients` is the envelope. Non-empty, it is the **exact** `RCPT TO` set —
+    /// where Bcc lives: delivered with no `Bcc` header ever entering the bytes.
+    /// Empty, the envelope is derived from the bytes' own `To`/`Cc` headers (a
+    /// `Bcc` header left in the bytes is honored and travels it, visibly); a
+    /// stripped `Bcc` header omitted from `recipients` is **not** delivered — an
+    /// explicit choice, never a silent one. `MAIL FROM` is the bytes' `From`.
     ///
-    /// A transport that can carry caller-rendered bytes verbatim (IMAP/SMTP)
-    /// overrides this; one that re-renders from structured fields (JMAP) keeps the
-    /// rejecting default *even though it advertises [`Capabilities::submission`]* —
-    /// the capability covers [`Provider::submit_email`], not this; outbox-mediated
-    /// by the caller like it (`providers.md`).
+    /// A byte-capable transport (IMAP/SMTP) overrides this; one that re-renders
+    /// from structured fields (JMAP) keeps the rejecting default *even though it
+    /// advertises [`Capabilities::submission`]* — the capability covers
+    /// [`Provider::submit_email`], not this (`providers.md`); outbox-mediated like it.
     ///
     /// # Errors
     ///
     /// Returns a classified [`ProviderError`]: [`FailureClass::Permanent`] for
-    /// bytes this seam cannot send, otherwise [`Provider::submit_email`]'s
+    /// bytes this seam cannot send (no `Message-ID` or `From`, no trailing line
+    /// terminator, no envelope recipient), otherwise [`Provider::submit_email`]'s
     /// delivery classes; the default returns [`FailureClass::InvalidState`].
     async fn submit_email_source(
         &self,
         account: &AccountId,
         source: &[u8],
+        recipients: &[String],
     ) -> ProviderResult<SubmissionReceipt> {
-        let _ = (account, source);
+        let _ = (account, source, recipients);
         Err(unsupported("mail submission from a rendered source"))
     }
 
@@ -256,8 +257,8 @@ pub trait Provider: Send + Sync {
     /// Providers advertising [`Capabilities::message_source`] override this; the
     /// default rejects, so a capability-checking caller never relies on it.
     /// `message` carries everything an adapter needs to address the fetch: its
-    /// [`id`](engine_core::mail::Message::id) key (the IMAP `(mailbox, UIDVALIDITY,
-    /// UID)`) and its [`blob_id`](engine_core::mail::Message::blob_id) (a JMAP/Graph
+    /// [`id`](engine_core::mail::Message::id) (the IMAP `(mailbox, UIDVALIDITY, UID)`
+    /// key) and its [`blob_id`](engine_core::mail::Message::blob_id) (a JMAP/Graph
     /// download handle).
     ///
     /// # Errors
@@ -321,8 +322,7 @@ pub trait Provider: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns a classified [`ProviderError`]; the default returns
-    /// [`FailureClass::InvalidState`].
+    /// Returns a classified [`ProviderError`]; the default returns [`FailureClass::InvalidState`].
     async fn sync_calendars(
         &self,
         account: &AccountId,
@@ -337,8 +337,7 @@ pub trait Provider: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns a classified [`ProviderError`]; the default returns
-    /// [`FailureClass::InvalidState`].
+    /// Returns a classified [`ProviderError`]; the default returns [`FailureClass::InvalidState`].
     async fn sync_events(
         &self,
         account: &AccountId,

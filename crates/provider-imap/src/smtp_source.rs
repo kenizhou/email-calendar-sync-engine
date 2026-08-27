@@ -13,9 +13,11 @@
 //!   [`assemble_filed_message`](engine_rfc5322::assemble_filed_message), so the wire copy and the
 //!   filed copy are one and the same, and what the recipients got is what the sender keeps.
 //!
-//! The envelope and the receipt's `Message-ID` are read back **out of the bytes**
-//! (via `engine-rfc5322`'s parse side): a caller that submits final MIME supplies
-//! its headers with it. Delivery classification, Sent-placement retry, and the
+//! The receipt's `Message-ID` and (in derive mode) the envelope are read back
+//! **out of the bytes** (via `engine-rfc5322`'s parse side): a caller that submits
+//! final MIME supplies its headers with it. The envelope's `RCPT TO` set may also
+//! be given **explicitly** — the exact list, which is where Bcc travels without
+//! ever entering the bytes. Delivery classification, Sent-placement retry, and the
 //! `Unfiled` receipt semantics are the draft path's, shared through
 //! [`crate::filing`].
 
@@ -54,24 +56,38 @@ pub(crate) struct SourceSubmission {
 }
 
 impl SourceSubmission {
-    /// Derives the submission from the rendered `source` bytes: their own
-    /// `Message-ID`, and the SMTP envelope their own `From`/`To`/`Cc`/`Bcc` headers
-    /// name. Parsing happens **before any dial**, so bytes this seam cannot send are
-    /// refused without a connection ever being opened.
+    /// Derives the submission from the rendered `source` bytes and the caller's
+    /// envelope: their own `Message-ID`, `MAIL FROM` (the first `From` addr-spec),
+    /// and the `RCPT TO` list — `recipients` verbatim when non-empty (the exact
+    /// set, where Bcc lives without ever entering the bytes), else the bytes' own
+    /// `To`/`Cc` headers (a `Bcc` header left in the bytes is honored and travels
+    /// them verbatim). Parsing happens **before any dial**, so bytes this seam
+    /// cannot send are refused without a connection ever being opened.
     ///
     /// # Errors
     ///
-    /// [`ProviderError::permanent`] — a property of the bytes, never of the
-    /// transport, so retrying unchanged can never succeed: no `Message-ID` (the
-    /// caller must stamp one before submitting, the Write Contract), or no `From`
-    /// address to derive `MAIL FROM` from.
-    fn parse(source: &[u8]) -> ProviderResult<Self> {
+    /// [`ProviderError::permanent`] — a property of the bytes and envelope, never
+    /// of the transport, so retrying unchanged can never succeed: no `Message-ID`
+    /// (the caller must stamp one before submitting, the Write Contract); no `From`
+    /// address to derive `MAIL FROM` from; bytes not ending in a line terminator
+    /// (SMTP's `DATA` terminator would corrupt the last line — the bytes must end
+    /// `\n`-terminated as RFC 5322 produces them); or no envelope recipient at all.
+    fn parse(source: &[u8], recipients: &[String]) -> ProviderResult<Self> {
         let Some(message_id) = parse_message_id(source) else {
             return Err(ProviderError::permanent(
                 "the submitted bytes carry no Message-ID; the caller must stamp one \
                  before submitting them",
             ));
         };
+        // A message whose last line is unterminated would have the `DATA` terminator
+        // merged into it on the wire (the crate's dot-stuffing splits on lines), so
+        // the byte-equality contract itself rules the bytes out.
+        if !source.ends_with(b"\n") {
+            return Err(ProviderError::permanent(
+                "the submitted bytes do not end in a line terminator; SMTP's DATA \
+                 terminator would corrupt the last line",
+            ));
+        }
         let from = addr_specs(&header_values(source, "From").join(", "))
             .into_iter()
             .next()
@@ -81,18 +97,31 @@ impl SourceSubmission {
                      cannot be derived from them",
                 )
             })?;
-        // Every envelope recipient the bytes name gets a `RCPT TO`: To + Cc + Bcc,
-        // de-duplicated case-insensitively, exactly as the draft path does. A `Bcc`
-        // header inside the bytes travels them verbatim (the caller that rendered the
-        // bytes owns what stays private); Bcc recipients the bytes do not name are
-        // not reachable — there is no draft field to fall back on.
-        let mut seen: HashSet<String> = HashSet::new();
-        let to: Vec<String> = ["To", "Cc", "Bcc"]
-            .into_iter()
-            .flat_map(|name| header_values(source, name))
-            .flat_map(|value| addr_specs(&value))
-            .filter(|address| seen.insert(address.to_ascii_lowercase()))
-            .collect();
+        let to = if recipients.is_empty() {
+            // Derive mode: every envelope recipient the bytes name gets a `RCPT TO` —
+            // To + Cc + Bcc, de-duplicated case-insensitively, exactly as the draft
+            // path does. A `Bcc` header inside the bytes travels them verbatim (and
+            // is visible in every recipient's copy); Bcc recipients the bytes do not
+            // name belong in `recipients`.
+            let mut seen: HashSet<String> = HashSet::new();
+            ["To", "Cc", "Bcc"]
+                .into_iter()
+                .flat_map(|name| header_values(source, name))
+                .flat_map(|value| addr_specs(&value))
+                .filter(|address| seen.insert(address.to_ascii_lowercase()))
+                .collect()
+        } else {
+            // Exact mode: the caller composed the envelope (To + Cc + Bcc), so it is
+            // used verbatim — same trust as a draft's recipient list (the wire
+            // screen in `crate::smtp` still rejects control characters in it).
+            recipients.to_vec()
+        };
+        if to.is_empty() {
+            return Err(ProviderError::permanent(
+                "the submission names no envelope recipient: `recipients` is empty and \
+                 the bytes carry no To or Cc address",
+            ));
+        }
         let ehlo = from
             .rsplit_once('@')
             .map_or("localhost", |(_, domain)| domain)
@@ -111,22 +140,28 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> ImapProvider<S> {
     /// transport, opening a fresh connection per send, exactly as the draft path
     /// does: plaintext and implicit TLS transmit directly; STARTTLS negotiates the
     /// cleartext upgrade, TLS-wraps the socket, then transmits over TLS, with
-    /// `AUTH PLAIN` only ever on a secured stream.
+    /// `AUTH PLAIN` only ever on a secured stream. `recipients` is the envelope:
+    /// the exact `RCPT TO` set when non-empty, else derived from the bytes' own
+    /// `To`/`Cc` headers ([`SourceSubmission::parse`]).
     ///
     /// # Errors
     ///
     /// [`ProviderError::invalid_state`] when no SMTP transport is configured;
     /// [`ProviderError::permanent`] for bytes this seam cannot send (no
-    /// `Message-ID`, no derivable envelope); the same classified failures as the
-    /// draft path for a send that happens (a post-`DATA` ambiguity is never
-    /// blind-retried).
-    pub(crate) async fn submit_source(&self, source: &[u8]) -> ProviderResult<SubmissionReceipt> {
+    /// `Message-ID`, no `From`, no trailing line terminator, no envelope
+    /// recipient); the same classified failures as the draft path for a send that
+    /// happens (a post-`DATA` ambiguity is never blind-retried).
+    pub(crate) async fn submit_source(
+        &self,
+        source: &[u8],
+        recipients: &[String],
+    ) -> ProviderResult<SubmissionReceipt> {
         let sender = self
             .smtp
             .as_ref()
             .ok_or_else(|| ProviderError::invalid_state("no SMTP transport configured"))?;
         // Refuse bytes this seam cannot send before opening any connection.
-        let sub = SourceSubmission::parse(source)?;
+        let sub = SourceSubmission::parse(source, recipients)?;
         let result = match sender {
             SmtpSender::Plaintext { addr } => {
                 let tcp = TcpStream::connect(addr).await.map_err(ImapError::from)?;

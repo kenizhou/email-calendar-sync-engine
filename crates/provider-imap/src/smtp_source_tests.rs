@@ -153,7 +153,7 @@ async fn submit_email_source_sends_and_files_the_exact_submitted_bytes() {
 
     let source = rendered_source();
     let receipt = provider
-        .submit_email_source(&account(), &source)
+        .submit_email_source(&account(), &source, &[])
         .await
         .unwrap();
 
@@ -204,7 +204,7 @@ async fn submit_email_source_refuses_bytes_without_a_message_id() {
     // so the provider refuses rather than sending an unreconcilable message.
     let provider = source_provider(addr, Vec::new()).await;
     let err = provider
-        .submit_email_source(&account(), b"From: alice@test.local\r\n\r\nbody\r\n")
+        .submit_email_source(&account(), b"From: alice@test.local\r\n\r\nbody\r\n", &[])
         .await
         .unwrap_err();
     assert!(!err.is_retryable(), "bad bytes never become retryable");
@@ -225,6 +225,7 @@ async fn submit_email_source_refuses_bytes_without_a_derivable_sender() {
         .submit_email_source(
             &account(),
             b"Message-ID: <rendered-2@test.local>\r\nTo: bob@test.local\r\n\r\nbody\r\n",
+            &[],
         )
         .await
         .unwrap_err();
@@ -249,7 +250,7 @@ async fn submit_email_source_without_a_transport_is_rejected() {
     let provider = ImapProvider::with_connection(conn, MailboxId::try_from("INBOX").unwrap());
     assert!(!provider.connection_info().capabilities.submission());
     let err = provider
-        .submit_email_source(&account(), &rendered_source())
+        .submit_email_source(&account(), &rendered_source(), &[])
         .await
         .unwrap_err();
     assert!(!err.is_retryable());
@@ -268,7 +269,7 @@ async fn a_delivered_source_whose_sent_copy_cannot_be_filed_says_so() {
     let provider = source_provider(addr, Vec::new()).await;
     let source = rendered_source();
     let receipt = provider
-        .submit_email_source(&account(), &source)
+        .submit_email_source(&account(), &source, &[])
         .await
         .expect("a delivered send is never failed for a filing error");
     let (_, message) = received
@@ -318,12 +319,12 @@ fn addr_specs_split_only_on_separating_commas() {
     );
 }
 
-/// `SourceSubmission::parse` over a whole message: the receipt's id, the envelope,
-/// and the EHLO identity all come from the bytes.
+/// `SourceSubmission::parse` over a whole message in derive mode: the receipt's
+/// id, the envelope, and the EHLO identity all come from the bytes.
 #[tokio::test]
 async fn the_submission_facts_all_come_from_the_bytes() {
     use super::SourceSubmission;
-    let sub = SourceSubmission::parse(&rendered_source()).unwrap();
+    let sub = SourceSubmission::parse(&rendered_source(), &[]).unwrap();
     assert_eq!(sub.message_id.as_str(), "rendered-1@test.local");
     assert_eq!(sub.from, "alice@test.local");
     assert_eq!(
@@ -347,9 +348,132 @@ async fn the_envelope_deduplicates_recipients_named_twice() {
                    To: Bob <bob@test.local>\r\n\
                    Cc: BOB@test.local, carol@test.local\r\n\
                    Bcc: bob@test.local\r\n\r\nbody\r\n";
-    let sub = SourceSubmission::parse(source).unwrap();
+    let sub = SourceSubmission::parse(source, &[]).unwrap();
     assert_eq!(
         sub.to,
         vec!["bob@test.local".to_owned(), "carol@test.local".to_owned()]
     );
+}
+
+/// **The explicit envelope** (review ruling): non-empty `recipients` is the EXACT
+/// `RCPT TO` set — used verbatim, no derivation, no filtering — which is where Bcc
+/// travels: a Bcc address delivered through the envelope never appears in the bytes
+/// any recipient sees.
+#[tokio::test]
+async fn explicit_recipients_are_the_exact_envelope() {
+    use super::SourceSubmission;
+    // The bytes name bob (To) and dave (Cc), but the caller composes a different,
+    // exact list — including a Bcc address that appears NOWHERE in the bytes.
+    let sub = SourceSubmission::parse(
+        &rendered_source(),
+        &[
+            "carol@test.local".to_owned(),
+            "secret-bcc@test.local".to_owned(),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        sub.to,
+        vec![
+            "carol@test.local".to_owned(),
+            "secret-bcc@test.local".to_owned(),
+        ]
+    );
+    // The sender still comes from the bytes (MAIL FROM is their own identity).
+    assert_eq!(sub.from, "alice@test.local");
+}
+
+/// The same, end to end: only the exact recipients get a `RCPT TO` (the bytes'
+/// own To/Cc names nobody in the envelope), and the transmitted bytes stay
+/// byte-identical to the source — the Bcc address rides the envelope alone.
+#[tokio::test]
+async fn submit_email_source_delivers_only_the_exact_recipients() {
+    let (addr, received) = capturing_loopback_smtp();
+    let provider = source_provider(
+        addr,
+        crate::mock::script(&[
+            "* LIST (\\HasNoChildren \\Sent) \"/\" \"Sent\"\r\na2 OK LIST done\r\n",
+            "+ OK send literal\r\n",
+            "a3 OK [APPENDUID 50 9] APPEND completed\r\n",
+        ]),
+    )
+    .await;
+    let source = rendered_source();
+    let receipt = provider
+        .submit_email_source(&account(), &source, &["secret-bcc@test.local".to_owned()])
+        .await
+        .unwrap();
+    assert!(receipt.sent_copy.is_filed());
+
+    let (conversation, message) = received
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the loopback server received the send");
+    let conversation = String::from_utf8_lossy(&conversation);
+    // The exact set: the Bcc address is the ONLY envelope recipient…
+    assert_eq!(
+        conversation.matches("RCPT TO:").count(),
+        1,
+        "{conversation}"
+    );
+    assert!(
+        conversation.contains("RCPT TO:<secret-bcc@test.local>\r\n"),
+        "{conversation}"
+    );
+    // …and the bytes' own To/Cc names are NOT delivered (exact means exact).
+    assert!(
+        !conversation.contains("RCPT TO:<bob@test.local>"),
+        "{conversation}"
+    );
+    // The Bcc address never entered the bytes: what every recipient got is exactly
+    // the submitted source.
+    assert_eq!(message, source);
+    assert!(!message.windows(15).any(|w| w == b"secret-bcc@test"));
+}
+
+/// **The CRLF invariant** (review ruling): bytes not ending in a line terminator
+/// would have SMTP's `DATA` terminator merged into their last line on the wire —
+/// silently corrupting it — so the seam refuses them before any dial.
+#[tokio::test]
+async fn submit_email_source_refuses_bytes_without_a_trailing_line_terminator() {
+    let (addr, received) = capturing_loopback_smtp();
+    let provider = source_provider(addr, Vec::new()).await;
+    let mut source = rendered_source();
+    // Strip the final line terminator: the message now ends mid-line.
+    assert_eq!(source.pop(), Some(b'\n'));
+    let err = provider
+        .submit_email_source(&account(), &source, &[])
+        .await
+        .unwrap_err();
+    assert!(!err.is_retryable(), "bad bytes never become retryable");
+    assert!(
+        err.detail().contains("line terminator"),
+        "the error names the corruption the seam refused: {}",
+        err.detail()
+    );
+    // Refused before the dial: the server saw nothing.
+    assert!(received.recv_timeout(Duration::from_millis(100)).is_err());
+}
+
+/// **Zero recipients** (review ride-along): an empty explicit envelope with no
+/// To/Cc to derive from names nobody — refusing before the dial beats sending a
+/// message the conversation would then reject recipient-less.
+#[tokio::test]
+async fn submit_email_source_refuses_a_submission_with_no_recipient_at_all() {
+    let (addr, received) = capturing_loopback_smtp();
+    let provider = source_provider(addr, Vec::new()).await;
+    let err = provider
+        .submit_email_source(
+            &account(),
+            b"Message-ID: <no-rcpt@test.local>\r\nFrom: alice@test.local\r\n\r\nbody\r\n",
+            &[],
+        )
+        .await
+        .unwrap_err();
+    assert!(!err.is_retryable());
+    assert!(
+        err.detail().contains("no envelope recipient"),
+        "the error names what is missing: {}",
+        err.detail()
+    );
+    assert!(received.recv_timeout(Duration::from_millis(100)).is_err());
 }
