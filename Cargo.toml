@@ -92,7 +92,13 @@ async-stream = "0.3.6"
 tokio = { version = "1.52.3", features = ["macros", "rt", "rt-multi-thread"] }
 # SQLite backend: `bundled` compiles a pinned SQLite amalgamation (FTS5 enabled),
 # so the build needs no system libsqlite3 and every platform agrees on one engine.
-rusqlite = { version = "0.40.1", features = ["bundled"] }
+# Fork patch (P1, 2026-08-28): 0.39.0, not 0.40.x — the Kylins host binary links
+# sqlx 0.9 beside this store, and both stacks must share ONE libsqlite3-sys
+# (cargo `links = "sqlite3"`). 0.39.0 and sqlx 0.9.0 both declare sys ^0.37.0;
+# rusqlite 0.40 forces sys ^0.38 and no released sqlx accepts that yet. The API
+# diff 0.39→0.40 is unused here (compile-verified + full suite green). Bump
+# freely once sqlx declares libsqlite3-sys >= 0.38.
+rusqlite = { version = "0.39.0", features = ["bundled"] }
 tempfile = "3.27.0"
 # Recurrence expansion resolves wall-clock times through IANA zones. We force the
 # bundled, version-pinned tzdb and disable jiff's defaults so it never reads the
