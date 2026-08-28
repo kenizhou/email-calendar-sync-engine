@@ -133,6 +133,16 @@ pub(super) fn move_status_error(status: u32) -> ProviderError {
     )
 }
 
+/// The surfaced error for a non-healthy Ping status ([MS-ASPing] §2.2.3.7):
+/// statuses 1/2 never reach here (the watcher classifies them as events);
+/// 7 (hierarchy changed) is the resync shape; everything else is a protocol
+/// failure. The watch red line holds: an HTTP 429 during a ping still
+/// classifies `RateLimited` through the HttpStatus arm above.
+pub(super) fn ping_status_error(status: u32) -> ProviderError {
+    let class = class_of_action(crate::status::recovery_action_for_ping(status));
+    ProviderError::new(class, format!("Ping failed: status {status}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,6 +341,20 @@ mod tests {
                 move_status_error(status).class(),
                 FailureClass::Permanent,
                 "MoveItems {status} is structural"
+            );
+        }
+    }
+
+    /// Ping's error statuses: 7 (hierarchy changed) is the resync shape;
+    /// the protocol failures surface permanently.
+    #[test]
+    fn ping_statuses_split_resync_from_permanent() {
+        assert_eq!(ping_status_error(7).class(), FailureClass::NeedsResync);
+        for status in [3, 4, 6, 8] {
+            assert_eq!(
+                ping_status_error(status).class(),
+                FailureClass::Permanent,
+                "Ping {status} is a protocol failure"
             );
         }
     }

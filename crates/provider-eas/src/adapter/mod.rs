@@ -92,9 +92,11 @@ mod mailboxes;
 mod mutate;
 mod source;
 mod submit;
+mod watch;
 
 use engine_core::ids::MailboxId;
 use engine_provider::Capabilities;
+pub use watch::EasPingWatcher;
 
 use crate::client::{EasClient, EasError, pick_protocol_version};
 
@@ -250,5 +252,20 @@ impl EasAdapter {
     #[must_use]
     pub fn protocol_version(&self) -> Option<&str> {
         self.protocol_version.as_deref()
+    }
+
+    /// Builds a [`Watch`](engine_provider::Watch) session — an
+    /// [`EasPingWatcher`] long-polling `Ping` for the bound folder. The
+    /// concrete-type handout (the trait has no watch accessor; the IMAP
+    /// dedicated-connection precedent, recorded as the optional fork in
+    /// `eas.md`): the watcher OWNS a clone of the client, taken under the
+    /// verb lock here and released — its long holds never contend the
+    /// adapter's verbs. Build it after [`EasAdapter::negotiate`] so the
+    /// clone carries the negotiated protocol version; the session's
+    /// heartbeat tuning survives restarts via
+    /// [`EasPingWatcher::heartbeat_secs`] /
+    /// [`EasPingWatcher::set_heartbeat_secs`].
+    pub async fn watcher(&self) -> EasPingWatcher {
+        EasPingWatcher::new(self.client.lock().await.clone(), self.folder.clone())
     }
 }

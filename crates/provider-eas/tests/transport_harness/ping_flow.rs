@@ -28,7 +28,7 @@ fn ping_req(heartbeat: u32) -> PingRequest {
 }
 
 /// The request's `<HeartbeatInterval>` text.
-fn request_heartbeat(req: &super::server::CapturedRequest) -> String {
+pub(crate) fn request_heartbeat(req: &super::server::CapturedRequest) -> String {
     fn find(el: &provider_eas::wbxml::WbxmlElement) -> Option<String> {
         if el.token == PING_HEARTBEAT_INTERVAL
             && let WbxmlValue::Text(t) = &el.value
@@ -148,7 +148,11 @@ async fn ping_without_status_element_reads_as_expired() {
 // ---- Ping response fixture (local to the ping scenarios) ----
 
 /// A Ping response: status text, optional server heartbeat, changed folders.
-fn ping_response(status: &str, heartbeat: Option<u32>, folders: &[&str]) -> WbxmlElement {
+pub(crate) fn ping_response(
+    status: &str,
+    heartbeat: Option<u32>,
+    folders: &[&str],
+) -> WbxmlElement {
     let mut children = vec![WbxmlElement::text(PAGE_PING, PING_STATUS, status)];
     if let Some(interval) = heartbeat {
         children.push(WbxmlElement::text(

@@ -36,4 +36,4 @@ pub mod types;
 /// The MS-ASWBXML codec (serializer, deserializer, code pages, tags).
 pub mod wbxml;
 
-pub use adapter::{CLIENT_KNOWN_PROTOCOL_VERSIONS, EasAdapter};
+pub use adapter::{CLIENT_KNOWN_PROTOCOL_VERSIONS, EasAdapter, EasPingWatcher};
