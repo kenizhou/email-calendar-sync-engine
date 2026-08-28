@@ -20,11 +20,15 @@
 //! a torn aggregate. Types stay engine-shaped (engine-core ids in, plain data out)
 //! so nothing here re-models what the engine already models.
 
+mod attachment;
 mod events;
 mod round;
 mod threads;
 mod warm;
 
+pub use attachment::{
+    AttachmentFetch, AttachmentVault, attachment_bytes, default_fetch_attachment,
+};
 pub use events::{AccountState, CollectingSink, EngineEvent, EventSink};
 pub use round::{RoundReport, run_account_round};
 pub use threads::{ThreadCursor, ThreadSummary, ThreadsOptions, ThreadsPage, ThreadsRead};

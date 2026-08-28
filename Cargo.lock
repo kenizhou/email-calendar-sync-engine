@@ -536,7 +536,9 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "store-sqlite",
+ "tempfile",
  "tokio",
  "tokio-rustls",
 ]
