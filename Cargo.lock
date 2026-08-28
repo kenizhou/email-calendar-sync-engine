@@ -524,15 +524,21 @@ dependencies = [
  "async-trait",
  "engine-api",
  "engine-core",
+ "engine-mime",
  "engine-provider",
  "engine-store",
  "engine-sync",
+ "engine-tls",
  "futures-util",
+ "provider-eas",
+ "provider-imap",
+ "rcgen",
  "rusqlite",
  "serde",
  "serde_json",
  "store-sqlite",
  "tokio",
+ "tokio-rustls",
 ]
 
 [[package]]

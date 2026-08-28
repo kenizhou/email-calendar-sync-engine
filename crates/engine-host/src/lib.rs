@@ -23,7 +23,9 @@
 mod events;
 mod round;
 mod threads;
+mod warm;
 
 pub use events::{AccountState, CollectingSink, EngineEvent, EventSink};
 pub use round::{RoundReport, run_account_round};
 pub use threads::{ThreadCursor, ThreadSummary, ThreadsOptions, ThreadsPage, ThreadsRead};
+pub use warm::{BatchSourceFetch, WarmReport, sequential_sources, warm_mail_bodies};

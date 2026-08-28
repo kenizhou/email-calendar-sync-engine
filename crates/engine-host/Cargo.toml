@@ -13,6 +13,22 @@ engine-core = { workspace = true }
 engine-store = { workspace = true }
 store-sqlite = { workspace = true }
 async-trait = { workspace = true }
+# The warm's batch source type names `ProviderError` directly (per-item failures
+# travel inline in the batch result, not as a whole-call error), and the sequential
+# default is generic over the `Provider` trait — neither is re-exported by engine-api.
+engine-provider = { workspace = true }
+# The warm extracts the displayable body text from each fetched raw source with the
+# same shared MIME parser `engine-sync`'s single-message path uses, so the batch and
+# single-message halves of the cache agree on what a body is.
+engine-mime = { workspace = true }
+# The two batch-source impls (EAS: sequential default; IMAP: the UID-set pipeline)
+# are local-trait-for-foreign-type impls that live here rather than in the adapters,
+# so the adapters stay free of host concepts.
+provider-eas = { workspace = true }
+provider-imap = { workspace = true }
+# Only the stream trait bounds on the `ImapProvider` batch impl (`AsyncRead +
+# AsyncWrite`); no extra features — the host crate itself spawns nothing.
+tokio = { workspace = true }
 # The read seam hands host code a `rusqlite::Connection` inside
 # `host_store().read(|conn| …)`: naming its parameter and row types is why the host
 # names the backend directly rather than reaching it only through `store-sqlite`.
@@ -22,13 +38,19 @@ rusqlite = { workspace = true }
 serde = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true }
-# The fake `Provider` the tests sync through: the trait itself is re-exported by
-# `engine-api`, but its `ScopeSync`/`EmailChunk`/`ConnectionInfo` shapes are not.
-engine-provider = { workspace = true }
+# The IMAP batch test connects the real `ImapProvider` to an in-process TLS server:
+# `io-util`/`net` for the line protocol over TCP, on top of the workspace's macros/rt.
+tokio = { workspace = true, features = ["io-util", "net"] }
 # The fake's `stream_email` yields a single-chunk stream via
 # `futures_util::stream::iter`, exactly as engine-api's own facade tests do.
 futures-util = { workspace = true }
+# The in-process IMAP server the batch test speaks TLS to: the host-injected trust
+# policy pins exactly the server's self-signed cert (the `tls_info` harness shape).
+engine-tls = { workspace = true }
+tokio-rustls = { workspace = true }
+# Generates that self-signed cert — the same dev-dependency provider-imap's own
+# offline TLS tests use.
+rcgen = "0.13"
 # The event tests pin the contract's wire shape to the byte, so they serialize
 # through serde_json itself rather than trusting the derive round-trip.
 serde_json = { workspace = true }
