@@ -103,8 +103,12 @@ mod vault {
         /// Writes `bytes` into the vault and returns the path they live at.
         ///
         /// Idempotent by content addressing: the same bytes always map to the
-        /// same path, and bytes already present are left untouched (no
-        /// rewrite, so a concurrent reader never sees a torn file).
+        /// same path, and a file already holding exactly those bytes is left
+        /// untouched — no rewrite, so a concurrent reader never watches a
+        /// good file change underneath it. Anything else at the path (nothing,
+        /// or a truncated/corrupted file whose content no longer matches its
+        /// name) is written; see [`AttachmentVault::store`] for why that
+        /// repair is safe to race.
         ///
         /// # Errors
         ///
@@ -125,10 +129,24 @@ mod vault {
         /// Writes `bytes` and returns `(path, digest)` in one hash, so a
         /// caller that needs both (the index write after a put) does not pay
         /// for the digest twice.
+        ///
+        /// The write is skipped only when the path already holds exactly
+        /// these bytes (read + digest compare), never on the path's bare
+        /// existence: a file whose content no longer matches its name — the
+        /// truncated or corrupted file a crash mid-write or a disk fault
+        /// leaves behind — is overwritten, so the next landing *repairs* it
+        /// instead of re-falling-through on every read forever. The repair is
+        /// safe to race with a reader: mid-replacement the reader sees either
+        /// the old, mismatched bytes (tier (a) already treats that as a miss
+        /// and falls through) or the new, matching ones — and the skip keeps
+        /// the far more common re-landing of identical bytes a no-op.
         pub(crate) fn store(&self, bytes: &[u8]) -> Result<(PathBuf, String), String> {
             let digest = digest_of(bytes);
             let path = self.get_path(&digest);
-            if !path.exists() {
+            let already_holds = fs::read(&path)
+                .ok()
+                .is_some_and(|existing| digest_of(&existing) == digest);
+            if !already_holds {
                 if let Some(dir) = path.parent() {
                     fs::create_dir_all(dir).map_err(|err| {
                         format!("vault directory {} cannot be created: {err}", dir.display())
@@ -338,7 +356,10 @@ pub async fn attachment_bytes(
         match fs::read(vault.get_path(&digest)) {
             Ok(bytes) if digest_of(&bytes) == digest => return Ok(bytes),
             // A missing or unverifiable file is a miss, not an error: the
-            // landing below re-writes both halves.
+            // producing tier below re-lands both halves, and the landing's
+            // content check repairs a file whose bytes no longer match its
+            // digest (see `AttachmentVault::store`) — so this fall-through
+            // costs the repair once, not on every read forever.
             Ok(_) | Err(_) => {}
         }
     }

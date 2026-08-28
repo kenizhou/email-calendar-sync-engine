@@ -369,3 +369,64 @@ async fn a_part_no_source_carries_answers_not_found() {
         "still only the first read's fetch"
     );
 }
+
+#[tokio::test]
+async fn a_corrupt_vault_file_is_repaired_by_the_next_landing() {
+    let engine = Engine::open_in_memory().unwrap();
+    let dir = TempDir::new().unwrap();
+    let vault = AttachmentVault::new(dir.path());
+    let fetch = CountingFetch::new();
+
+    // The lying state: the index points at the digest of the right bytes, but
+    // the file at that path is truncated garbage (a crash mid-write, a disk
+    // fault — whatever left the name holding the wrong content).
+    let digest = digest_of(b"PDF");
+    vault.put(b"PDF").unwrap();
+    let path = vault.get_path(&digest);
+    std::fs::write(&path, b"truncated").unwrap();
+    let mut index = load_index(&vault.root).unwrap();
+    index.insert(
+        index_entry_key("acct-1", "imap:v1:u1@INBOX", AttachmentPartId::new(0)),
+        digest,
+    );
+    save_index(&vault.root, &index).unwrap();
+
+    // Tier (a) refuses the corrupt file (digest mismatch) and falls through;
+    // with no cached source, tier (c) fetches once and the landing's content
+    // check overwrites the corrupt file with the correct bytes.
+    let bytes = attachment_bytes(
+        &engine,
+        &vault,
+        &fetch,
+        &account(),
+        &message(),
+        AttachmentPartId::new(0),
+    )
+    .await
+    .unwrap();
+    assert_eq!(bytes, b"PDF", "the fall-through returned the right bytes");
+    assert_eq!(fetch.calls(), 1, "the corrupt file cost one fetch, once");
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        b"PDF",
+        "the vault file is healed at the same path"
+    );
+
+    // Healed means tier (a) again: same bytes, zero further calls.
+    let again = attachment_bytes(
+        &engine,
+        &vault,
+        &fetch,
+        &account(),
+        &message(),
+        AttachmentPartId::new(0),
+    )
+    .await
+    .unwrap();
+    assert_eq!(again, b"PDF");
+    assert_eq!(
+        fetch.calls(),
+        1,
+        "the healed vault served the second read, not the provider"
+    );
+}
