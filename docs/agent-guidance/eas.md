@@ -223,12 +223,23 @@ an explicit `--include-ignored` run without credentials skips cleanly (one
 | `EAS_LIVE_USERNAME` | no | Basic-auth identity when it differs from the mailbox address; unset → identity = `USER` |
 | `EAS_LIVE_INSECURE` | no | set to `1` to trust the self-signed on-prem test server (the test-builds-only `dangerous_accept_any`, see the TLS record above) |
 
-The exact invocation lives in the header of `tests/live_eas.rs`. The scaffold
-exercises the Basic-auth path only (OAuth accounts need `EasConfig::auth`). Two
-operational rules learned live: every test uses its own `DeviceId` (concurrent
-Provision phase-1 handshakes from one device identity race server-side, status
-135), and EAS `FolderSync` ServerIds are per-device-partnership (never compare
-them across devices).
+The exact invocation lives in the header of `tests/live_eas.rs` (run it with
+`--test-threads=1`). The scaffold exercises the Basic-auth path only (OAuth
+accounts need `EasConfig::auth`). Operational rules learned live: **one
+`DeviceId` per TEST, not per role** — two tests sharing an id race each
+other's per-device sync state even when each is internally serialized
+(concurrent FolderSync bootstraps answered status 6, and concurrent
+Provision handshakes status 135; live evidence 2026-08-28 for the former —
+the contacts smoke and the calendar item probe both sat on
+`KYLINSLIVETEST04`), and EAS `FolderSync` ServerIds are
+per-device-partnership (never compare them across devices). The folder
+probes are rerunnable by construction: per-run unique folder names, checked
+command statuses, and self-cleanup, with a prefix-sweeping backstop
+(`calendar_folder_drill_cleanup`) for crashed runs — the earlier
+fixed-name-and-leave-artifact shape broke the "exactly one Add" assertion
+whenever a leftover survived. Serial runs also keep concurrent load off the
+lab server, which answers Sync/FolderSync status 111 under fan-out pressure
+(see the classifier note above).
 
 **The account-level live acceptance is `engine-cli eas-sync`** (the P0 exit):
 `--rounds 2` against one `--db` is the full pass then the incremental one,

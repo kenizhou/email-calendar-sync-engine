@@ -28,7 +28,7 @@ async fn contacts_first_page_smoke() {
     // the live tests run on parallel threads, and concurrent Provision
     // phase-1 handshakes from the SAME device identity race server-side
     // (status 135). Fourth live test → fourth device id.
-    config.device_id = "KYLINSLIVETEST04".to_string();
+    config.device_id = "KYLINSCONTACT01".to_string();
 
     // Negotiate + provision exactly like the existing smoke tests.
     let probe = live_client(config.clone());

@@ -38,7 +38,7 @@ async fn calendar_location_wire_probe() {
         eprintln!("live gates unset (EAS_LIVE_URL/USER/PASSWORD) — skipping");
         return;
     };
-    config.device_id = "KYLINSLIVETEST04".to_string();
+    config.device_id = "KYLINSCALITEM01".to_string();
     let probe = live_client(config.clone());
     let server = probe.options().await.expect("OPTIONS round-trip failed");
     let negotiated =

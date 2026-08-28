@@ -14,6 +14,8 @@ async fn options_provision_foldersync_smoke() {
         eprintln!("live gates unset (EAS_LIVE_URL/USER/PASSWORD) — skipping");
         return;
     };
+    // One device PER TEST (see the header): this suite's transport smoke.
+    config.device_id = "KYLINSLIVETEST01".to_string();
 
     // 1. OPTIONS: the server advertises its protocol versions; negotiate ours.
     let probe = live_client(config.clone());

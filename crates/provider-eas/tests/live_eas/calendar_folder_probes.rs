@@ -10,8 +10,12 @@ use super::*;
 /// via the FolderCreate response (the create is baked into the new key), so
 /// our warm round would see nothing — the production delta case is another
 /// client (OWA / the user) creating while OUR engine holds a warm key.
-/// Leaves "Cal-13-Delta" on the server as the Step-5 artifact; cleans up
-/// any earlier probe leftovers of the same name first.
+/// Rerunnable (2026-08-28 fix): a per-run unique folder name, a checked
+/// FolderCreate status, and self-cleanup of the folder it created — the old
+/// fixed-name-and-leave-artifact shape broke the "exactly one Add"
+/// assertion whenever a prior run's leftover survived (parallel cleanup
+/// races, crashed runs); stale leftovers of BOTH the old and new naming
+/// are swept by prefix before the probe starts.
 #[tokio::test]
 #[ignore = "live Exchange account required"]
 async fn calendar_folder_create_delta_probe() {
@@ -19,7 +23,7 @@ async fn calendar_folder_create_delta_probe() {
         eprintln!("live gates unset (EAS_LIVE_URL/USER/PASSWORD) — skipping");
         return;
     };
-    config.device_id = "KYLINSLIVETEST05".to_string();
+    config.device_id = "KYLINSCALCREAT01".to_string();
     let probe = live_client(config.clone());
     let server = probe.options().await.expect("OPTIONS failed");
     let negotiated =
@@ -35,12 +39,15 @@ async fn calendar_folder_create_delta_probe() {
         .await
         .expect("bootstrap FolderSync");
 
-    // Clean up earlier probe leftovers of the same name (best-effort).
-    for stale in boot
-        .changes
-        .iter()
-        .filter(|f| f.display_name == "Cal-13-Delta")
-    {
+    // The probe folder's per-run name, and the sweep for earlier leftovers
+    // (the old fixed name "Cal-13-Delta" and this probe's own unique runs).
+    let name = format!("Cal-13-Delta-{}", std::process::id() % 10000);
+    let is_probe_folder = |f: &provider_eas::types::EasFolder| {
+        f.display_name == "Cal-13-Delta" || f.display_name.starts_with("Cal-13-Delta-")
+    };
+
+    // Clean up earlier probe leftovers (best-effort).
+    for stale in boot.changes.iter().filter(|f| is_probe_folder(f)) {
         let mut janitor = live_client(config.clone());
         janitor.provision().await.expect("Provision janitor failed");
         let _ = janitor
@@ -50,15 +57,11 @@ async fn calendar_folder_create_delta_probe() {
             .await;
         eprintln!("DELTA-PROBE cleaned stale {}", stale.server_id);
     }
-    if boot
-        .changes
-        .iter()
-        .any(|f| f.display_name == "Cal-13-Delta")
-    {
+    let mut boot = boot;
+    if boot.changes.iter().any(&is_probe_folder) {
         // Re-bootstrap after cleanup so the warm key reflects the clean state.
-        let boot = client_a.folder_sync("0").await.expect("re-bootstrap");
+        boot = client_a.folder_sync("0").await.expect("re-bootstrap");
         eprintln!("DELTA-PROBE re-bootstrapped after cleanup");
-        let _ = boot;
     }
 
     // Parent: the type-8 default calendar (natural home for a user calendar).
@@ -84,19 +87,26 @@ async fn calendar_folder_create_delta_probe() {
     // Client B (a DIFFERENT device id) creates the folder — its FolderCreate
     // rotates B's key, not A's, so A's warm key must learn it via delta.
     let mut config_b = config.clone();
-    config_b.device_id = "KYLINSLIVETEST06".to_string();
+    config_b.device_id = "KYLINSCALCREAT02".to_string();
     let mut client_b = live_client(config_b);
     client_b.provision().await.expect("Provision B failed");
     let _ = client_b.folder_sync("0").await.expect("B bootstrap");
     let (fc_status, fc_sid) = client_b
         .folder_create(&provider_eas::types::FolderCreateRequest {
             parent_id: parent.server_id.clone(),
-            display_name: "Cal-13-Delta".to_string(),
+            display_name: name.clone(),
             class: "Calendar".to_string(),
         })
         .await
         .expect("FolderCreate failed");
-    eprintln!("DELTA-PROBE B created: status {fc_status}, server_id {fc_sid:?}");
+    // A refused create must fail HERE with the status in the message — the
+    // old shape let it through and surfaced later as the confusing
+    // "exactly one Add expected (left: 0)" delta assertion.
+    assert_eq!(
+        fc_status, 1,
+        "FolderCreate refused (status {fc_status}, id {fc_sid:?}) — nothing to delta-prove"
+    );
+    eprintln!("DELTA-PROBE B created {name}: server_id {fc_sid:?}");
 
     // THE DELTA PROOF: A's (stale) warm key now returns exactly the new
     // folder as a type-13 Add.
@@ -117,7 +127,21 @@ async fn calendar_folder_create_delta_probe() {
         Some(13),
         "type 13 in the delta"
     );
-    assert_eq!(delta.changes[0].display_name, "Cal-13-Delta");
+    assert_eq!(delta.changes[0].display_name, name);
+
+    // Self-cleanup: the delta's Add carries the A-space ServerId — delete
+    // through it so this probe leaves the mailbox as it found it.
+    let (del_status, _) = client_a
+        .folder_delete(&provider_eas::types::FolderDeleteRequest {
+            server_id: delta.changes[0].server_id.clone(),
+        })
+        .await
+        .expect("self-cleanup FolderDelete transport failed");
+    assert_eq!(
+        del_status, 1,
+        "self-cleanup delete refused (status {del_status})"
+    );
+    eprintln!("DELTA-PROBE self-cleaned {}", delta.changes[0].server_id);
 }
 
 /// Delete-delta proof (per-device ServerId spaces!): B creates a uniquely
@@ -132,7 +156,7 @@ async fn calendar_folder_delete_delta_probe() {
         eprintln!("live gates unset (EAS_LIVE_URL/USER/PASSWORD) — skipping");
         return;
     };
-    config.device_id = "KYLINSLIVETEST05".to_string();
+    config.device_id = "KYLINSCALDELET01".to_string();
     let probe = live_client(config.clone());
     let server = probe.options().await.expect("OPTIONS failed");
     let negotiated =
@@ -155,7 +179,7 @@ async fn calendar_folder_delete_delta_probe() {
 
     // B (different device) creates the probe folder.
     let mut config_b = config.clone();
-    config_b.device_id = "KYLINSLIVETEST06".to_string();
+    config_b.device_id = "KYLINSCALDELET02".to_string();
     let mut client_b = live_client(config_b);
     client_b.provision().await.expect("Provision B failed");
     let _ = client_b.folder_sync("0").await;
@@ -233,11 +257,15 @@ async fn calendar_folder_truth_probe() {
     );
 }
 
-/// Cleanup: delete the drill's Cal-13-Delta folders (per-device ServerId
-/// spaces — this probe bootstraps its OWN map and deletes by name). EAS
-/// FolderSync ServerIds are PER-DEVICE-PARTNERSHIP: the same mailbox folder
-/// has different ids for different DeviceIds (live evidence 2026-08-22:
+/// Cleanup: delete the folder probes' leftovers (per-device ServerId spaces
+/// — this probe bootstraps its OWN map and deletes by name). EAS FolderSync
+/// ServerIds are PER-DEVICE-PARTNERSHIP: the same mailbox folder has
+/// different ids for different DeviceIds (live evidence 2026-08-22:
 /// calendar-2 was id 53 for the engine device, 8 for KYLINSLIVETEST07).
+/// Sweeps by PREFIX — the create probe's per-run unique names, the old
+/// fixed "Cal-13-Delta" artifact, and the delete probe's "Cal-DelProbe-*"
+/// (crashed runs can leave any of them behind; the probes self-clean, this
+/// is the backstop).
 #[tokio::test]
 #[ignore = "live Exchange account required"]
 async fn calendar_folder_drill_cleanup() {
@@ -245,7 +273,7 @@ async fn calendar_folder_drill_cleanup() {
         eprintln!("live gates unset (EAS_LIVE_URL/USER/PASSWORD) — skipping");
         return;
     };
-    config.device_id = "KYLINSLIVETEST07".to_string();
+    config.device_id = "KYLINSCALCLEAN01".to_string();
     let probe = live_client(config.clone());
     let server = probe.options().await.expect("OPTIONS");
     config.protocol_version =
@@ -253,11 +281,12 @@ async fn calendar_folder_drill_cleanup() {
     let mut c = live_client(config);
     c.provision().await.expect("provision");
     let boot = c.folder_sync("0").await.expect("fs");
-    for f in boot
-        .changes
-        .iter()
-        .filter(|f| f.display_name == "Cal-13-Delta")
-    {
+    let is_probe_folder = |f: &&provider_eas::types::EasFolder| {
+        f.display_name == "Cal-13-Delta"
+            || f.display_name.starts_with("Cal-13-Delta-")
+            || f.display_name.starts_with("Cal-DelProbe-")
+    };
+    for f in boot.changes.iter().filter(|f| is_probe_folder(f)) {
         let (st, _) = c
             .folder_delete(&provider_eas::types::FolderDeleteRequest {
                 server_id: f.server_id.clone(),
@@ -278,7 +307,9 @@ async fn calendar_folder_drill_cleanup() {
         .collect();
     eprintln!("CLEANUP remaining calendar folders: {left:?}");
     assert!(
-        !left.iter().any(|(_, n)| *n == "Cal-13-Delta"),
+        !left.iter().any(|(_, n)| *n == "Cal-13-Delta"
+            || n.starts_with("Cal-13-Delta-")
+            || n.starts_with("Cal-DelProbe-")),
         "all drill folders gone"
     );
 }

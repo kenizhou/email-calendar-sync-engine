@@ -25,12 +25,16 @@
 //! #                       (test-builds-only accept-any TLS config;
 //! #                       production builds never ship this path — trust
 //! #                       comes from the host's `TlsPolicy`).
+//! # --test-threads=1: every test owns its DeviceId (below), so same-device
+//! # sync-state races are gone — but serial runs ALSO keep concurrent load
+//! # off the lab server, which answers Sync/FolderSync status 111 under
+//! # fan-out pressure (live evidence 2026-08-28) and would flunk the smokes.
 //! EAS_LIVE_URL=https://mail.example.com/Microsoft-Server-ActiveSync \
 //! EAS_LIVE_USER=user@example.com \
 //! EAS_LIVE_PASSWORD=app-password \
 //! EAS_LIVE_USERNAME=user@example.local \
 //! EAS_LIVE_INSECURE=1 \
-//! cargo test -p provider-eas --test live_eas -- --include-ignored --nocapture
+//! cargo test -p provider-eas --test live_eas -- --include-ignored --nocapture --test-threads=1
 //! ```
 //!
 //! Observed transcripts from these runs must be captured as scrubbed fixtures
