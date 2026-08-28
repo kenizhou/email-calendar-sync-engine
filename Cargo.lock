@@ -526,6 +526,7 @@ dependencies = [
  "engine-core",
  "engine-provider",
  "engine-store",
+ "engine-sync",
  "futures-util",
  "rusqlite",
  "serde",

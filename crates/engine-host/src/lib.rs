@@ -21,7 +21,9 @@
 //! so nothing here re-models what the engine already models.
 
 mod events;
+mod round;
 mod threads;
 
 pub use events::{AccountState, CollectingSink, EngineEvent, EventSink};
+pub use round::{RoundReport, run_account_round};
 pub use threads::{ThreadCursor, ThreadSummary, ThreadsOptions, ThreadsPage, ThreadsRead};

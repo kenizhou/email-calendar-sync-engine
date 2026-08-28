@@ -32,6 +32,10 @@ futures-util = { workspace = true }
 # The event tests pin the contract's wire shape to the byte, so they serialize
 # through serde_json itself rather than trusting the derive round-trip.
 serde_json = { workspace = true }
+# The round tests reconstruct a crash-orphaned outbox op (enqueued, never
+# claimed) by serializing an `OutboxIntent` exactly as the inline submit driver
+# does; the facade re-exports its signature types but not the intent envelope.
+engine-sync = { workspace = true }
 
 [lints]
 workspace = true
