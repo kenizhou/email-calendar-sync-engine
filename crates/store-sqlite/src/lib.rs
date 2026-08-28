@@ -212,7 +212,7 @@ impl<C: Clock> SqliteStore<C> {
     ///
     /// Readers are `query_only`: routing a write here fails rather than silently
     /// falling back to the writer's lock.
-    async fn read<F, R>(&self, f: F) -> R
+    pub async fn read<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&Connection) -> R + Send + 'static,
         R: Send + 'static,

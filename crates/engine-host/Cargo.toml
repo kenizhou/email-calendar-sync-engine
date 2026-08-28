@@ -1,0 +1,31 @@
+[package]
+name = "engine-host"
+description = "Host-side read models over an engine-api Engine's SQLite store: the conversation (thread) summary list first, with the P1 event, round, warm and attachment reads accumulating here."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+engine-api = { workspace = true }
+engine-core = { workspace = true }
+engine-store = { workspace = true }
+store-sqlite = { workspace = true }
+async-trait = { workspace = true }
+# The read seam hands host code a `rusqlite::Connection` inside
+# `host_store().read(|conn| …)`: naming its parameter and row types is why the host
+# names the backend directly rather than reaching it only through `store-sqlite`.
+rusqlite = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+# The fake `Provider` the tests sync through: the trait itself is re-exported by
+# `engine-api`, but its `ScopeSync`/`EmailChunk`/`ConnectionInfo` shapes are not.
+engine-provider = { workspace = true }
+# The fake's `stream_email` yields a single-chunk stream via
+# `futures_util::stream::iter`, exactly as engine-api's own facade tests do.
+futures-util = { workspace = true }
+
+[lints]
+workspace = true
