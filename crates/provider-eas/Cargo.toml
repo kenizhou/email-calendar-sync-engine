@@ -62,6 +62,11 @@ rustls = { workspace = true }
 # The adapter flow tests drive `stream_email`'s `EmailStream` (a boxed
 # `Stream`) with `StreamExt::next` — the provider-imap stream-tests precedent.
 futures-util = { workspace = true }
+# The engine-cli acceptance scenario: `eas-sync` (full + incremental) driven
+# end-to-end against the mock server — a dev-only cycle, since the CLI is
+# itself built on this crate (cargo permits dev-dependency cycles).
+engine-cli = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

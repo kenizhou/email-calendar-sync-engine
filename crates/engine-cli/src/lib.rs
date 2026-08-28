@@ -17,12 +17,13 @@
 //! races in a single process.
 
 mod cli;
+mod eas_sync;
 mod ingest;
 
 use std::{collections::BTreeSet, path::Path};
 
 pub use cli::{USAGE, run};
-use engine_core::{
+pub use engine_core::{
     calendar::Event,
     ids::{AccountId, MailboxId},
     mail::{Keyword, Message, StoredContent, StoredState},
@@ -31,10 +32,10 @@ use engine_core::{
     version::RevisionTokens,
 };
 pub use engine_recurrence::Horizon;
-use engine_search::{CalendarQuery, MailQuery, ParseError, SearchResults};
-use engine_store::{Clock, ManualClock, StoreError};
+pub use engine_search::{CalendarQuery, MailQuery, ParseError, SearchResults};
+pub use engine_store::{Clock, ManualClock, StoreError, StoreRead as _};
 pub use ingest::{IngestReport, ingest, reexpand_calendar};
-use store_sqlite::SqliteStore;
+pub use store_sqlite::SqliteStore;
 
 /// The fixed instant the harness clock reports. A single-process CLI never races a
 /// lease, so any stable instant works; the TTL keeps each claim live for the run.
@@ -65,6 +66,14 @@ pub enum CliError {
     /// A fixture could not be read or deserialized.
     #[error("fixture error: {0}")]
     Fixture(String),
+    /// The EAS protocol client failed before the engine's sync could run
+    /// (negotiation, discovery) or a sync scope failed inside the engine's
+    /// fan-out — the message carries the rendered per-scope report.
+    #[error("{0}")]
+    Eas(String),
+    /// A provider call failed.
+    #[error("provider error: {0}")]
+    Provider(#[from] engine_provider::ProviderError),
     /// The command-line invocation was invalid.
     #[error("usage error: {0}")]
     Usage(String),
@@ -187,10 +196,29 @@ pub async fn search_mail<C: Clock>(
     limit: usize,
 ) -> Result<SearchResults, CliError> {
     let parsed = MailQuery::parse(query)?;
-    let scope = mail_scope(account);
-    Ok(store
-        .search_mail(std::slice::from_ref(&scope), &parsed, limit)
-        .await?)
+    // The account's ACTUAL mail scopes, not a hard-coded one: a
+    // provider-synced store holds its rows under provider scopes (EAS
+    // folders, IMAP mailboxes, …) and a fixture store under the JMAP scope
+    // — `StoreRead::account_scopes` exists for exactly this ("instead of
+    // hard-coding which scopes a provider uses"). An account with no
+    // claimed scopes yet falls back to the JMAP scope, the fixture shape.
+    let mut scopes: Vec<SyncScope> = store
+        .account_scopes(account.clone())
+        .await?
+        .into_iter()
+        .filter(|scope| {
+            matches!(
+                scope.object_kind(),
+                Some(
+                    engine_core::sync::ObjectKind::Message | engine_core::sync::ObjectKind::Mailbox
+                )
+            )
+        })
+        .collect();
+    if scopes.is_empty() {
+        scopes.push(mail_scope(account));
+    }
+    Ok(store.search_mail(&scopes, &parsed, limit).await?)
 }
 
 /// Searches calendar events in `account`'s calendar scope with a DSL query.

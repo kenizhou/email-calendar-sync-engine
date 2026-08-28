@@ -21,7 +21,11 @@ pub const USAGE: &str = "\
 usage:
   engine-cli ingest   --db <path> --account <id> [--zone <iana>] [--horizon-start <YYYY-MM-DD>] [--horizon-end <YYYY-MM-DD>] <fixture.json>
   engine-cli reexpand --db <path> --account <id> [--zone <iana>] [--horizon-start <YYYY-MM-DD>] [--horizon-end <YYYY-MM-DD>]
-  engine-cli search   --db <path> --account <id> --kind <mail|calendar> [--limit <n>] <query...>";
+  engine-cli search   --db <path> --account <id> --kind <mail|calendar> [--limit <n>] <query...>
+  engine-cli eas-sync --db <path> --account <id> [--url <u> --user <u> --password <p> | env EAS_LIVE_URL/USER/PASSWORD] [--folder <fid>[,<fid>...]] [--rounds <n>] [--insecure]";
+
+/// Flags that stand alone — no value follows them on the command line.
+const BOOLEAN_FLAGS: &[&str] = &["insecure"];
 
 /// Parses `args` (the arguments after the program name) and runs the command,
 /// returning the output to print.
@@ -39,10 +43,51 @@ pub async fn run(args: &[String]) -> Result<String, CliError> {
         "ingest" => cmd_ingest(&flags).await,
         "reexpand" => cmd_reexpand(&flags).await,
         "search" => cmd_search(&flags).await,
+        "eas-sync" => cmd_eas_sync(&flags).await,
         other => Err(CliError::Usage(format!(
             "unknown command {other:?}\n{USAGE}"
         ))),
     }
+}
+
+/// The `eas-sync` command: one EAS account through the engine's own sync
+/// (see `eas_sync`'s module docs). Credentials come from the flags or the
+/// `EAS_LIVE_*` gates; `--rounds 2` against one `--db` is the full-then-
+/// incremental acceptance run.
+async fn cmd_eas_sync(flags: &Flags) -> Result<String, CliError> {
+    let account = flags.account()?;
+    let target = crate::eas_sync::EasTarget::resolve(
+        flags.get("url"),
+        flags.get("user"),
+        flags.get("password"),
+        flags.has("insecure"),
+    )?;
+    let mut folders = Vec::new();
+    if let Some(list) = flags.get("folder") {
+        for id in list.split(',') {
+            folders.push(
+                engine_core::ids::MailboxId::try_from(id.trim())
+                    .map_err(|_| CliError::Usage("--folder ids must be non-empty".to_owned()))?,
+            );
+        }
+    }
+    let rounds = flags
+        .get("rounds")
+        .and_then(|s| s.parse::<usize>().ok())
+        .ok_or_else(|| CliError::Usage("--rounds must be a positive integer".to_owned()))?;
+    if rounds == 0 {
+        return Err(CliError::Usage("--rounds must be at least 1".to_owned()));
+    }
+    let store = crate::open(flags.require("db")?)?;
+    crate::eas_sync::eas_sync(
+        &store,
+        &account,
+        &target,
+        &folders,
+        rounds,
+        engine_sync::StreamTuning::responsive(),
+    )
+    .await
 }
 
 async fn cmd_ingest(flags: &Flags) -> Result<String, CliError> {
@@ -111,6 +156,10 @@ impl Flags {
         let mut iter = args.iter();
         while let Some(arg) = iter.next() {
             if let Some(flag) = arg.strip_prefix("--") {
+                if BOOLEAN_FLAGS.contains(&flag) {
+                    map.insert(flag.to_owned(), "1".to_owned());
+                    continue;
+                }
                 let value = iter
                     .next()
                     .ok_or_else(|| CliError::Usage(format!("--{flag} needs a value")))?;
@@ -124,6 +173,11 @@ impl Flags {
 
     fn get(&self, key: &str) -> Option<&str> {
         self.map.get(key).map(String::as_str)
+    }
+
+    /// Whether a boolean flag was passed.
+    fn has(&self, key: &str) -> bool {
+        self.map.get(key).is_some_and(|v| v == "1")
     }
 
     fn require(&self, key: &str) -> Result<&str, CliError> {
@@ -188,6 +242,32 @@ mod tests {
         let path = dir.join("fixture.json");
         std::fs::write(&path, json).unwrap();
         path.to_str().unwrap().to_owned()
+    }
+
+    /// `--rounds 0` is refused before the store is even opened.
+    #[tokio::test]
+    async fn eas_sync_refuses_zero_rounds() {
+        let err = run(&args(&[
+            "eas-sync",
+            "--db",
+            "unused",
+            "--account",
+            "acct-1",
+            "--url",
+            "http://server.invalid/Microsoft-Server-ActiveSync",
+            "--user",
+            "user@example.test",
+            "--password",
+            "app-password",
+            "--rounds",
+            "0",
+        ]))
+        .await
+        .expect_err("zero rounds is a usage error");
+        assert!(
+            err.to_string().contains("--rounds"),
+            "the error names the flag: {err}"
+        );
     }
 
     #[tokio::test]

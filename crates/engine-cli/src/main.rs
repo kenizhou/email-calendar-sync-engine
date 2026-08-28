@@ -7,6 +7,7 @@
 //! engine-cli ingest   --db <path> --account <id> [--zone <iana>] [--horizon-start <YYYY-MM-DD>] [--horizon-end <YYYY-MM-DD>] <fixture.json>
 //! engine-cli reexpand --db <path> --account <id> [--zone <iana>] [--horizon-start <YYYY-MM-DD>] [--horizon-end <YYYY-MM-DD>]
 //! engine-cli search   --db <path> --account <id> --kind <mail|calendar> [--limit <n>] <query...>
+//! engine-cli eas-sync --db <path> --account <id> [--url <u> --user <u> --password <p> | env EAS_LIVE_URL/USER/PASSWORD] [--folder <fid>[,<fid>...]] [--rounds <n>] [--insecure]
 //! ```
 
 use std::process::ExitCode;

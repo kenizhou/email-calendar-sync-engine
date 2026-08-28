@@ -262,7 +262,7 @@ mod tests {
             }),
             FailureClass::NeedsResync
         );
-        for status in [5, 16] {
+        for status in [5, 16, 111] {
             assert_eq!(
                 class_of(&EasError::SyncStatus {
                     status,

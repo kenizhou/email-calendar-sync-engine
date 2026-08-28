@@ -73,7 +73,14 @@ pub fn recovery_action_for_sync(status: u32) -> RecoveryAction {
         // retriable error, resend the request". Both are folder-scoped
         // transient retries, NOT permanent failures (Android treats 5/16 as
         // backoff-retry).
-        5 | 16 => RecoveryAction::RetryTransient,
+        // 111 is the common-family "server error (retry later)" — the
+        // counterpart of 110 "server error (do not retry)". Live evidence
+        // (engine-cli full sync vs the on-prem Exchange 15.2, 2026-08-28):
+        // the server answers 111 under load mid-fan-out (13 of 45 folders
+        // landed before it did) and recovers; classifying it permanent made
+        // every later folder report a hard failure. The SendMail classifier
+        // already carries the same arm.
+        5 | 16 | 111 => RecoveryAction::RetryTransient,
         _ => RecoveryAction::SurfacePermanent,
     }
 }
@@ -84,6 +91,10 @@ pub fn recovery_action_for_folder_sync(status: u32) -> RecoveryAction {
         1 => RecoveryAction::Ok,
         9 => RecoveryAction::ResetSyncKey,
         142 => RecoveryAction::RetryProvision,
+        // The common-family "server error (retry later)" — same arm and
+        // same reasoning as the Sync classifier above (111 vs 110: the
+        // message table's own retry/do-not-retry split).
+        111 => RecoveryAction::RetryTransient,
         _ => RecoveryAction::SurfacePermanent,
     }
 }
@@ -207,6 +218,18 @@ mod tests {
         // same way.
         assert_eq!(recovery_action_for_sync(5), RecoveryAction::RetryTransient);
         assert_eq!(recovery_action_for_sync(16), RecoveryAction::RetryTransient);
+        // 111 = the common-family "server error (retry later)" — live
+        // evidence 2026-08-28 (engine-cli full sync vs the on-prem Exchange
+        // 15.2: the server answers 111 under load and recovers); its
+        // sibling 110 is the do-not-retry shape and stays permanent.
+        assert_eq!(
+            recovery_action_for_sync(111),
+            RecoveryAction::RetryTransient
+        );
+        assert_eq!(
+            recovery_action_for_sync(110),
+            RecoveryAction::SurfacePermanent
+        );
         // MS-ASCMD Status (Sync) spec table (verified 2026-08-27): 6 =
         // "Error in client/server conversion — the client has sent a
         // malformed or invalid item … This is not a transient condition"
@@ -246,6 +269,11 @@ mod tests {
             RecoveryAction::SurfacePermanent
         );
         assert_eq!(recovery_action_for_folder_sync(1), RecoveryAction::Ok);
+        // The common-family retry-later server error, same as Sync's arm.
+        assert_eq!(
+            recovery_action_for_folder_sync(111),
+            RecoveryAction::RetryTransient
+        );
     }
 
     #[test]

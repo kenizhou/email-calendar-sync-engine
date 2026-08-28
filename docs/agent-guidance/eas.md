@@ -230,6 +230,19 @@ Provision phase-1 handshakes from one device identity race server-side, status
 135), and EAS `FolderSync` ServerIds are per-device-partnership (never compare
 them across devices).
 
+**The account-level live acceptance is `engine-cli eas-sync`** (the P0 exit):
+`--rounds 2` against one `--db` is the full pass then the incremental one,
+through the engine's own fan-out. Credentials come from the same `EAS_LIVE_*`
+gates; the self-signed lab server needs a build with the diagnostic
+`--features eas-insecure-tls` plus `--insecure`. The offline twin — the same
+command against the mock harness — is pinned in CI
+(`tests/transport_harness/engine_cli_flow.rs`). Live evidence from the first
+full run (2026-08-28, on-prem Exchange 15.2, 45 mail folders, ~20k messages):
+the Sync family must classify status **111** ("server error (retry later)",
+the counterpart of 110's "do not retry") as transient — the server answers it
+under fan-out load and recovers, and classifying it permanent reported a hard
+failure for every folder that followed.
+
 **Fixtures**: anything learned from a live run (a wire shape, a status quirk, a
 version-specific behaviour) must be captured as a **scrubbed fixture** wired into
 the offline suite — observed bytes with every identifier moved to a reserved

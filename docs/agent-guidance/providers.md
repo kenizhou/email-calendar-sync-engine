@@ -45,16 +45,19 @@ Recommended first provider spine:
    Contacts/directory/groups are implemented as independent contact sources,
    with optional permissions degrading per source. Same replay + token-gated
    live validation pattern as mail/calendar.
-5. Exchange ActiveSync. **The protocol client is in place** under
-   `provider-eas` — imported from the Kylins client and retrofitted to engine
-   quality (WBXML codec, per-command request builders and response parsers,
-   the HTTP transport with provision/token-refresh/redirect retry layers,
-   autodiscover, status classification); `eas.md` is authoritative for it.
-   **Nothing in it implements the engine traits yet**: the `Provider` mail
-   verbs and the `Ping`-based `Watch` are the planned next series (the spike
-   verdict is one engine change — the EAS `SyncScope` variants — everything
-   else maps inside the current trait surface), and the calendar/contacts
-   adapters come after that.
+5. Exchange ActiveSync. **Mail has landed** under
+   `provider-eas` — imported from the Kylins client and retrofitted to
+   engine quality (WBXML codec, per-command request builders and response
+   parsers, the HTTP transport with provision/token-refresh/redirect retry
+   layers, autodiscover, status classification) — plus the `Provider`
+   adapter: folder/email sync with in-stream SyncKey-invalidation recovery,
+   the ItemOperations message-source fetch with range reassembly, SendMail
+   submission (draft and rendered-source), keyword/move edits over the
+   collection-key ledger, and the `Ping`-based `Watch` with heartbeat
+   self-tuning. `engine-cli eas-sync` drives an account end to end —
+   offline against the mock harness in CI, live full+incremental against
+   the on-prem Exchange for the P0 exit. `eas.md` is authoritative for all
+   of it. The calendar/contacts adapters are the planned next series (P2).
 6. Optional further external-provider smoke tests against real hosted or
    self-managed servers.
 

@@ -9,9 +9,13 @@ license.workspace = true
 
 [dependencies]
 engine-core = { workspace = true }
+engine-provider = { workspace = true }
 engine-store = { workspace = true }
 engine-search = { workspace = true }
 engine-recurrence = { workspace = true }
+engine-sync = { workspace = true }
+engine-tls = { workspace = true }
+provider-eas = { workspace = true }
 store-sqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -20,6 +24,13 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+[features]
+# Diagnostic live runs against the self-signed lab server: opting in builds
+# engine-tls's test-only accept-any config. Default builds (and anything
+# shipped) never compile the path — the same contract as provider-eas's
+# `dangerous-testing`.
+eas-insecure-tls = ["engine-tls/dangerous-testing"]
 
 [lints]
 workspace = true
