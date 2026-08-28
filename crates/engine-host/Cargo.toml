@@ -17,6 +17,9 @@ async-trait = { workspace = true }
 # `host_store().read(|conn| …)`: naming its parameter and row types is why the host
 # names the backend directly rather than reaching it only through `store-sqlite`.
 rusqlite = { workspace = true }
+# The event contract (`events`) is plain data by design: derive-only serde, so the
+# host shell and its TypeScript mirror read one stable JSON shape off every event.
+serde = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
@@ -26,6 +29,9 @@ engine-provider = { workspace = true }
 # The fake's `stream_email` yields a single-chunk stream via
 # `futures_util::stream::iter`, exactly as engine-api's own facade tests do.
 futures-util = { workspace = true }
+# The event tests pin the contract's wire shape to the byte, so they serialize
+# through serde_json itself rather than trusting the derive round-trip.
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

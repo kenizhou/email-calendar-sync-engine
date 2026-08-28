@@ -528,6 +528,8 @@ dependencies = [
  "engine-store",
  "futures-util",
  "rusqlite",
+ "serde",
+ "serde_json",
  "store-sqlite",
  "tokio",
 ]

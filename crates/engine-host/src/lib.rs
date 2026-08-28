@@ -20,6 +20,8 @@
 //! a torn aggregate. Types stay engine-shaped (engine-core ids in, plain data out)
 //! so nothing here re-models what the engine already models.
 
+mod events;
 mod threads;
 
+pub use events::{AccountState, CollectingSink, EngineEvent, EventSink};
 pub use threads::{ThreadCursor, ThreadSummary, ThreadsOptions, ThreadsPage, ThreadsRead};
