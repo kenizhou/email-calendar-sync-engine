@@ -117,12 +117,12 @@ pub fn recovery_action_for_provision(status: u32) -> RecoveryAction {
 /// structure + recovery semantics are what matter now; refine the match
 /// arms once we see real `<Status>` values from SendMail responses.
 ///
-/// The classifier is defined so the 3b retry layer / ComposeMail status
-/// handling can call it for SendMail responses later. For T5 it is not
-/// wired into `send_command` — SendMail success is an empty body, errors
-/// come back as `EasError` variants which `map_eas_error` translates. If a
-/// SendMail `<Status>` error surfaces as `EasError::CommandStatus`, that is
-/// where this classifier would map it.
+/// The classifier is wired at the adapter's submit slice
+/// (`adapter/error.rs::compose_status_error`): `EasClient::send_mail` parses
+/// an in-body `<Status>` into `Ok(status)` (empty body = success), and the
+/// adapter converts every non-1 through this table. The 3b retry layer
+/// inside `send_command` does not see in-body statuses — they arrive as a
+/// parsed response, not an `EasError` variant.
 ///
 /// Mapping (provisional, modeled on the Common family):
 ///   * 140/141/142/143/144 — Provisioning family → `RetryProvision` (same recovery as Common

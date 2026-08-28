@@ -75,12 +75,11 @@ use serde_json::json;
 use tokio::sync::Mutex;
 
 use super::{
-    error::provider_error,
+    error::{provider_error, sync_status_error},
     mailboxes::{BOOTSTRAP_KEY, next_key, request_key},
 };
 use crate::{
-    client::{EasClient, EasError},
-    commands::common_status_message,
+    client::EasClient,
     status::{RecoveryAction, recovery_action_for_sync},
     types::{EasItem, SyncRequest},
 };
@@ -102,6 +101,7 @@ const EXTENDED_NAMESPACE: &str = "eas";
 pub(super) fn stream<'a>(
     client: &'a Mutex<EasClient>,
     folder: &'a MailboxId,
+    ledger: &'a super::CollectionKey,
     cursor: Option<&'a SyncState>,
     fetch_batch: usize,
     chunk_size: usize,
@@ -111,7 +111,7 @@ pub(super) fn stream<'a>(
         // client's command methods rotate session state in place, so one
         // stream drives one client at a time.
         let mut client = client.lock().await;
-        let mut key = request_key(cursor).to_owned();
+        let mut key = pass_key(ledger, cursor);
         let mut mode = PassMode::Additive;
         // Whether this pass has yielded any chunk yet — the guard that keeps
         // the invalidation recovery at the pass boundary (constant mode).
@@ -226,9 +226,14 @@ pub(super) fn stream<'a>(
                         Vec::new(),
                         Vec::new(),
                         None,
-                        SyncState::new(next),
+                        SyncState::new(next.clone()),
                     );
                 }
+                // The pass completed cleanly at `next` — record it as the
+                // ledger key (identical to the checkpoint the engine
+                // persists, so the ledger and the cursor stay one fact) for
+                // the write path to ride (the module docs' ledger section).
+                *ledger.lock().expect("collection-key ledger") = Some(next.clone());
                 return;
             }
             key = next;
@@ -317,6 +322,24 @@ fn window_size(fetch_batch: usize) -> u32 {
     }
 }
 
+/// The key this pass starts from. The engine's cursor is the authority for
+/// what has been delivered; the ledger only ever names a key the server
+/// handed this adapter AFTER the cursor was issued — an edit rotation
+/// (`SetKeywords`), which carries no server rows because the upsync request
+/// sends no `GetChanges`. So: a real cursor plus a ledger key starts from
+/// the ledger's (skipping the no-rows rotation without surfacing a dead
+/// key); otherwise the cursor's own key, with `None`/empty bootstrapping
+/// from `"0"` — a cursor-less engine knows nothing, and a full enumeration
+/// always wins there regardless of what the ledger holds.
+fn pass_key(ledger: &super::CollectionKey, cursor: Option<&SyncState>) -> String {
+    let cached = ledger.lock().expect("collection-key ledger").clone();
+    match (request_key(cursor), cached) {
+        (BOOTSTRAP_KEY, _) => BOOTSTRAP_KEY.to_owned(),
+        (_, Some(cached)) => cached,
+        (key, None) => key.to_owned(),
+    }
+}
+
 /// Maps one wire email item onto the engine's `Message`: ServerId → id,
 /// membership the bound folder, `Read`/`Flag`/`IsDraft` → `$seen`/
 /// `$flagged`/`$draft`, `DateReceived` → `received_at` (an unparseable
@@ -386,19 +409,6 @@ fn message(item: &EasItem, folder: &MailboxId) -> ProviderResult<Message> {
         );
     }
     Ok(message)
-}
-
-/// The surfaced error for a non-success collection status — through the
-/// family-tagged variant, so it classifies via the Sync table with the
-/// protocol failure kept as the `source` chain.
-fn sync_status_error(status: u32) -> ProviderError {
-    provider_error(EasError::SyncStatus {
-        status,
-        message: format!(
-            "Sync failed: {}",
-            common_status_message(status).unwrap_or("collection status not success")
-        ),
-    })
 }
 
 /// The shared error for an id the engine cannot key (an empty ServerId): a

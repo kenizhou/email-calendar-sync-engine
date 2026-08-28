@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 //! The [`Provider`](engine_provider::Provider) adapter over the EAS client —
-//! connection facts, the EAS scope overrides, and the read verbs
+//! connection facts, the EAS scope overrides, the read verbs
 //! (FolderSync containers, Sync class Email messages, ItemOperations
-//! message-source fetch).
+//! message-source fetch), and the write verbs (SendMail submission from a
+//! `Draft` or caller-rendered bytes; keyword edits, moves, and the
+//! documented per-verb refusals of `edit_mail`).
 //!
 //! ## Binding
 //!
@@ -59,21 +61,48 @@
 //! the whole mail read domain the bit names — IMAP/Graph advertise it only
 //! with every mail verb live, and this slice reaches that bar. The
 //! `message_source` bit is **on** too: `fetch_message_source` (the
-//! ItemOperations MIME fetch with range reassembly) landed. The bits that
-//! name domains beyond them stay off until their verbs land:
-//! `mail_writes` (`edit_mail`), `submission` (`submit_email`), and the
-//! calendar/contacts families.
+//! ItemOperations MIME fetch with range reassembly) landed. The write bits
+//! are **on** with this slice: `mail_writes` (`edit_mail` — keyword edits
+//! and moves; `Delete` is refused per the protocol, see `mutate`) and
+//! `submission` + `scheduling_submission` (`submit_email` and
+//! `submit_email_source` — the raw-MIME send carries its own scheduling
+//! parameters). The calendar/contacts families stay off until their verbs
+//! land.
+//!
+//! ## The collection-key ledger
+//!
+//! An EAS `SyncKey` is per-collection server state the client must thread
+//! through every command — and the trait's write seam (`edit_mail`) carries
+//! no cursor. The adapter therefore owns a one-key ledger for the bound
+//! folder: a completed `stream_email` pass records its final key (the same
+//! value the engine persists as its cursor — the cursor stays the
+//! authority for what has been delivered), and a `SetKeywords` edit rides
+//! the ledger's key and records its rotation. Resuming a pass from a
+//! rotation is lossless because the upsync request sends no `GetChanges`
+//! ([MS-ASCMD]: invalid in 16.1) — a rotation carries no server rows. A
+//! cold ledger (a fresh adapter that has not yet observed a pass) refuses
+//! `NeedsResync` rather than guessing: the orchestrator re-syncs, the pass
+//! re-seeds, the outbox retries the op. See `mutate` for the write-side
+//! discipline and `email` for the pass-side rule.
 
 mod connection;
 mod email;
 mod error;
 mod mailboxes;
+mod mutate;
 mod source;
+mod submit;
 
 use engine_core::ids::MailboxId;
 use engine_provider::Capabilities;
 
 use crate::client::{EasClient, EasError, pick_protocol_version};
+
+/// The bound folder's collection-SyncKey ledger: the key the server last
+/// handed this adapter for the bound collection — the write path's key
+/// source. A plain mutex, never held across an await: every toucher
+/// already holds the verb lock.
+pub(super) type CollectionKey = std::sync::Mutex<Option<String>>;
 
 /// The protocol versions this adapter can negotiate over OPTIONS: exactly
 /// the versions whose feature gates the crate implements — `MeetingResponse`
@@ -106,10 +135,17 @@ pub struct EasAdapter {
     /// The verb ladder, read by
     /// [`connection_info`](engine_provider::Provider::connection_info):
     /// `mail` since the read verbs (`sync_mailboxes` + `stream_email`) both
-    /// landed; every other bit stays off until its verb does (see the
-    /// module docs). Deliberately not a constructor parameter — a host must
-    /// not be able to advertise a verb this adapter does not implement.
+    /// landed; `mail_writes`/`submission` since the write verbs landed; every
+    /// other bit stays off until its verb does (see the module docs).
+    /// Deliberately not a constructor parameter — a host must not be able to
+    /// advertise a verb this adapter does not implement.
     capabilities: Capabilities,
+    /// The bound folder's collection-SyncKey ledger — the write path's key
+    /// source (the trait's `edit_mail` carries no cursor). Seeded by a
+    /// completed `stream_email` pass, consumed and rotated by a
+    /// `SetKeywords` edit; `None` until the first pass completes (see the
+    /// module docs' ledger section).
+    collection_key: CollectionKey,
     /// The OPTIONS-negotiated protocol version ("16.1"-shaped), or `None`
     /// before [`EasAdapter::negotiate`]. Adapter-held by design: a host must
     /// not branch on it (`docs/agent-guidance/providers.md`), so it never
@@ -129,6 +165,7 @@ impl std::fmt::Debug for EasAdapter {
             .field("http", &self.http.get())
             .field("folder", &self.folder)
             .field("capabilities", &self.capabilities)
+            .field("collection_key", &self.collection_key)
             .field("protocol_version", &self.protocol_version)
             .finish()
     }
@@ -150,8 +187,17 @@ impl EasAdapter {
             folder,
             // The honest ladder: `mail` names containers AND messages —
             // both read verbs are live, so the bit is on; ditto
-            // `message_source` now that its verb is (module docs).
-            capabilities: Capabilities::none().with_mail().with_message_source(),
+            // `message_source`; and the write verbs (edit_mail,
+            // submit_email/submit_email_source) turn their bits on with
+            // this slice (module docs).
+            capabilities: Capabilities::none()
+                .with_mail()
+                .with_message_source()
+                .with_mail_writes()
+                .with_submission()
+                .with_scheduling_submission(),
+            // Cold by construction — the first completed pass seeds it.
+            collection_key: CollectionKey::default(),
             protocol_version: None,
         }
     }

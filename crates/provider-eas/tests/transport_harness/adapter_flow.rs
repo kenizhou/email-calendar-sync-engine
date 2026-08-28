@@ -46,8 +46,13 @@ async fn pre_connect_connection_info_reports_no_transport_facts() {
     let info = adapter.connection_info();
     assert_eq!(
         info.capabilities,
-        Capabilities::none().with_mail().with_message_source(),
-        "the mail read verbs and the message-source fetch have landed"
+        Capabilities::none()
+            .with_mail()
+            .with_message_source()
+            .with_mail_writes()
+            .with_submission()
+            .with_scheduling_submission(),
+        "the mail read verbs landed first; the write verbs turned their bits on with theirs"
     );
     assert_eq!(
         info.tls_version, None,
@@ -113,7 +118,12 @@ async fn options_negotiation_populates_connection_info() {
     );
     assert_eq!(
         info.capabilities,
-        Capabilities::none().with_mail().with_message_source(),
+        Capabilities::none()
+            .with_mail()
+            .with_message_source()
+            .with_mail_writes()
+            .with_submission()
+            .with_scheduling_submission(),
         "capabilities are the verb ladder, not the server's advertised command list"
     );
 

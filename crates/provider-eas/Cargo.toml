@@ -19,6 +19,11 @@ engine-core = { workspace = true }
 # `ConnectionInfo::http_version`, the same feature the JMAP/CalDAV/Graph
 # transports hold it for.
 engine-provider = { workspace = true, features = ["http"] }
+# The submit verb assembles the `Draft` into RFC 5322 bytes — the Graph
+# adapter's assembler seam (`assemble_filed_message`, `parse_message_id`).
+engine-rfc5322 = { workspace = true }
+# The assembler takes the send's `OffsetDateTime` for the Date header.
+time = { workspace = true }
 # One TLS trust policy for every provider (`docs/agent-guidance/tls.md`): the
 # transport builds its `reqwest::Client` from the host-supplied `TlsClientConfig`,
 # exactly like Graph/JMAP. `reqwest` enables the preconfigured-client builder

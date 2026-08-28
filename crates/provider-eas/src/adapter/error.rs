@@ -91,6 +91,48 @@ fn http_class(status: u16) -> FailureClass {
     }
 }
 
+/// The surfaced error for a non-success Sync collection status — through the
+/// family-tagged variant, so it classifies via the Sync table with the
+/// protocol failure kept as the `source` chain. Shared by the stream verb
+/// and the upsync (`SetKeywords`) edit path.
+pub(super) fn sync_status_error(status: u32) -> ProviderError {
+    provider_error(EasError::SyncStatus {
+        status,
+        message: format!(
+            "Sync failed: {}",
+            crate::commands::common_status_message(status)
+                .unwrap_or("collection status not success")
+        ),
+    })
+}
+
+/// The surfaced error for a SendMail in-body status ([MS-ASCMD]
+/// §2.2.3.162): SendMail success is an empty body, so a body CAN only carry
+/// a failure. Classifies through the SendMail family table (`status.rs`).
+pub(super) fn compose_status_error(status: u32) -> ProviderError {
+    let class = class_of_action(crate::status::recovery_action_for_send_mail(status));
+    ProviderError::new(class, format!("SendMail failed: in-body status {status}"))
+}
+
+/// The surfaced error for a MoveItems per-move failure ([MS-ASCMD]
+/// §2.2.3.177.10 — the table whose success code is 3, not 1). The locked
+/// shapes are transient (this adapter moves one item at a time, so status 5
+/// can only be the item lock); the addressing failures are structural —
+/// resending the same move walks into the same answer.
+pub(super) fn move_status_error(status: u32) -> ProviderError {
+    let class = match status {
+        5 | 7 => FailureClass::Retryable,
+        _ => FailureClass::Permanent,
+    };
+    ProviderError::new(
+        class,
+        format!(
+            "MoveItems failed: status {status} — {}",
+            crate::commands::move_items_status_message(status)
+        ),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,5 +300,38 @@ mod tests {
             provider.detail()
         );
         assert!(std::error::Error::source(&provider).is_some());
+    }
+
+    /// SendMail's in-body statuses classify through the SendMail family
+    /// table: 132 is the transient server-unavailable shape; the auth and
+    /// unknown shapes surface permanently through the shared funnel (the
+    /// `SurfaceAuth` action deliberately rides `Permanent` there — the
+    /// funnel's standing decision, not per-verb).
+    #[test]
+    fn send_mail_statuses_classify_per_the_compose_table() {
+        assert_eq!(compose_status_error(132).class(), FailureClass::Retryable);
+        assert_eq!(compose_status_error(130).class(), FailureClass::Permanent);
+        assert_eq!(compose_status_error(999).class(), FailureClass::Permanent);
+    }
+
+    /// MoveItems' per-move failures: the item-locked shapes retry; the
+    /// addressing failures (including the anomalous bare success-code-3
+    /// without a DstMsgId) are structural.
+    #[test]
+    fn move_statuses_split_locked_from_structural() {
+        for status in [5, 7] {
+            assert_eq!(
+                move_status_error(status).class(),
+                FailureClass::Retryable,
+                "MoveItems {status} is the item-locked shape"
+            );
+        }
+        for status in [1, 2, 3, 4, 6] {
+            assert_eq!(
+                move_status_error(status).class(),
+                FailureClass::Permanent,
+                "MoveItems {status} is structural"
+            );
+        }
     }
 }

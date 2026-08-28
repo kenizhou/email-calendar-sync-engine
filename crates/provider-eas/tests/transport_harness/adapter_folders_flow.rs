@@ -202,11 +202,16 @@ async fn fresh_sync_bootstraps_from_zero_and_returns_a_snapshot() {
     );
     // The verb ladder: the mail bit promises the whole mail read surface
     // (containers + messages) — both are live now (this verb and
-    // `stream_email`), so the bit is on; ditto `message_source` now that
-    // `fetch_message_source` is.
+    // `stream_email`), so the bit is on; ditto `message_source`, and the
+    // write bits landed with the submit/edit slice.
     assert_eq!(
         adapter.connection_info().capabilities,
-        Capabilities::none().with_mail().with_message_source(),
+        Capabilities::none()
+            .with_mail()
+            .with_message_source()
+            .with_mail_writes()
+            .with_submission()
+            .with_scheduling_submission(),
         "mail flipped when the message verbs landed"
     );
 }

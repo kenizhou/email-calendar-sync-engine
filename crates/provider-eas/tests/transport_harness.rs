@@ -32,6 +32,8 @@ mod harness;
 #[path = "transport_harness/server.rs"]
 mod server;
 
+#[path = "transport_harness/adapter_edit_flow.rs"]
+mod adapter_edit_flow;
 #[path = "transport_harness/adapter_email_flow.rs"]
 mod adapter_email_flow;
 #[path = "transport_harness/adapter_email_wire.rs"]
@@ -44,6 +46,8 @@ mod adapter_folders_flow;
 mod adapter_source_flow;
 #[path = "transport_harness/adapter_source_wire.rs"]
 mod adapter_source_wire;
+#[path = "transport_harness/adapter_submit_flow.rs"]
+mod adapter_submit_flow;
 #[path = "transport_harness/autodiscover_flow.rs"]
 mod autodiscover_flow;
 #[path = "transport_harness/codec_and_parse.rs"]

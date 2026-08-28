@@ -95,7 +95,14 @@ impl Provider for EasAdapter {
         fetch_batch: usize,
         chunk_size: usize,
     ) -> EmailStream<'a> {
-        super::email::stream(&self.client, &self.folder, cursor, fetch_batch, chunk_size)
+        super::email::stream(
+            &self.client,
+            &self.folder,
+            &self.collection_key,
+            cursor,
+            fetch_batch,
+            chunk_size,
+        )
     }
 
     /// ItemOperations Fetch with `MIMESupport`=2 + BodyPreference Type 4
@@ -112,5 +119,57 @@ impl Provider for EasAdapter {
         message: &Message,
     ) -> ProviderResult<RawMime> {
         super::source::fetch_source(&self.client, &self.folder, message).await
+    }
+
+    /// SendMail ([MS-ASCMD] §2.2.1.13): the draft assembled through
+    /// `engine-rfc5322` (the filed variant — SendMail routes recipients
+    /// from the bytes, so the `Bcc` header must stay in them), sent as an
+    /// OPAQUE `<Mime>` with `<SaveInSentItems/>` and a
+    /// `Message-ID`-derived deterministic `<ClientId>` (Exchange's dedup
+    /// key for a lost-response retry). The empty-body success carries no
+    /// server id, so the receipt's key is the `sent:<Message-ID>`
+    /// placeholder (the Graph/IMAP no-id precedent) that reconciles by
+    /// `Message-ID` when Sent Items next syncs. `super::submit` owns the
+    /// mapping and its contract.
+    async fn submit_email(
+        &self,
+        _account: &AccountId,
+        draft: &engine_provider::Draft,
+    ) -> ProviderResult<engine_provider::SubmissionReceipt> {
+        super::submit::submit(&self.client, draft).await
+    }
+
+    /// SendMail over the caller's own rendered bytes — sent **verbatim**,
+    /// never re-rendered. The seam's shape contract is validated first (a
+    /// `Message-ID`, a `From`, a terminated body), and a non-empty
+    /// `recipients` envelope is honored only when it names exactly the
+    /// bytes' own To/Cc/Bcc addr-specs — SendMail has no separate envelope,
+    /// so a list the bytes cannot deliver is refused permanently rather
+    /// than silently mis-delivered. `super::submit` owns the contract.
+    async fn submit_email_source(
+        &self,
+        _account: &AccountId,
+        source: &[u8],
+        recipients: &[String],
+    ) -> ProviderResult<engine_provider::SubmissionReceipt> {
+        super::submit::submit_source(&self.client, source, recipients).await
+    }
+
+    /// The three mutations over their EAS commands: keyword edits ride a
+    /// Sync Commands `Change` keyed by the adapter's collection-key ledger
+    /// (the trait's write seam carries no cursor — see the module docs'
+    /// ledger section; a cold ledger refuses `NeedsResync` and the outbox
+    /// retries after the next pass re-seeds it), moves ride `MoveItems`
+    /// with the bound folder as the source collection and record the SOURCE
+    /// key (the moved copy is a new ServerId that reconciles next sync),
+    /// and `Delete` is refused `InvalidState` — EAS has no per-item hard
+    /// delete; the documented policy is `MoveTo` the deleted-items folder.
+    /// `super::mutate` owns the mapping and its contract.
+    async fn edit_mail(
+        &self,
+        _account: &AccountId,
+        edit: &engine_provider::MailEdit,
+    ) -> ProviderResult<engine_provider::MailEditReceipt> {
+        super::mutate::edit(&self.client, &self.folder, &self.collection_key, edit).await
     }
 }
