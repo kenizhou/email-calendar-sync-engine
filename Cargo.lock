@@ -518,6 +518,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-host"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "engine-api",
+ "engine-core",
+ "engine-mime",
+ "engine-provider",
+ "engine-store",
+ "engine-sync",
+ "engine-tls",
+ "futures-util",
+ "provider-eas",
+ "provider-imap",
+ "rcgen",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "store-sqlite",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+]
+
+[[package]]
 name = "engine-http"
 version = "0.1.0"
 dependencies = [
