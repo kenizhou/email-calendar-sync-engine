@@ -71,6 +71,12 @@ pub fn client_config(policy: &TlsPolicy) -> Result<TlsClientConfig, TlsError> {
             .dangerous()
             .with_custom_certificate_verifier(platform_verifier(&provider, extra_roots)?)
             .with_no_client_auth(),
+        TlsPolicy::PinnedFingerprints { sha256 } => {
+            if sha256.is_empty() {
+                return Err(TlsError::EmptyPinSet);
+            }
+            crate::pinned::pinned_config(sha256.clone(), provider.clone(), builder)
+        }
     };
     Ok(TlsClientConfig(Arc::new(config)))
 }

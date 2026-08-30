@@ -26,6 +26,7 @@
 
 mod config;
 mod error;
+mod pinned;
 mod policy;
 
 #[cfg(feature = "dangerous-testing")]
