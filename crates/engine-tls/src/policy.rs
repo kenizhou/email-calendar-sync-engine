@@ -37,6 +37,15 @@ pub enum TlsPolicy {
         /// Roots trusted in addition to whatever the OS trusts.
         extra_roots: Vec<CertificateDer<'static>>,
     },
+    /// Trust-on-first-use pinning by end-entity SHA-256 fingerprint: accept iff
+    /// the certificate the server presents is byte-identical to a pinned one
+    /// (the SSH/TOFU model — see `src/pinned.rs`). This is the only pin shape
+    /// that works for a CA-signed end-entity certificate served alone, because
+    /// [`TlsPolicy::pinned`]'s anchor semantics validate issuers, not leaves.
+    PinnedFingerprints {
+        /// Accepted SHA-256 fingerprints of the end-entity DER encoding.
+        sha256: Vec<[u8; 32]>,
+    },
 }
 
 impl TlsPolicy {
@@ -74,10 +83,20 @@ impl TlsPolicy {
     }
 
     /// Trust exactly `roots` and nothing else — the deterministic path for a
-    /// regulated deployment pinning its own CA.
+    /// regulated deployment pinning its own CA. The certificates are webpki
+    /// trust **anchors**: they validate as the *issuer* of the server's
+    /// certificate, so pin a CA (or a presented intermediate) here; to pin an
+    /// end-entity certificate itself use [`TlsPolicy::pinned_fingerprints`].
     #[must_use]
     pub fn pinned(roots: Vec<CertificateDer<'static>>) -> Self {
         Self::roots(false, false, roots)
+    }
+
+    /// Trust-on-first-use pinning: trust exactly the end-entity certificates
+    /// whose SHA-256 fingerprints are given, and nothing else.
+    #[must_use]
+    pub fn pinned_fingerprints(sha256: Vec<[u8; 32]>) -> Self {
+        Self::PinnedFingerprints { sha256 }
     }
 
     /// Delegate to the OS verifier. Needs the `tls-platform-verifier` feature.

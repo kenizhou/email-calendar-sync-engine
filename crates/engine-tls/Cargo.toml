@@ -14,6 +14,8 @@ rustls = { workspace = true }
 tokio-rustls = { workspace = true }
 # The bundled Mozilla root program — the hermetic default trust anchor set.
 webpki-roots = { workspace = true }
+# SHA-256 of the end-entity DER for the PinnedFingerprints verifier (TOFU pinning).
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 # HTTP providers finish building their own reqwest client from the shared config, so the
 # reqwest seam is optional: `provider-imap` (connector only) does not pull reqwest.
@@ -37,6 +39,8 @@ dangerous-testing = []
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "io-util"] }
 # Generates the self-signed cert the in-process TLS tests trust; pure Rust.
 rcgen = "0.13"
+# Fingerprint computation for the pinning tests.
+sha2 = { workspace = true }
 # The round-trip test stands up a tokio-rustls TLS server and names rustls types
 # (ServerConfig, ServerName); both are runtime deps but must be dev-deps to be
 # nameable from the integration test crate.

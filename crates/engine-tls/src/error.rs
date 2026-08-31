@@ -31,4 +31,9 @@ pub enum TlsError {
     /// corresponding `engine-tls` feature is off).
     #[error("this build was compiled without support for {0}")]
     Unsupported(&'static str),
+
+    /// `PinnedFingerprints` with an empty set would reject every certificate, so
+    /// this is rejected up front (same discipline as [`TlsError::EmptyRootStore`]).
+    #[error("the TLS policy pinned no certificate fingerprints")]
+    EmptyPinSet,
 }
