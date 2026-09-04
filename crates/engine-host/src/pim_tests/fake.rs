@@ -18,7 +18,7 @@ use engine_core::{
     sync::{SyncObject, SyncState, SyncUpdate},
     time::{CalendarDateTime, LocalDateTime},
     version::{ETag, RevisionTokens},
-    write::{IdempotencyKey, PendingOp, ResourceKey},
+    write::{IdempotencyKey, PendingOp, PendingOpId, ResourceKey},
 };
 use engine_provider::{
     Capabilities, ConnectionInfo, ContactSourceSync, ContactWriteReceipt, ContactsProvider,
@@ -39,8 +39,22 @@ pub(super) fn at_utc(year: i32, month: u8, day: u8, hour: u8) -> CalendarDateTim
     CalendarDateTime::utc(LocalDateTime::new(year, month, day, hour, 0, 0).expect("valid time"))
 }
 
+/// A floating (zoneless) wall-clock time — the form whose materialized
+/// instants move with the zone the expansion resolved them through.
+pub(super) fn floating(year: i32, month: u8, day: u8, hour: u8) -> CalendarDateTime {
+    CalendarDateTime::Floating(
+        LocalDateTime::new(year, month, day, hour, 0, 0).expect("valid time"),
+    )
+}
+
 /// A titled, timed meeting in the work calendar.
-fn meeting(id: &str, uid: &str, start: CalendarDateTime, title: &str, duration: &str) -> Event {
+pub(super) fn meeting(
+    id: &str,
+    uid: &str,
+    start: CalendarDateTime,
+    title: &str,
+    duration: &str,
+) -> Event {
     let mut event = Event::new(
         EventId::try_from(id).expect("valid id"),
         Uid::new(uid).expect("valid uid"),
@@ -241,13 +255,13 @@ impl ContactsProvider for RoundPim {
 
 /// Seeds one unstarted op — the state a crash between the enqueue and claim
 /// halves of any inline write driver leaves behind, built exactly the way the
-/// facade's own drain tests build it.
+/// facade's own drain tests build it — and returns its id for state polling.
 async fn seed_unstarted(
     engine: &Engine,
     idempotency: String,
     resource: String,
     intent: OutboxIntent,
-) {
+) -> PendingOpId {
     engine
         .host_store()
         .enqueue_pending_op(
@@ -259,7 +273,7 @@ async fn seed_unstarted(
             ),
         )
         .await
-        .expect("the op enqueues");
+        .expect("the op enqueues")
 }
 
 /// One unstarted calendar create, the calendar drain's replay.
@@ -281,8 +295,9 @@ pub(super) async fn seed_calendar_create(engine: &Engine, uid: &str) {
     .await;
 }
 
-/// One unstarted contact create, the contact drain's replay.
-pub(super) async fn seed_contact_create(engine: &Engine, id: &str) {
+/// One unstarted contact create, the contact drain's replay — its id returned
+/// so a test can pin the op's lifecycle state across rounds.
+pub(super) async fn seed_contact_create(engine: &Engine, id: &str) -> PendingOpId {
     let draft = ContactDraft {
         address_book: AddressBookId::try_from("personal").expect("valid book"),
         card: card(id),
@@ -293,5 +308,5 @@ pub(super) async fn seed_contact_create(engine: &Engine, id: &str) {
         format!("contact-create:personal:{id}"),
         OutboxIntent::CreateContact { draft },
     )
-    .await;
+    .await
 }

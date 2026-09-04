@@ -12,11 +12,12 @@ mod fake;
 use engine_api::{ApiError, Engine, Horizon, TimeZoneId};
 use engine_core::sync::ObjectKind;
 use engine_provider::ContactsProvider;
-use engine_store::StoreRead as _;
+use engine_store::{PendingOpState, StoreRead as _};
 use fake::{RoundPim, account, seed_calendar_create, seed_contact_create};
 
 use crate::{
     events::{CollectingSink, EngineEvent},
+    grid::CalendarGridRead,
     pim::{PimRoundReport, run_pim_round},
 };
 
@@ -132,13 +133,13 @@ async fn a_drained_calendar_op_reports_the_outbox_after_the_calendar_drain() {
 }
 
 #[tokio::test]
-async fn a_contact_op_the_calendar_drain_skipped_waits_for_a_later_round() {
-    // Claims are scope-blind: the calendar drain claims the account's runnable
-    // ops, executes its own verbs, and leaves a claimed contact op lease-held
-    // and unmarked for one TTL (the facade's documented skip cost) — so the
-    // contact drain in the SAME round finds nothing runnable.
+async fn a_contact_op_the_calendar_drain_skipped_stays_lease_held() {
+    // Claims are scope-blind and the round's order is fixed: the calendar
+    // drain claims the account's runnable ops first, executes its own verbs,
+    // and leaves a claimed contact op skipped-unmarked and lease-held — so
+    // the contact drain in the SAME round finds nothing runnable.
     let engine = Engine::open_in_memory().expect("engine");
-    seed_contact_create(&engine, "card-9").await;
+    let first = seed_contact_create(&engine, "card-9").await;
     let sink = CollectingSink::default();
 
     let report = round(&engine, &RoundPim::full(), &sink, horizon())
@@ -154,6 +155,50 @@ async fn a_contact_op_the_calendar_drain_skipped_waits_for_a_later_round() {
     assert_eq!(
         report.drained_contacts, 0,
         "the op is lease-held, not runnable this round"
+    );
+    assert_eq!(
+        engine.pending_op_state(first).await.expect("op state read"),
+        Some(PendingOpState::InFlight),
+        "the skip left the op lease-held, unmarked"
+    );
+
+    // The second round skips again — and this is the permanent starvation
+    // under this round's fixed calendar-first order, not a one-TTL wait: the
+    // fresh contact op is claimed and skipped by the calendar drain exactly
+    // as the first was, and the first is still lease-held. When its lease
+    // does expire, the next round's calendar drain re-claims it (claims look
+    // at runnability only, limit 16) and skips it again — no round under
+    // this ordering ever hands a runnable contact op to the contact drain.
+    // This pin is what the intent-aware claims escalated as engine task T7b
+    // will flip; until then, a host must run `drain_contact_ops` on its own
+    // cadence between rounds to clear contact writes.
+    sink.clear();
+    let second = seed_contact_create(&engine, "card-10").await;
+    let report = round(&engine, &RoundPim::full(), &sink, horizon())
+        .await
+        .expect("the second round completes");
+
+    assert!(sink.events().is_empty(), "the second round is quiet");
+    assert_eq!(
+        report.drained_cal, 0,
+        "a skip is not a settled op — the calendar drain reports nothing"
+    );
+    assert_eq!(
+        report.drained_contacts, 0,
+        "the second round's contact drain found nothing runnable either"
+    );
+    assert_eq!(
+        engine
+            .pending_op_state(second)
+            .await
+            .expect("op state read"),
+        Some(PendingOpState::InFlight),
+        "the calendar drain claimed and skipped the fresh op too"
+    );
+    assert_eq!(
+        engine.pending_op_state(first).await.expect("op state read"),
+        Some(PendingOpState::InFlight),
+        "the first op is still lease-held, never run"
     );
 }
 
@@ -228,4 +273,76 @@ async fn a_round_whose_horizon_widened_materializes_and_reports_the_calendar() {
         year_rows > 45,
         "the year is materialized: {year_rows} occurrences"
     );
+}
+
+#[tokio::test]
+async fn a_round_in_a_changed_zone_re_expands_and_reports_the_calendar() {
+    // The second reason `expand_horizon` exists: the host's zone changed. A
+    // floating event's stored instant is only correct for the zone it was
+    // expanded under, and the persisted window's horizon already covers the
+    // request — so a zone-blind window check would leave every floating
+    // occurrence resolved through the old zone, silently shifted by the zone
+    // offset, exactly at the instants a grid renders them.
+    let engine = Engine::open_in_memory().expect("engine");
+    let sink = CollectingSink::default();
+    let amsterdam = TimeZoneId::iana("Europe/Amsterdam").expect("valid zone");
+    let new_york = TimeZoneId::iana("America/New_York").expect("valid zone");
+    let provider = RoundPim::with_events(vec![fake::meeting(
+        "evt-z",
+        "uid-z@h",
+        fake::floating(2026, 3, 2, 10),
+        "Floating coffee",
+        "PT30M",
+    )]);
+
+    run_pim_round(&engine, &provider, &account(), horizon(), &amsterdam, &sink)
+        .await
+        .expect("the first round completes");
+    let amsterdam_page = engine
+        .calendar_grid(&account(), horizon())
+        .await
+        .expect("grid read");
+    assert_eq!(amsterdam_page.occurrences.len(), 1);
+    assert_eq!(
+        amsterdam_page.occurrences[0].start.hour(),
+        9,
+        "10:00 Amsterdam is 09:00Z"
+    );
+    assert!(amsterdam_page.is_materialized);
+    sink.clear();
+
+    // Same horizon, different zone, quiet delta: only the re-expansion can
+    // move the row — and it is a calendar change the host hears.
+    let report = run_pim_round(&engine, &provider, &account(), horizon(), &new_york, &sink)
+        .await
+        .expect("the second round completes");
+
+    assert_eq!(report.calendar.events.applied.upserted, 0);
+    assert_eq!(
+        sink.events(),
+        vec![calendar_changed()],
+        "the re-materialization is the round's one calendar change"
+    );
+    let new_york_page = engine
+        .calendar_grid(&account(), horizon())
+        .await
+        .expect("grid read");
+    assert_eq!(new_york_page.occurrences.len(), 1);
+    assert_eq!(
+        new_york_page.occurrences[0].start.hour(),
+        15,
+        "10:00 New York is 15:00Z"
+    );
+    assert!(
+        new_york_page.is_materialized,
+        "the window still covers the request after the re-expansion"
+    );
+
+    // The zone unchanged: the window now matches `(horizon, zone)` exactly,
+    // so a third round re-expands nothing and emits nothing.
+    sink.clear();
+    run_pim_round(&engine, &provider, &account(), horizon(), &new_york, &sink)
+        .await
+        .expect("the third round completes");
+    assert!(sink.events().is_empty(), "no zone drift, no widening");
 }
