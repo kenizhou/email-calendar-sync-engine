@@ -21,13 +21,13 @@ use crate::outbox::drain::{drain_contact_ops, drain_mail_ops, settle_claimed};
 
 /// The lease the tests arm — long enough to span a claim, short enough that a
 /// two-minute advance expires it.
-fn ttl() -> Duration {
+pub(super) fn ttl() -> Duration {
     Duration::from_mins(1)
 }
 
 /// Enqueues one op and returns its id — an unstarted (`Pending`) op exactly as
 /// the inline drivers' enqueue half leaves it.
-async fn enqueue_op(
+pub(super) async fn enqueue_op(
     store: &SqliteStore<ManualClock>,
     idempotency: &str,
     resource: &str,
@@ -49,7 +49,7 @@ async fn enqueue_op(
 /// Hand-builds the drainer's founding case: an op an inline worker claimed and
 /// then died holding, its lease long expired. The clock advances past the
 /// lease, so the next claim — the drain's — finds it runnable again.
-async fn crash_orphan(
+pub(super) async fn crash_orphan(
     store: &SqliteStore<ManualClock>,
     clock: &ManualClock,
     idempotency: &str,
@@ -173,9 +173,11 @@ async fn an_undecodable_payload_is_terminally_failed_and_never_reclaimed() {
 
 #[tokio::test]
 async fn a_calendar_op_in_the_mail_drain_is_skipped_unmarked() {
-    // Calendar replay is not built this phase; the mail drain claims the op
-    // (claims are scope-blind) and must leave it unmarked — InFlight under the
-    // drain's lease until it expires, the documented one-TTL cost.
+    // The mail drain cannot execute a calendar verb (its provider may carry no
+    // calendar surface), so it claims the op (claims are scope-blind) and leaves
+    // it unmarked — InFlight under the drain's lease until it expires, the
+    // documented one-TTL cost. The calendar drain is the op's executor once the
+    // lease recycles it.
     let provider = FakeMail::new(vec![], vec![]);
     let store = SqliteStore::open_in_memory(clock()).unwrap();
     let op = enqueue_op(
@@ -361,7 +363,7 @@ fn contact_draft() -> ContactDraft {
 }
 
 /// A stored event just complete enough for an `EventDeletion` to target.
-fn stored_event() -> Event {
+pub(super) fn stored_event() -> Event {
     Event::new(
         EventId::try_from("/cal/default/evt-1.ics").unwrap(),
         Uid::new("evt-1@test.local").unwrap(),
@@ -370,7 +372,7 @@ fn stored_event() -> Event {
     )
 }
 
-fn at(hour: u8) -> CalendarDateTime {
+pub(super) fn at(hour: u8) -> CalendarDateTime {
     CalendarDateTime::utc(
         format!("2026-08-01T{hour:02}:00:00")
             .parse::<LocalDateTime>()

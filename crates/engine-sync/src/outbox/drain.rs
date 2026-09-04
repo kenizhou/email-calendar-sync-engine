@@ -5,15 +5,17 @@
 //! crash orphan (`InFlight` under a lease that has expired) — by claiming a
 //! batch and replaying each op through the same execute halves the inline path
 //! runs ([`execute_claimed_mail`](super::execute::execute_claimed_mail) /
-//! [`execute_claimed_contact`](super::execute::execute_claimed_contact)), then
-//! settling each under its lease. One claim batch per call: work is bounded,
-//! and a deeper backlog simply needs another call.
+//! [`execute_claimed_contact`](super::execute::execute_claimed_contact) /
+//! [`execute_claimed_calendar`](super::execute::execute_claimed_calendar)),
+//! then settling each under its lease. One claim batch per call: work is
+//! bounded, and a deeper backlog simply needs another call.
 //!
-//! Two entry points, one per provider surface, because the split is the
+//! Three entry points, one per provider surface, because the split is the
 //! providers' own: a mail-only provider (IMAP) cannot satisfy
-//! `ContactsProvider` yet still has mail ops to drain. The claim and settle
-//! machinery — everything except the one execute call per op — is shared
-//! ([`settle_claimed`]).
+//! `ContactsProvider` yet still has mail ops to drain, and every calendar verb
+//! lives on `Provider` itself, so the calendar drain needs no tighter bound
+//! than the mail one. The claim and settle machinery — everything except the
+//! one execute call per op — is shared ([`settle_claimed`]).
 
 use core::time::Duration;
 
@@ -21,7 +23,9 @@ use engine_core::{error::FailureClass, ids::AccountId, write::PendingOutcome};
 use engine_provider::{ContactsProvider, Provider};
 use engine_store::{LeaseRequest, LeasedPendingOp, Store, StoreError, StoreRead, WorkerId};
 
-use super::execute::{ExecuteFailure, execute_claimed_contact, execute_claimed_mail};
+use super::execute::{
+    ExecuteFailure, execute_claimed_calendar, execute_claimed_contact, execute_claimed_mail,
+};
 use crate::SyncError;
 
 /// Drains up to `limit` of this account's runnable **mail** ops — `submit_mail`,
@@ -35,7 +39,8 @@ use crate::SyncError;
 /// a tagged intent is poison-marked with), or a parked `NeedsConfirmation`.
 /// Not counted: ops left unmarked, which are (a) **foreign-scope verbs** — a
 /// calendar or contact intent, claimed because claims are scope-blind, skipped
-/// without a mark so the right executor can take it later — and (b) an op whose
+/// without a mark so the right executor — the calendar or contact drain — can
+/// take it after the lease expires — and (b) an op whose
 /// mark came back `StaleLease` (another worker re-claimed it; its outcome is
 /// that worker's to record, dropped here silently).
 ///
@@ -107,6 +112,44 @@ where
     let mut driven = 0;
     for leased in &claimed {
         let executed = execute_claimed_contact(provider, store, account, leased).await;
+        driven += usize::from(settle_claimed(store, leased, executed).await?);
+    }
+    Ok(driven)
+}
+
+/// Drains up to `limit` of this account's runnable **calendar** ops —
+/// `create_event`, `patch_event`, `put_event_doc`, `rsvp_event`, and
+/// `delete_event` intents — with the same claim/replay/settle discipline and
+/// the same counting semantics as [`drain_mail_ops`] (see its docs for the
+/// exact accounting and the skip's TTL cost). A replayed patch, RSVP, or
+/// occurrence delete re-reads the base event by id from the store, exactly as
+/// the calendar execute half prescribes: a patch or RSVP whose event is gone
+/// is a terminal `Conflict`, an occurrence delete whose event is gone is a
+/// success, and a series delete needs no base at all.
+///
+/// # Errors
+///
+/// Returns [`SyncError::Store`] when the claim, a mark, or a replay's
+/// base-event read fails (an execution failure is not an error: it arrives as
+/// the outcome this call records).
+pub async fn drain_calendar_ops<P, S>(
+    provider: &P,
+    store: &S,
+    account: &AccountId,
+    worker: WorkerId,
+    ttl: Duration,
+    limit: usize,
+) -> Result<usize, SyncError>
+where
+    P: Provider,
+    S: Store + StoreRead,
+{
+    let claimed = store
+        .claim_pending_ops(account.clone(), LeaseRequest::new(worker, ttl), limit)
+        .await?;
+    let mut driven = 0;
+    for leased in &claimed {
+        let executed = execute_claimed_calendar(provider, store, account, leased).await;
         driven += usize::from(settle_claimed(store, leased, executed).await?);
     }
     Ok(driven)

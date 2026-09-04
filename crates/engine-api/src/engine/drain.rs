@@ -1,13 +1,13 @@
 //! The outbox drains on `Engine`: the background counterpart of the write
-//! methods in `writes` and `contacts`. A facade write resolves the op it
-//! enqueues in the same call; a drain resolves the ops nobody finished — an
-//! unstarted `Pending` op, or a crash orphan (`InFlight` under an expired
-//! lease) — which is the recovery a host runs periodically (kylins P1 runs it
-//! on a timer) so a crash never strands a recorded write.
+//! methods in `writes`, `contacts`, and `calendar_writes`. A facade write
+//! resolves the op it enqueues in the same call; a drain resolves the ops
+//! nobody finished — an unstarted `Pending` op, or a crash orphan (`InFlight`
+//! under an expired lease) — which is the recovery a host runs periodically
+//! (kylins P1 runs it on a timer) so a crash never strands a recorded write.
 
 use engine_core::ids::AccountId;
 use engine_provider::{ContactsProvider, Provider};
-use engine_sync::{drain_contact_ops, drain_mail_ops};
+use engine_sync::{drain_calendar_ops, drain_contact_ops, drain_mail_ops};
 
 use super::{LEASE_TTL, map_sync_error, worker};
 use crate::{ApiError, Engine};
@@ -48,8 +48,8 @@ impl Engine {
     /// of unrunnability per skip) — and an op whose mark lost its
     /// lease to another worker (that worker owns the outcome).
     ///
-    /// **Calendar verbs are excluded** — replaying a calendar write needs the
-    /// base re-fetch and conflict recovery of a later phase — and a replayed
+    /// Calendar verbs are not this drain's — they are
+    /// [`drain_calendar_ops`](Self::drain_calendar_ops)' — and a replayed
     /// submission's `SentCopy` fact (what became of the sender's own copy) is
     /// lost: Phase 1 records the op state only, and the host observes completion
     /// through [`pending_op_state`](Self::pending_op_state).
@@ -115,6 +115,46 @@ impl Engine {
         .await
         .map_err(map_sync_error)
     }
+
+    /// Drains this account's runnable **calendar** ops from the durable
+    /// outbox — the `create_calendar_event`, `patch_calendar_event`,
+    /// `put_calendar_document`, `rsvp_calendar_event`, and
+    /// `delete_calendar_event` intents that were recorded but never resolved —
+    /// under the same claim/replay/settle discipline and the same counting
+    /// semantics as [`drain_mail_ops`](Self::drain_mail_ops) (see its docs for
+    /// the exact accounting, the exclusions, and the skip's TTL cost). Every
+    /// calendar verb lives on [`Provider`] itself, so this drain needs no
+    /// tighter provider bound than the mail one.
+    ///
+    /// A replayed patch, RSVP, or occurrence delete re-reads its base event by
+    /// id from the store, exactly as the calendar execute half prescribes: a
+    /// patch or RSVP whose event is gone is a `Conflict` (corrected by the
+    /// next calendar sync, never retried into success), an occurrence delete
+    /// whose event is gone is a success (an occurrence of an absent event is
+    /// already removed), and a series delete and a document replace need no
+    /// base at all.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Sync`] when the claim, a mark, or a replay's store
+    /// step (including the base-event re-read) fails. An execution failure is
+    /// not an error: it arrives as the `Failed` outcome this call records.
+    pub async fn drain_calendar_ops<P: Provider>(
+        &self,
+        provider: &P,
+        account: &AccountId,
+    ) -> Result<usize, ApiError> {
+        drain_calendar_ops(
+            provider,
+            &self.store,
+            account,
+            worker(),
+            LEASE_TTL,
+            DRAIN_LIMIT,
+        )
+        .await
+        .map_err(map_sync_error)
+    }
 }
 
 #[cfg(test)]
@@ -128,14 +168,16 @@ mod tests {
 
     use engine_core::{
         contact::{ContactCard, ContactDraft},
-        ids::{AddressBookId, ContactId, MessageIdHeader, ProviderKey},
+        ids::{AddressBookId, CalendarId, ContactId, EventId, MessageIdHeader, ProviderKey, Uid},
         mail::EmailAddress,
         membership::Memberships,
+        time::{CalendarDateTime, LocalDateTime},
+        version::{ETag, RevisionTokens},
         write::{IdempotencyKey, PendingOp, PendingOpId, ResourceKey, SubmitPayload},
     };
     use engine_provider::{
-        Capabilities, ConnectionInfo, ContactWriteReceipt, ContactsProvider, Draft, Provider,
-        ProviderResult, SubmissionReceipt,
+        Capabilities, ConnectionInfo, ContactWriteReceipt, ContactsProvider, Draft, EventDraft,
+        EventWriteReceipt, Provider, ProviderResult, SubmissionReceipt,
     };
     use engine_store::{PendingOpState, Store};
     use engine_sync::OutboxIntent;
@@ -235,6 +277,30 @@ mod tests {
         }
     }
 
+    /// The calendar counterpart: a provider that can create an event, minting
+    /// the id the CalDAV shape does — from the caller's `UID`.
+    struct FakeCalendar;
+
+    #[async_trait::async_trait]
+    impl Provider for FakeCalendar {
+        fn connection_info(&self) -> ConnectionInfo {
+            ConnectionInfo::new(Capabilities::none().with_calendars())
+        }
+
+        async fn create_event(
+            &self,
+            _account: &AccountId,
+            draft: &EventDraft,
+        ) -> ProviderResult<EventWriteReceipt> {
+            Ok(EventWriteReceipt::new(
+                EventId::try_from(format!("/cal/{}.ics", draft.uid.as_str()).as_str())
+                    .expect("valid id"),
+                draft.uid.clone(),
+                RevisionTokens::from_etag(ETag::new("\"put-v1\"")),
+            ))
+        }
+    }
+
     #[tokio::test]
     async fn a_pending_mail_op_drains_to_succeeded_through_the_facade() {
         // The founding case through the host's entry point: an unstarted submit
@@ -289,5 +355,52 @@ mod tests {
             engine.pending_op_state(op).await.unwrap(),
             Some(PendingOpState::Succeeded)
         );
+    }
+
+    #[tokio::test]
+    async fn a_pending_calendar_op_drains_to_succeeded_through_the_facade() {
+        // The calendar half through the same shape: the facade's calendar drain
+        // replays the create through the provider and commits the outcome the
+        // host polls.
+        let engine = Engine::open_in_memory().expect("engine");
+        let op = unstarted_op(
+            &engine,
+            "drain:calendar:create",
+            "event:drain-9@test.local",
+            OutboxIntent::CreateEvent {
+                draft: calendar_draft("drain-9@test.local"),
+            },
+        )
+        .await;
+
+        let drained = engine
+            .drain_calendar_ops(&FakeCalendar, &account())
+            .await
+            .unwrap();
+
+        assert_eq!(drained, 1);
+        assert_eq!(
+            engine.pending_op_state(op).await.unwrap(),
+            Some(PendingOpState::Succeeded)
+        );
+    }
+
+    fn calendar_draft(uid: &str) -> EventDraft {
+        EventDraft::new(
+            CalendarId::try_from("/cal/default/").expect("valid calendar"),
+            Uid::new(uid).expect("valid uid"),
+            "Sprint planning",
+            at(9),
+            at(10),
+            "2026-08-01T10:00:00Z".parse().expect("valid stamp"),
+        )
+    }
+
+    fn at(hour: u8) -> CalendarDateTime {
+        CalendarDateTime::utc(
+            format!("2026-08-01T{hour:02}:00:00")
+                .parse::<LocalDateTime>()
+                .unwrap(),
+        )
     }
 }

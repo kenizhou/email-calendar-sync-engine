@@ -14,7 +14,7 @@ use engine_core::{
 };
 use engine_provider::{
     EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, EventWrite, EventWriteReceipt,
-    PatchTarget, Provider, ReplyDelivery,
+    PatchTarget, Provider, ProviderError, ReplyDelivery,
 };
 use engine_store::{LeasedPendingOp, Store, WorkerId};
 
@@ -80,7 +80,12 @@ where
         },
     )
     .await?;
-    resolve(store, leased, provider.create_event(account, draft).await).await
+    resolve(
+        store,
+        leased,
+        execute_create_event(provider, account, draft).await,
+    )
+    .await
 }
 
 /// Applies an [`EventEdit`] to a stored event through the outbox.
@@ -134,7 +139,7 @@ where
     resolve(
         store,
         leased,
-        provider.patch_event(account, base, &edit).await,
+        execute_patch_event(provider, account, base, &edit).await,
     )
     .await
 }
@@ -176,7 +181,12 @@ where
         },
     )
     .await?;
-    resolve(store, leased, provider.put_event(account, write).await).await
+    resolve(
+        store,
+        leased,
+        execute_put_event(provider, account, write).await,
+    )
+    .await
 }
 
 /// Answers an invitation through the outbox: durable op → claim → provider RSVP → record.
@@ -235,7 +245,7 @@ where
     resolve(
         store,
         leased,
-        provider.rsvp_event(account, base, rsvp).await,
+        execute_rsvp_event(provider, account, base, rsvp).await,
     )
     .await
 }
@@ -290,7 +300,7 @@ where
     )
     .await?;
 
-    match provider.delete_event(account, base, deletion).await {
+    match execute_delete_event(provider, account, base, deletion).await {
         Ok(()) => {
             store
                 .mark_pending_op(
@@ -338,6 +348,81 @@ async fn resolve<S: Store>(
             Err(SyncError::Provider(err))
         }
     }
+}
+
+/// Executes one claimed event create: the provider call the
+/// `create_calendar_event` verb names. The execution half the inline driver
+/// runs and the calendar dispatcher
+/// ([`execute_claimed_calendar`](super::execute::execute_claimed_calendar))
+/// replays; outcome classification and recording stay with the caller.
+pub(crate) async fn execute_create_event<P: Provider>(
+    provider: &P,
+    account: &AccountId,
+    draft: &EventDraft,
+) -> Result<EventWriteReceipt, ProviderError> {
+    provider.create_event(account, draft).await
+}
+
+/// Executes one claimed event patch: the provider call the
+/// `patch_calendar_event` verb names, applied to `base` — the event as the
+/// caller read it on the inline path, re-read from the store on a replay (the
+/// intent deliberately carries only the change and its target). The execution
+/// half the inline driver runs and the calendar dispatcher
+/// ([`execute_claimed_calendar`](super::execute::execute_claimed_calendar))
+/// replays; outcome classification and recording stay with the caller.
+pub(crate) async fn execute_patch_event<P: Provider>(
+    provider: &P,
+    account: &AccountId,
+    base: &Event,
+    edit: &EventEdit,
+) -> Result<EventWriteReceipt, ProviderError> {
+    provider.patch_event(account, base, edit).await
+}
+
+/// Executes one claimed document replace: the provider call the
+/// `put_calendar_document` verb names — self-contained, the document is the
+/// whole write, so nothing is re-read. The execution half the inline driver
+/// runs and the calendar dispatcher
+/// ([`execute_claimed_calendar`](super::execute::execute_claimed_calendar))
+/// replays; outcome classification and recording stay with the caller.
+pub(crate) async fn execute_put_event<P: Provider>(
+    provider: &P,
+    account: &AccountId,
+    write: &EventWrite,
+) -> Result<EventWriteReceipt, ProviderError> {
+    provider.put_event(account, write).await
+}
+
+/// Executes one claimed invitation answer: the provider call the
+/// `rsvp_calendar_event` verb names, written against `base` — the event as
+/// the caller read it on the inline path, re-read from the store on a replay
+/// (the intent deliberately carries only the answer). The execution half the
+/// inline driver runs and the calendar dispatcher
+/// ([`execute_claimed_calendar`](super::execute::execute_claimed_calendar))
+/// replays; outcome classification and recording stay with the caller.
+pub(crate) async fn execute_rsvp_event<P: Provider>(
+    provider: &P,
+    account: &AccountId,
+    base: &Event,
+    rsvp: &EventRsvp,
+) -> Result<EventWriteReceipt, ProviderError> {
+    provider.rsvp_event(account, base, rsvp).await
+}
+
+/// Executes one claimed event delete: the provider call the
+/// `delete_calendar_event` verb names. `base` arrives exactly as on the
+/// inline path — `None` for a series delete, which needs no document, and the
+/// freshly re-read series document for an occurrence delete, whose rewrite
+/// runs over it. The execution half the inline driver runs and the calendar
+/// dispatcher ([`execute_claimed_calendar`](super::execute::execute_claimed_calendar))
+/// replays; outcome classification and recording stay with the caller.
+pub(crate) async fn execute_delete_event<P: Provider>(
+    provider: &P,
+    account: &AccountId,
+    base: Option<&Event>,
+    deletion: &EventDeletion,
+) -> Result<(), ProviderError> {
+    provider.delete_event(account, base, deletion).await
 }
 
 /// Builds and claims a calendar write op: the intent in a tagged envelope

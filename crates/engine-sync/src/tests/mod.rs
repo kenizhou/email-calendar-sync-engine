@@ -43,6 +43,7 @@ use super::{
     rsvp_calendar_event, submit_mail, submit_mail_source, sync_calendar, sync_mail,
 };
 
+mod calendar_drain;
 mod calendar_sync;
 mod calendar_write;
 mod contact_sync;
