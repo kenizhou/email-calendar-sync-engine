@@ -161,6 +161,24 @@ fn a_send_result_serializes_success_and_its_optional_detail() {
 }
 
 #[test]
+fn a_calendar_changed_serializes_its_account() {
+    let event = EngineEvent::CalendarChanged {
+        account: "acct-1".to_owned(),
+    };
+    assert_eq!(wire(&event), r#"{"calendar_changed":{"account":"acct-1"}}"#);
+    unwires(r#"{"calendar_changed":{"account":"acct-1"}}"#, &event);
+}
+
+#[test]
+fn a_contacts_changed_serializes_its_account() {
+    let event = EngineEvent::ContactsChanged {
+        account: "acct-1".to_owned(),
+    };
+    assert_eq!(wire(&event), r#"{"contacts_changed":{"account":"acct-1"}}"#);
+    unwires(r#"{"contacts_changed":{"account":"acct-1"}}"#, &event);
+}
+
+#[test]
 fn a_collecting_sink_records_in_order_snapshots_and_clears() {
     let sink = CollectingSink::default();
     assert!(sink.events().is_empty(), "a fresh sink has heard nothing");

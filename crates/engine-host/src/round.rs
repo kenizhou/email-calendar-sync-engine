@@ -315,6 +315,13 @@ fn depth(after: &[(String, OpRow)]) -> i64 {
     i64::try_from(pending).unwrap_or(i64::MAX)
 }
 
+/// The account's outbox depth for emitting code beyond this module (the PIM
+/// round), so every `OutboxChanged` the crate emits carries the same number
+/// computed the same way: the runnable rows a depth badge counts.
+pub(crate) async fn outbox_depth(engine: &Engine, account: &AccountId) -> i64 {
+    depth(&outbox(engine, account).await)
+}
+
 /// The terminal status, read off the sync report alone.
 ///
 /// `Idle` when every scope applied. `RateLimited` — with the throttle's
