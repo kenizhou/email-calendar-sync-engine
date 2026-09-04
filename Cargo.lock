@@ -1681,6 +1681,7 @@ dependencies = [
  "engine-cli",
  "engine-core",
  "engine-provider",
+ "engine-recurrence",
  "engine-rfc5322",
  "engine-tls",
  "env_logger",

@@ -18,6 +18,9 @@
 //! swallow silently; tokens this task does not model → `log::debug!` skip.
 
 mod attendees;
+mod convert;
+mod convert_recurrence;
+mod convert_time;
 mod datetime;
 mod exceptions;
 mod fields;
@@ -27,6 +30,7 @@ mod parse;
 mod recurrence;
 mod timezone;
 
+pub(crate) use convert::calendar_event_from_props;
 pub(crate) use datetime::is_valid_eas_datetime;
 pub(crate) use location::parse_location_16x;
 pub use model::{
@@ -39,6 +43,14 @@ pub(crate) use timezone::parse_tzi_blob;
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+#[cfg(test)]
+#[path = "convert_tests.rs"]
+mod convert_tests;
+
+#[cfg(test)]
+#[path = "convert_recurrence_tests.rs"]
+mod convert_recurrence_tests;
 
 use crate::wbxml::tags::base;
 

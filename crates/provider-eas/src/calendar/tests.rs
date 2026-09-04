@@ -122,6 +122,13 @@ fn calendar_token_constants_match_spec() {
 /// transcription copy.
 pub(crate) const TZI_FLAT_UTC8: &str = "IP7//wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
 
+/// (b) DST zone UTC+1/UTC+2 (CET/CEST shape, the `timezone.rs` pinned golden):
+/// Bias = -60; StandardDate = last Sunday of October at 03:00 with
+/// StandardBias 0; DaylightDate = last Sunday of March at 02:00 with
+/// DaylightBias = -60 (UTC+2 while DST is in effect). `pub(crate)` so the
+/// Task-2 conversion tests reuse the SAME golden blob.
+pub(crate) const TZI_DST_CET: &str = "xP///wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAoAAAAFAAMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMAAAAFAAIAAAAAAAAAxP///w==";
+
 /// Fixture: a fully-populated Calendar ApplicationData covering every
 /// core field plus the Task-3 containers. Token layout (page, token):
 /// ```text

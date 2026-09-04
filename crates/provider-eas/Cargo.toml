@@ -67,6 +67,10 @@ futures-util = { workspace = true }
 # itself built on this crate (cargo permits dev-dependency cycles).
 engine-cli = { workspace = true }
 tempfile = { workspace = true }
+# The conversion golden tests assert the neutral `Event` the props fold into
+# expands under the engine's own expander (occurrence counts) — the read-side
+# contract `engine-sync` drives.
+engine-recurrence = { workspace = true }
 
 [lints]
 workspace = true
