@@ -51,6 +51,8 @@ mod adapter_email_wire;
 mod adapter_flow;
 #[path = "transport_harness/adapter_folders_flow.rs"]
 mod adapter_folders_flow;
+#[path = "transport_harness/adapter_hierarchy_flow.rs"]
+mod adapter_hierarchy_flow;
 #[path = "transport_harness/adapter_source_flow.rs"]
 mod adapter_source_flow;
 #[path = "transport_harness/adapter_source_wire.rs"]

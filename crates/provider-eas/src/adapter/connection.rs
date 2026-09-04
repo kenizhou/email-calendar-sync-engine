@@ -75,7 +75,7 @@ impl Provider for EasAdapter {
         _account: &AccountId,
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Mailbox>> {
-        super::mailboxes::sync(&self.client, cursor).await
+        super::mailboxes::sync(&self.client, &self.hierarchy, cursor).await
     }
 
     /// Sync class "Email" over the bound folder ([MS-ASSYNC]): the
@@ -215,7 +215,7 @@ impl Provider for EasAdapter {
         _account: &AccountId,
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Calendar>> {
-        super::calendar::sync_calendars(&self.client, cursor).await
+        super::calendar::sync_calendars(&self.client, &self.hierarchy, cursor).await
     }
 
     /// Sync class "Calendar" over the bound calendar folder ([MS-ASSYNC]):

@@ -111,6 +111,7 @@ mod calendar_write;
 mod connection;
 mod email;
 mod error;
+mod hierarchy;
 mod mailboxes;
 mod mutate;
 mod source;
@@ -190,6 +191,11 @@ pub struct EasAdapter {
     /// consumed and rotated by each calendar write; `None` until the first
     /// pass completes (the same cold-ledger `NeedsResync` refusal).
     calendar_key: CollectionKey,
+    /// The shared account-level hierarchy-SyncKey ledger — one server
+    /// FolderSync cursor serving both container scopes (see `hierarchy`'s
+    /// module docs: the key the server last handed this adapter, plus the
+    /// rows a riding scope missed).
+    hierarchy: hierarchy::HierarchyLedger,
     /// The OPTIONS-negotiated protocol version ("16.1"-shaped), or `None`
     /// before [`EasAdapter::negotiate`]. Adapter-held by design: a host must
     /// not branch on it (`docs/agent-guidance/providers.md`), so it never
@@ -212,6 +218,7 @@ impl std::fmt::Debug for EasAdapter {
             .field("capabilities", &self.capabilities)
             .field("collection_key", &self.collection_key)
             .field("calendar_key", &self.calendar_key)
+            .field("hierarchy", &self.hierarchy)
             .field("protocol_version", &self.protocol_version)
             .finish()
     }
@@ -248,6 +255,7 @@ impl EasAdapter {
             // Cold by construction — the first completed pass seeds it.
             collection_key: CollectionKey::default(),
             calendar_key: CollectionKey::default(),
+            hierarchy: hierarchy::HierarchyLedger::default(),
             protocol_version: None,
         }
     }

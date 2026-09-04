@@ -66,12 +66,8 @@ use crate::{
     calendar::calendar_event_from_props,
     client::EasClient,
     status::{RecoveryAction, recovery_action_for_sync},
-    types::{EasFolder, FolderSyncResult, SyncRequest},
+    types::{EasFolder, SyncRequest},
 };
-
-/// FolderSync status 9: "folder hierarchy out of date" — the mail slice's
-/// recovery, mirrored for the calendar container scope.
-const HIERARCHY_OUT_OF_DATE: u32 = 9;
 
 /// The adapter's extended-property namespace (the mail slices' convention).
 const EXTENDED_NAMESPACE: &str = "eas";
@@ -80,47 +76,33 @@ const EXTENDED_NAMESPACE: &str = "eas";
 // sync_calendars — FolderSync, Calendar class
 // ============================================================================
 
-/// One FolderSync pass over the calendar containers: request `key`, keep the
-/// wire's Calendar-class folders (delta deletions unfiltered), and recover a
-/// status-9 invalidation by re-bootstrapping once.
+/// One FolderSync pass over the calendar containers: the shared hierarchy
+/// ledger drives the round (see `hierarchy.rs` — the fresh key, the backlog
+/// of rows a mail-scope pass delivered, the status-9 bootstrap recovery);
+/// this slice only maps the resulting wire rows onto `ScopeSync<Calendar>`.
 pub(super) async fn sync_calendars(
     client: &Mutex<EasClient>,
+    ledger: &super::hierarchy::HierarchyLedger,
     cursor: Option<&SyncState>,
 ) -> ProviderResult<ScopeSync<Calendar>> {
-    let key = request_key(cursor);
-    let mut client = client.lock().await;
-    client.set_hierarchy_sync_key(key.to_owned());
-    match client.folder_sync(key).await {
-        Ok(result) => Ok(scope_sync(&result, key)),
-        // The stored hierarchy key is dead — restart from the bootstrap key,
-        // exactly once (a server answering 9 to "0" itself surfaces through
-        // `provider_error` as `NeedsResync`; this can never loop).
-        Err(crate::client::EasError::CommandStatus {
-            status: HIERARCHY_OUT_OF_DATE,
-            ..
-        }) if key != BOOTSTRAP_KEY => {
-            let result = client
-                .folder_sync(BOOTSTRAP_KEY)
-                .await
-                .map_err(provider_error)?;
-            Ok(scope_sync(&result, BOOTSTRAP_KEY))
-        }
-        Err(e) => Err(provider_error(e)),
-    }
+    let round = ledger
+        .pass(client, cursor, super::hierarchy::Container::Calendar)
+        .await?;
+    Ok(scope_sync(&round))
 }
 
-/// Maps one FolderSync round into a `ScopeSync<Calendar>` — a snapshot when
-/// the round requested the bootstrap key, a delta otherwise. Infallible: the
+/// Maps one ledger round into a `ScopeSync<Calendar>` — a snapshot when the
+/// round carries present-set authority, a delta otherwise. Infallible: the
 /// mapping only skips what it cannot key.
-fn scope_sync(result: &FolderSyncResult, request_key: &str) -> ScopeSync<Calendar> {
-    let next_cursor = SyncState::new(next_key(&result.sync_key, request_key));
-    if request_key == BOOTSTRAP_KEY {
-        let objects = calendars(&result.changes);
+fn scope_sync(round: &super::hierarchy::HierarchyRound) -> ScopeSync<Calendar> {
+    let next_cursor = SyncState::new(round.next_key.as_str());
+    if let Some(present_rows) = &round.present_rows {
+        let objects = calendars(present_rows);
         let present: BTreeSet<ProviderKey> = objects.iter().map(key_of).collect();
         ScopeSync::new(SyncUpdate::snapshot(objects, present), next_cursor)
     } else {
-        let changed = calendars(&result.changes);
-        let removed: Vec<ProviderKey> = result
+        let changed = calendars(&round.folders);
+        let removed: Vec<ProviderKey> = round
             .deletions
             .iter()
             .filter(|id| !id.is_empty())

@@ -40,11 +40,7 @@ use engine_provider::{ProviderError, ProviderResult, ScopeSync};
 use serde_json::json;
 use tokio::sync::Mutex;
 
-use super::error::provider_error;
-use crate::{
-    client::{EasClient, EasError},
-    types::{EasFolder, FolderSyncResult},
-};
+use crate::{client::EasClient, types::EasFolder};
 
 /// The FolderSync bootstrap key ([MS-ASFolderSync] §2.2.3.1.7.2): requesting
 /// it returns the full hierarchy, so a round sent with this key is by
@@ -52,49 +48,29 @@ use crate::{
 /// bootstraps from the same "0".
 pub(super) const BOOTSTRAP_KEY: &str = "0";
 
-/// FolderSync status 9: "folder hierarchy out of date" — the stored hierarchy
-/// SyncKey is invalidated ([MS-ASFolderSync] §2.2.3.1.10; `status.rs` maps it
-/// to `ResetSyncKey`).
-const HIERARCHY_OUT_OF_DATE: u32 = 9;
-
 /// The adapter's extended-property namespace (the namespacing convention the
 /// engine leaves to each adapter): the EAS-native facts that have no
 /// first-class `Mailbox` field.
 const EXTENDED_NAMESPACE: &str = "eas";
 
-/// One FolderSync pass: request `key`, map the wire delta (or, for the
-/// bootstrap key, the full hierarchy) into a `ScopeSync<Mailbox>`, and
-/// recover a status-9 invalidation by re-bootstrapping once.
+/// One FolderSync pass over the mail container scope: the shared hierarchy
+/// ledger drives the round (the fresh key, the backlog of rows a
+/// calendar-scope pass delivered, the status-9 bootstrap recovery — see
+/// `hierarchy.rs`), and this slice only maps the resulting wire rows onto
+/// `ScopeSync<Mailbox>`.
 ///
-/// The client's in-memory hierarchy-key cache is primed from the engine's
-/// cursor first — the cursor is the authority the store round-trips, and the
+/// The client's in-memory hierarchy-key cache is primed from the round's
+/// request key — the cursor is the authority the store round-trips, and the
 /// cache (which folder ops echo per [MS-ASCMD]) must not disagree with it.
 pub(super) async fn sync(
     client: &Mutex<EasClient>,
+    ledger: &super::hierarchy::HierarchyLedger,
     cursor: Option<&SyncState>,
 ) -> ProviderResult<ScopeSync<Mailbox>> {
-    let key = request_key(cursor);
-    let mut client = client.lock().await;
-    client.set_hierarchy_sync_key(key.to_owned());
-    match client.folder_sync(key).await {
-        Ok(result) => scope_sync(&result, key),
-        // The stored key is dead. Restart from the bootstrap key — the full
-        // hierarchy it returns is the snapshot recovery — exactly once: a
-        // server that answers 9 to `"0"` itself surfaces through
-        // `provider_error` as `NeedsResync` for the orchestrator to drop the
-        // cursor and retry, so this call can never loop.
-        Err(EasError::CommandStatus {
-            status: HIERARCHY_OUT_OF_DATE,
-            ..
-        }) if key != BOOTSTRAP_KEY => {
-            let result = client
-                .folder_sync(BOOTSTRAP_KEY)
-                .await
-                .map_err(provider_error)?;
-            scope_sync(&result, BOOTSTRAP_KEY)
-        }
-        Err(e) => Err(provider_error(e)),
-    }
+    let round = ledger
+        .pass(client, cursor, super::hierarchy::Container::Mail)
+        .await?;
+    scope_sync(&round)
 }
 
 /// The hierarchy key this pass requests: the cursor's string, with `None` and
@@ -107,26 +83,26 @@ pub(super) fn request_key(cursor: Option<&SyncState>) -> &str {
     })
 }
 
-/// Maps one FolderSync round into a `ScopeSync` — a snapshot when the round
-/// requested the bootstrap key (by protocol definition that round carries the
-/// full hierarchy), a delta otherwise — with the returned SyncKey as the
-/// next cursor, or the request's key when the response omits one.
-fn scope_sync(result: &FolderSyncResult, request_key: &str) -> ProviderResult<ScopeSync<Mailbox>> {
-    let next_cursor = SyncState::new(next_key(&result.sync_key, request_key));
-    if request_key == BOOTSTRAP_KEY {
-        let objects = mailboxes(&result.changes)?;
+/// Maps one ledger round into a `ScopeSync<Mailbox>` — a snapshot when the
+/// round carries present-set authority (it bootstrapped, or it consumed
+/// another scope's snapshot backlog — see `hierarchy.rs`), a delta
+/// otherwise.
+fn scope_sync(round: &super::hierarchy::HierarchyRound) -> ProviderResult<ScopeSync<Mailbox>> {
+    let next_cursor = SyncState::new(round.next_key.as_str());
+    if let Some(present_rows) = &round.present_rows {
+        let objects = mailboxes(present_rows)?;
         let present: BTreeSet<ProviderKey> = objects.iter().map(key_of).collect();
         Ok(ScopeSync::new(
             SyncUpdate::snapshot(objects, present),
             next_cursor,
         ))
     } else {
-        let changed = mailboxes(&result.changes)?;
+        let changed = mailboxes(&round.folders)?;
         // The wire's Delete carries only a ServerId (no class), so deletions
         // pass through unfiltered — tombstoning a key the mail scope never
         // held is a store no-op. An empty ServerId is dropped (it can key
         // nothing).
-        let removed: Vec<ProviderKey> = result
+        let removed: Vec<ProviderKey> = round
             .deletions
             .iter()
             .filter(|id| !id.is_empty())
@@ -335,16 +311,16 @@ mod tests {
 
     #[test]
     fn a_bootstrap_round_maps_to_a_snapshot_and_an_incremental_to_a_delta() {
-        let bootstrap = FolderSyncResult {
-            status: 1,
-            sync_key: "hier-1".to_owned(),
-            changes: vec![
+        let bootstrap = super::super::hierarchy::HierarchyRound {
+            folders: vec![
                 wire_folder("fid-inbox", "0", "Email", Some(2)),
                 wire_folder("fid-cal", "0", "Calendar", Some(8)),
             ],
             deletions: Vec::new(),
+            present_rows: Some(vec![wire_folder("fid-inbox", "0", "Email", Some(2))]),
+            next_key: "hier-1".to_owned(),
         };
-        let sync = scope_sync(&bootstrap, BOOTSTRAP_KEY).expect("bootstrap maps");
+        let sync = scope_sync(&bootstrap).expect("bootstrap maps");
         let SyncUpdate::Snapshot { objects, present } = &sync.update else {
             panic!("bootstrap must snapshot: {:?}", sync.update);
         };
@@ -352,13 +328,13 @@ mod tests {
         assert_eq!(present.len(), 1);
         assert_eq!(sync.next_cursor.as_str(), "hier-1");
 
-        let incremental = FolderSyncResult {
-            status: 1,
-            sync_key: "hier-2".to_owned(),
-            changes: vec![wire_folder("fid-arch", "fid-inbox", "Email", Some(1))],
+        let incremental = super::super::hierarchy::HierarchyRound {
+            folders: vec![wire_folder("fid-arch", "fid-inbox", "Email", Some(1))],
             deletions: vec!["fid-old".to_owned(), String::new()],
+            present_rows: None,
+            next_key: "hier-2".to_owned(),
         };
-        let sync = scope_sync(&incremental, "hier-1").expect("delta maps");
+        let sync = scope_sync(&incremental).expect("delta maps");
         let SyncUpdate::Delta {
             changed, removed, ..
         } = &sync.update
