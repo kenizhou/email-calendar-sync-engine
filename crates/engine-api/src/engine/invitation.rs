@@ -32,13 +32,16 @@ use engine_recurrence::{Horizon, resolve_instant, resolve_instant_in};
 use super::{CalendarWrite, LEASE_TTL, map_sync_error, worker};
 use crate::{ApiError, Engine};
 
-/// How far past an invitation's start the stored-event lookup scans for
-/// occurrences. The window is a **recall aid, not the check** — `UID` equality
-/// is the check — so it only has to cover where the stored copy of an
-/// un-superseded invitation plausibly sits: at (or, for a recurring series,
-/// starting at) the invitation's own start. A reschedule bumps `SEQUENCE`,
-/// which the supersession gate below catches, so nothing turns on the window
-/// being wider than this.
+/// How far the stored-event lookup reaches to either side of the invitation's
+/// start. The window is a **recall aid, not the check** — `UID` equality is the
+/// check — so it only has to cover where the stored copy of an answerable
+/// invitation plausibly sits, and that is **not** always the invitation's own
+/// start: a reschedule bumps `SEQUENCE` (so the supersession gate passes — the
+/// invitation is the newer one to answer) and moves the start, leaving the
+/// stored copy at the **old** start, on either side of the invitation's. The
+/// reach therefore spans both directions; a move farther than this resolves as
+/// "no stored event", which the message-referencing verb answers and the
+/// document transports refuse — never a wrong event.
 // `from_days` is the readable spelling but sits behind unstable
 // `duration_constructors` on this toolchain; `from_mins` (the largest stable
 // constructor — the `LEASE_TTL` precedent) is the honest equivalent.
@@ -46,7 +49,7 @@ use crate::{ApiError, Engine};
     clippy::duration_suboptimal_units,
     reason = "from_days is unstable; from_mins is the largest stable constructor"
 )]
-fn lookahead() -> Duration {
+fn reach() -> Duration {
     Duration::from_mins(14 * 24 * 60)
 }
 
@@ -200,10 +203,12 @@ impl Engine {
 
     /// The stored event carrying `invite`'s `UID`, located the only way the
     /// store allows — it has no `UID` index — so exactly the way the reference
-    /// product does: occurrence rows over a window at the invitation's start,
-    /// then the masters they point back at, then `UID` equality. `Ok(None)`
-    /// when nothing matches (never an error: "no stored event" is a legitimate
-    /// answer state, the one the message-referencing verb exists for).
+    /// product does: occurrence rows over a window **around** the invitation's
+    /// start (symmetric — see [`reach`]; the stored copy of a rescheduled
+    /// invitation sits at the old start, before the new one), then the masters
+    /// they point back at, then `UID` equality. `Ok(None)` when nothing
+    /// matches (never an error: "no stored event" is a legitimate answer
+    /// state, the one the message-referencing verb exists for).
     async fn stored_event_by_uid(
         &self,
         account: &AccountId,
@@ -212,12 +217,15 @@ impl Engine {
         let Some(anchor) = anchor_of(invite) else {
             return Ok(None);
         };
-        let Some(end) = anchor.checked_add(lookahead()) else {
+        let Some(start) = anchor.checked_sub(reach()) else {
             return Ok(None);
         };
-        // Unfailable in practice (`end` is strictly after `anchor`), but the
+        let Some(end) = anchor.checked_add(reach()) else {
+            return Ok(None);
+        };
+        // Unfailable in practice (`end` is a fortnight past `start`), but the
         // horizon constructor says what it says — surface rather than assume.
-        let window = Horizon::new(anchor, end)
+        let window = Horizon::new(start, end)
             .map_err(|e| ApiError::Store(engine_store::StoreError::Backend(e.to_string())))?;
         let occurrences = self.occurrences_in(account, window).await?;
         let mut keys: Vec<ProviderKey> = Vec::new();
@@ -234,7 +242,7 @@ impl Engine {
 /// The invitation's start as an anchor instant: its own zone when it has one,
 /// else UTC (a floating or all-day start has no zone; the window is a recall
 /// aid that only needs to land within a day of the stored occurrence, which
-/// `lookahead()` absorbs). `None` for a start no bundled zone can resolve.
+/// [`reach`] absorbs). `None` for a start no bundled zone can resolve.
 fn anchor_of(invite: &Event) -> Option<UtcDateTime> {
     // A custom/VTIMEZONE zone that resolve_instant rejects falls through to the
     // UTC read (which resolves floating times) and then to None — a window that

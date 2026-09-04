@@ -134,6 +134,72 @@ async fn an_invitation_is_answered_as_the_alias_it_was_delivered_to() {
     );
 }
 
+/// A `METHOD:REQUEST` whose start was **rescheduled later** than the stored
+/// copy's (the organizer bumped `SEQUENCE` and moved the meeting): the stored
+/// copy — at the OLD start — is the answer's base, and it sits BEFORE the
+/// invitation's own start, so a forward-only lookup window would miss it.
+fn rescheduled_later_invite() -> Vec<u8> {
+    format!(
+        "From: organizer@test.local\r\n\
+         To: team@test.local\r\n\
+         Delivered-To: {ALIAS_ADDRESS}\r\n\
+         Subject: Standup moved\r\n\
+         Content-Type: multipart/alternative; boundary=\"a\"\r\n\r\n\
+         --a\r\nContent-Type: text/plain\r\n\r\nMoved to 10 March\r\n\
+         --a\r\nContent-Type: text/calendar; charset=\"utf-8\"; method=REQUEST\r\n\r\n\
+         BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\n\
+         UID:evt-1@test.local\r\nDTSTAMP:20260210T080000Z\r\n\
+         DTSTART:20260310T080000Z\r\nDTEND:20260310T083000Z\r\n\
+         SUMMARY:Standup\r\nSEQUENCE:1\r\n\
+         ORGANIZER;CN=Boss:mailto:organizer@test.local\r\n\
+         ATTENDEE;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:{ALIAS_ADDRESS}\r\n\
+         END:VEVENT\r\nEND:VCALENDAR\r\n\
+         --a--\r\n"
+    )
+    .into_bytes()
+}
+
+#[tokio::test]
+async fn a_rescheduled_invitation_finds_the_stored_copy_at_the_old_start() {
+    // The stored event (SEQUENCE 0) sits at the old start, 9 days before the
+    // invitation's own; the invitation (SEQUENCE 1) passes the supersession
+    // gate, and the base must still be found and handed to the verb — a
+    // forward-only window would answer as if the store held nothing and every
+    // document transport would refuse "no stored event to answer" while the
+    // event sits in the store.
+    let server = CalendarServer::holding(seeded_event())
+        .serving(INVITE_MESSAGE_ID, &rescheduled_later_invite());
+    let (engine, base) = synced(&server).await;
+
+    let write = engine
+        .rsvp_invitation(
+            &server,
+            &account(),
+            &own_addresses(),
+            &invite_message(),
+            RsvpResponse::Accepted,
+            None,
+            true,
+        )
+        .await
+        .expect("the rescheduled invitation answers against the stored copy");
+    assert!(
+        matches!(write.reconciled, Reconciled::Applied(_)),
+        "got {:?}",
+        write.reconciled
+    );
+
+    let answers = server.answers();
+    let rsvp = answers.last().expect("the event verb answered");
+    assert_eq!(rsvp.event, base.id, "the base is the stored master");
+    assert_eq!(rsvp.uid, base.uid);
+    assert_eq!(rsvp.attendee, ALIAS_ADDRESS);
+    assert_eq!(
+        status_of(&engine.events(&account()).await.unwrap()[0], ALIAS_ADDRESS),
+        ParticipationStatus::Accepted
+    );
+}
+
 #[tokio::test]
 async fn a_stored_event_at_a_newer_sequence_refuses_the_answer() {
     // The organizer already sent a newer REQUEST than the one being answered:
