@@ -1,7 +1,5 @@
-//! The [`Provider`] trait: the one seam every adapter implements.
-//!
-//! Lifted out of the crate root purely for size — the trait is the crate's whole
-//! surface; the root carries the module docs, the module tree and the re-exports.
+//! The [`Provider`] trait: the one seam every adapter implements. Lifted out of
+//! the crate root purely for size — the root carries the module tree and re-exports.
 
 use async_trait::async_trait;
 #[allow(
@@ -155,8 +153,7 @@ pub trait Provider: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns a classified [`ProviderError`]. The default returns
-    /// [`FailureClass::InvalidState`].
+    /// Returns a classified [`ProviderError`]. The default returns [`FailureClass::InvalidState`].
     async fn submit_email(
         &self,
         account: &AccountId,
@@ -166,24 +163,10 @@ pub trait Provider: Send + Sync {
         Err(unsupported("mail submission"))
     }
 
-    /// Submits `source`: the caller's **own final MIME bytes** — e.g. a rendered
-    /// message the host then signed or encrypted — sent **verbatim**, never
-    /// re-rendered (contrast [`Provider::submit_email`], which renders a `Draft`),
-    /// and filed as the Sent copy with **the same bytes** where the transport
-    /// files it. [`SubmissionReceipt::message_id`] is the bytes' own `Message-ID`
-    /// header — the Write Contract: **stamp the id before submitting**.
-    ///
-    /// `recipients` is the envelope. Non-empty, it is the **exact** `RCPT TO` set —
-    /// where Bcc lives: delivered with no `Bcc` header ever entering the bytes.
-    /// Empty, the envelope is derived from the bytes' own `To`/`Cc` headers (a
-    /// `Bcc` header left in the bytes is honored and travels it, visibly); a
-    /// stripped `Bcc` header omitted from `recipients` is **not** delivered — an
-    /// explicit choice, never a silent one. `MAIL FROM` is the bytes' `From`.
-    ///
-    /// A byte-capable transport (IMAP/SMTP) overrides this; one that re-renders
-    /// from structured fields (JMAP) keeps the rejecting default *even though it
-    /// advertises [`Capabilities::submission`]* — the capability covers
-    /// [`Provider::submit_email`], not this (`providers.md`); outbox-mediated like it.
+    /// Submits `source`: the caller's **own final MIME bytes**, sent **verbatim**
+    /// and filed as the Sent copy with the same bytes — the rendered-source
+    /// seam whose contract (envelope, Bcc, byte-capable transports) is
+    /// [`submit`](crate::submit)'s to state; outbox-mediated like [`submit_email`].
     ///
     /// # Errors
     ///
@@ -284,12 +267,10 @@ pub trait Provider: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns a classified [`ProviderError`].
-    /// [`FailureClass::InvalidState`]
+    /// Returns a classified [`ProviderError`]. [`FailureClass::InvalidState`]
     /// for a verdict the transport cannot express (via [`ReportControls::accept`]); a
     /// stale target — an IMAP UID under a changed `UIDVALIDITY` — is
-    /// [`FailureClass::Conflict`], so the
-    /// caller re-syncs and retries.
+    /// [`FailureClass::Conflict`], so the caller re-syncs and retries.
     async fn report_message(
         &self,
         account: &AccountId,
@@ -362,9 +343,7 @@ pub trait Provider: Send + Sync {
     /// # Errors
     ///
     /// Returns a classified [`ProviderError`]. An event already existing at the target is a
-    /// [`FailureClass::Conflict`]; the default
-    /// returns
-    /// [`FailureClass::InvalidState`].
+    /// [`FailureClass::Conflict`]; the default returns [`FailureClass::InvalidState`].
     async fn create_event(
         &self,
         account: &AccountId,
@@ -397,8 +376,7 @@ pub trait Provider: Send + Sync {
     /// re-apply the edit to the fresh base, resubmit; **never** blind-retry. A patch that
     /// would change the event's time *form* (silently converting a zoned event to a UTC
     /// instant, or an all-day event to a timed one) is rejected, not converted. The default
-    /// returns
-    /// [`FailureClass::InvalidState`].
+    /// returns [`FailureClass::InvalidState`].
     async fn patch_event(
         &self,
         account: &AccountId,
@@ -421,10 +399,8 @@ pub trait Provider: Send + Sync {
     /// # Errors
     ///
     /// Returns a classified [`ProviderError`]. A guard failure is
-    /// [`FailureClass::Conflict`]; an adapter
-    /// with no document verb returns
-    /// [`FailureClass::InvalidState`], as
-    /// does the default.
+    /// [`FailureClass::Conflict`]; an adapter with no document verb returns
+    /// [`FailureClass::InvalidState`], as does the default.
     async fn put_event(
         &self,
         account: &AccountId,
@@ -456,8 +432,8 @@ pub trait Provider: Send + Sync {
     /// re-answer, **never** blind-retry. An event with no `ATTENDEE` for that address, or a
     /// request for a control this transport does not honour (a `comment`, or
     /// `notify_organizer: false`, against [`RsvpControls`]), is
-    /// [`FailureClass::InvalidState`] —
-    /// refused rather than silently dropped. The default returns the same.
+    /// [`FailureClass::InvalidState`] — refused rather than silently dropped. The default
+    /// returns the same.
     async fn rsvp_event(
         &self,
         account: &AccountId,
@@ -466,6 +442,32 @@ pub trait Provider: Send + Sync {
     ) -> ProviderResult<EventWriteReceipt> {
         let _ = (account, base, rsvp);
         Err(unsupported("answering invitations"))
+    }
+
+    /// Answers an invitation by referencing the invitation **message**: EAS
+    /// (`MeetingResponse`) overrides it — its protocol addresses the email —
+    /// while every event-answering transport inherits the default, which
+    /// ignores the invite, requires `base`, and delegates to
+    /// [`rsvp_event`](Provider::rsvp_event) (`None` base: no stored event —
+    /// legitimate, the reason the verb exists). See [`calendar_write`](crate::calendar_write).
+    ///
+    /// # Errors
+    ///
+    /// As [`rsvp_event`](Provider::rsvp_event); the default refuses a `None`
+    /// base with [`FailureClass::InvalidState`].
+    async fn rsvp_event_from_invite(
+        &self,
+        account: &AccountId,
+        _invite: &Message,
+        base: Option<&Event>,
+        rsvp: &EventRsvp,
+    ) -> ProviderResult<EventWriteReceipt> {
+        let Some(base) = base else {
+            return Err(ProviderError::invalid_state(
+                "no stored event to answer — sync the event first, or answer from the message",
+            ));
+        };
+        self.rsvp_event(account, base, rsvp).await
     }
 
     /// Deletes an event, or one occurrence of it, guarded by the revision the caller read.
@@ -484,9 +486,7 @@ pub trait Provider: Send + Sync {
     /// # Errors
     ///
     /// Returns a classified [`ProviderError`]; a guard failure is
-    /// [`FailureClass::Conflict`], and the
-    /// default returns
-    /// [`FailureClass::InvalidState`].
+    /// [`FailureClass::Conflict`], and the default returns [`FailureClass::InvalidState`].
     async fn delete_event(
         &self,
         account: &AccountId,

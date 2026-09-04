@@ -188,6 +188,18 @@ impl<P: Provider + ?Sized> Provider for Box<P> {
         (**self).rsvp_event(account, base, rsvp).await
     }
 
+    async fn rsvp_event_from_invite(
+        &self,
+        account: &AccountId,
+        invite: &Message,
+        base: Option<&Event>,
+        rsvp: &EventRsvp,
+    ) -> ProviderResult<EventWriteReceipt> {
+        (**self)
+            .rsvp_event_from_invite(account, invite, base, rsvp)
+            .await
+    }
+
     async fn delete_event(
         &self,
         account: &AccountId,
