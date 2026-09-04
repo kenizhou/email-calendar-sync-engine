@@ -325,4 +325,22 @@ impl<C: Clock> Store for MemStore<C> {
         }
         Ok(())
     }
+
+    async fn release_pending_op(&self, lease: &OpLease) -> Result<()> {
+        let mut inner = self.lock();
+        let op = inner
+            .ops
+            .get_mut(&lease.op())
+            .ok_or(StoreError::StaleLease)?;
+        // The state guard is load-bearing: `mark_pending_op` does not bump the
+        // token, so the token alone would let a lease whose op already recorded
+        // an outcome walk it back to runnable.
+        if lease.token() != op.token || op.state != PendingOpState::InFlight {
+            return Err(StoreError::StaleLease);
+        }
+        op.token = op.token.bump();
+        op.state = PendingOpState::Pending;
+        op.lease_expiry = None;
+        Ok(())
+    }
 }

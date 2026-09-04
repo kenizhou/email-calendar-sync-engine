@@ -68,7 +68,7 @@ use engine_store::{
     Store, SyncApplied, SyncClaim, SyncLease,
 };
 pub use options::{FtsTokenizer, OpenOptions};
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 use serde::Serialize;
 
 use crate::{
@@ -180,7 +180,7 @@ impl<C: Clock> SqliteStore<C> {
         let schema = migrations::migrate(&mut conn, options.fts_tokenizer)?;
         // After migrate (the record insert needs meta), before readers open.
         record(&conn, options.fts_tokenizer)?;
-        reconcile_normalizer_version(&conn, engine_store::NORMALIZER_VERSION)?;
+        migrations::reconcile_normalizer_version(&conn, engine_store::NORMALIZER_VERSION)?;
         // After the migration, so a reader never sees a schema mid-step.
         let readers = match path {
             Some(path) => pool::open_readers(path)?,
@@ -352,32 +352,6 @@ impl<C: Clock> SqliteStore<C> {
     }
 }
 
-/// On open, compares the stored `normalizer_version` to the build's `current`; on a
-/// mismatch (including a pre-V4 database with no row) it clears the sync cursors so the
-/// next sync re-normalizes everything, then records `current`. See
-/// [`engine_store::NORMALIZER_VERSION`].
-fn reconcile_normalizer_version(conn: &Connection, current: u32) -> Result<()> {
-    let stored: Option<String> = conn
-        .query_row(
-            "SELECT value FROM meta WHERE key = 'normalizer_version'",
-            [],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(backend)?;
-    if stored.as_deref() == Some(current.to_string().as_str()) {
-        return Ok(());
-    }
-    scope_ops::clear_sync_cursors(conn)?;
-    conn.execute(
-        "INSERT INTO meta (key, value) VALUES ('normalizer_version', ?1)
-         ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-        [current.to_string()],
-    )
-    .map_err(backend)?;
-    Ok(())
-}
-
 #[async_trait]
 impl<C: Clock> Store for SqliteStore<C> {
     async fn load_sync_state(
@@ -491,6 +465,13 @@ impl<C: Clock> Store for SqliteStore<C> {
         let op_id = lease.op();
         let token = lease.token().get();
         self.call(move |conn| outbox_ops::mark(conn, op_id, token, &outcome))
+            .await
+    }
+
+    async fn release_pending_op(&self, lease: &OpLease) -> Result<()> {
+        let op_id = lease.op();
+        let token = lease.token().get();
+        self.call(move |conn| outbox_ops::release(conn, op_id, token))
             .await
     }
 }
