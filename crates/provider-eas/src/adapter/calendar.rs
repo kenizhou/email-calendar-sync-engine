@@ -177,6 +177,7 @@ fn key_of(calendar: &Calendar) -> ProviderKey {
 pub(super) async fn sync_events(
     client: &Mutex<EasClient>,
     calendar: &CalendarId,
+    ledger: &super::CollectionKey,
     cursor: Option<&SyncState>,
 ) -> ProviderResult<ScopeSync<Event>> {
     let mut client = client.lock().await;
@@ -276,6 +277,11 @@ pub(super) async fn sync_events(
             } else {
                 SyncUpdate::delta(changed, removed)
             };
+            // The pass completed cleanly at `next` — record it as the
+            // calendar ledger's key (identical to the cursor the engine
+            // persists, so ledger and cursor stay one fact — the email
+            // slice's rule) for the write verbs to ride.
+            *ledger.lock().expect("collection-key ledger") = Some(next.clone());
             return Ok(ScopeSync::new(update, SyncState::new(next)));
         }
         key = next;

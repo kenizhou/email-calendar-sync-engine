@@ -5,11 +5,13 @@ use super::model::CalendarEventWrite;
 use crate::{
     calendar::{
         CAL_ALL_DAY_EVENT, CAL_ATTENDEE, CAL_ATTENDEE_EMAIL, CAL_ATTENDEE_NAME, CAL_ATTENDEES,
-        CAL_BUSY_STATUS, CAL_END_TIME, CAL_LOCATION, CAL_RECURRENCE, CAL_RECURRENCE_DAY_OF_MONTH,
-        CAL_RECURRENCE_DAY_OF_WEEK, CAL_RECURRENCE_INTERVAL, CAL_RECURRENCE_MONTH_OF_YEAR,
-        CAL_RECURRENCE_OCCURRENCES, CAL_RECURRENCE_TYPE, CAL_RECURRENCE_UNTIL,
-        CAL_RECURRENCE_WEEK_OF_MONTH, CAL_REMINDER, CAL_SENSITIVITY, CAL_START_TIME, CAL_SUBJECT,
-        CAL_TIMEZONE, CalendarAttendee, CalendarRecurrence, PAGE_CALENDAR,
+        CAL_BUSY_STATUS, CAL_DELETED, CAL_END_TIME, CAL_EXCEPTION, CAL_EXCEPTION_START_TIME,
+        CAL_EXCEPTIONS, CAL_LOCATION, CAL_RECURRENCE, CAL_RECURRENCE_DAY_OF_MONTH,
+        CAL_RECURRENCE_DAY_OF_WEEK, CAL_RECURRENCE_FIRST_DAY_OF_WEEK, CAL_RECURRENCE_INTERVAL,
+        CAL_RECURRENCE_MONTH_OF_YEAR, CAL_RECURRENCE_OCCURRENCES, CAL_RECURRENCE_TYPE,
+        CAL_RECURRENCE_UNTIL, CAL_RECURRENCE_WEEK_OF_MONTH, CAL_REMINDER, CAL_SENSITIVITY,
+        CAL_START_TIME, CAL_SUBJECT, CAL_TIMEZONE, CalendarAttendee, CalendarException,
+        CalendarRecurrence, PAGE_CALENDAR,
     },
     commands::{AS_APPLICATION_DATA, PAGE_AIRSYNC},
     wbxml::{
@@ -145,6 +147,9 @@ pub fn build_calendar_application_data(
     if let Some(recurrence) = &w.recurrence {
         children.push(build_recurrence(recurrence));
     }
+    if !w.exceptions.is_empty() {
+        children.push(build_exceptions(&w.exceptions, protocol_version));
+    }
     WbxmlElement::container(PAGE_AIRSYNC, AS_APPLICATION_DATA, children)
 }
 
@@ -191,11 +196,89 @@ fn build_attendees(attendees: &[CalendarAttendee]) -> WbxmlElement {
     )
 }
 
+/// `Exceptions` container ([MS-ASCAL] §2.2.2.22) — the write twin of
+/// `calendar::parse_exceptions`, carried after `Recurrence`. Child order
+/// per Exception: `ExceptionStartTime` (§2.2.2.23, required — it names the
+/// ORIGINAL occurrence), `Deleted` (§2.2.2.16 — a deleted marker carries
+/// NOTHING else), then the modified-occurrence subset in the same order the
+/// top-level builder emits it (StartTime, EndTime, Subject, Location, Body).
+/// `Location` follows the top-level version gate: the ≤14.1 calendar-page
+/// leaf vs the 16.x `airsyncbase:Location` container. AllDayEvent is never
+/// written inside an exception (the write path does not change an
+/// occurrence's all-day-ness; absence means "inherits the series").
+fn build_exceptions(exceptions: &[CalendarException], protocol_version: &str) -> WbxmlElement {
+    WbxmlElement::container(
+        PAGE_CALENDAR,
+        CAL_EXCEPTIONS,
+        exceptions
+            .iter()
+            .map(|exception| {
+                let mut children = Vec::with_capacity(7);
+                if let Some(start) = &exception.exception_start_time {
+                    children.push(WbxmlElement::text(
+                        PAGE_CALENDAR,
+                        CAL_EXCEPTION_START_TIME,
+                        start.clone(),
+                    ));
+                }
+                if exception.deleted {
+                    children.push(WbxmlElement::text(PAGE_CALENDAR, CAL_DELETED, "1"));
+                    // A deleted marker carries no replacement data
+                    // (§2.2.2.16) — the marker is the whole exception.
+                    return WbxmlElement::container(PAGE_CALENDAR, CAL_EXCEPTION, children);
+                }
+                if let Some(start) = &exception.start_time {
+                    children.push(WbxmlElement::text(
+                        PAGE_CALENDAR,
+                        CAL_START_TIME,
+                        start.clone(),
+                    ));
+                }
+                if let Some(end) = &exception.end_time {
+                    children.push(WbxmlElement::text(PAGE_CALENDAR, CAL_END_TIME, end.clone()));
+                }
+                if let Some(subject) = &exception.subject {
+                    children.push(WbxmlElement::text(
+                        PAGE_CALENDAR,
+                        CAL_SUBJECT,
+                        subject.clone(),
+                    ));
+                }
+                if let Some(location) = &exception.location {
+                    if version_at_least_16(protocol_version) {
+                        children.push(WbxmlElement::container(
+                            pages::BASE,
+                            base::LOCATION,
+                            vec![WbxmlElement::text(
+                                pages::BASE,
+                                base::DISPLAY_NAME,
+                                location.clone(),
+                            )],
+                        ));
+                    } else {
+                        children.push(WbxmlElement::text(
+                            PAGE_CALENDAR,
+                            CAL_LOCATION,
+                            location.clone(),
+                        ));
+                    }
+                }
+                if let Some(body) = &exception.body_plain {
+                    children.push(build_body_plain(body));
+                }
+                WbxmlElement::container(PAGE_CALENDAR, CAL_EXCEPTION, children)
+            })
+            .collect(),
+    )
+}
+
 /// `Recurrence` container ([MS-ASCAL] §2.2.2.37) in the canonical child
 /// order Type, Interval?, DayOfWeek?, DayOfMonth?, WeekOfMonth?,
-/// MonthOfYear?, then `Until` XOR `Occurrences` (§2.2.2.47 — mutually
-/// exclusive; Until wins when the struct invalidly carries both, with a
-/// warning). `no_end` is derived, never a wire token (§2.2.2.37.1).
+/// MonthOfYear?, `FirstDayOfWeek`?, then `Until` XOR `Occurrences`
+/// (§2.2.2.47 — mutually exclusive; Until wins when the struct invalidly
+/// carries both, with a warning). `no_end` is derived, never a wire token
+/// (§2.2.2.37.1). `FirstDayOfWeek` (§2.2.2.24, 14.0+) is written only when
+/// set — the engine's Monday default is the wire's absent-element reading.
 fn build_recurrence(rec: &CalendarRecurrence) -> WbxmlElement {
     if rec.until.is_some() && rec.occurrences.is_some() {
         log::warn!(
@@ -240,6 +323,13 @@ fn build_recurrence(rec: &CalendarRecurrence) -> WbxmlElement {
         children.push(WbxmlElement::text(
             PAGE_CALENDAR,
             CAL_RECURRENCE_MONTH_OF_YEAR,
+            v.to_string(),
+        ));
+    }
+    if let Some(v) = rec.first_day_of_week {
+        children.push(WbxmlElement::text(
+            PAGE_CALENDAR,
+            CAL_RECURRENCE_FIRST_DAY_OF_WEEK,
             v.to_string(),
         ));
     }

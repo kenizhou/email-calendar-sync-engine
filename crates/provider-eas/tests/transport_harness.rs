@@ -32,8 +32,12 @@ mod harness;
 #[path = "transport_harness/server.rs"]
 mod server;
 
+#[path = "transport_harness/adapter_calendar_delete_flow.rs"]
+mod adapter_calendar_delete_flow;
 #[path = "transport_harness/adapter_calendar_flow.rs"]
 mod adapter_calendar_flow;
+#[path = "transport_harness/adapter_calendar_write_flow.rs"]
+mod adapter_calendar_write_flow;
 #[path = "transport_harness/adapter_edit_flow.rs"]
 mod adapter_edit_flow;
 #[path = "transport_harness/adapter_events_flow.rs"]

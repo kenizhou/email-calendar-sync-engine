@@ -234,7 +234,94 @@ impl Provider for EasAdapter {
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Event>> {
         match &self.calendar {
-            Some(calendar) => super::calendar::sync_events(&self.client, calendar, cursor).await,
+            Some(calendar) => {
+                super::calendar::sync_events(&self.client, calendar, &self.calendar_key, cursor)
+                    .await
+            }
+            None => Err(super::calendar::unbound_calendar()),
+        }
+    }
+
+    /// Sync `Add` with a synthesized `ClientId` — the only id-reveal point:
+    /// the receipt keys the `ServerId` the server's `Responses` ack assigns
+    /// ([MS-ASCMD] §2.2.3.7.2; an ack-less success keys the ClientId
+    /// placeholder, reconciled away by `uid` on the next events pass). The
+    /// draft converts through `calendar::convert_write::write_from_draft`
+    /// (fixed-offset TZI fold; a named-DST zone refuses). The Add rides the
+    /// adapter's calendar collection-key ledger. Requires the calendar
+    /// binding. `super::calendar_write` owns the mapping.
+    async fn create_event(
+        &self,
+        _account: &AccountId,
+        draft: &engine_provider::EventDraft,
+    ) -> ProviderResult<engine_provider::EventWriteReceipt> {
+        match &self.calendar {
+            Some(calendar) => {
+                super::calendar_write::create(&self.client, calendar, &self.calendar_key, draft)
+                    .await
+            }
+            None => Err(super::calendar::unbound_calendar()),
+        }
+    }
+
+    /// Sync `Change` (Replace) of the master: a `Series` target rebuilds the
+    /// complete document from the base + patch; an `Instance` target
+    /// rebuilds the master carrying that occurrence as a modified exception
+    /// (the master's other overrides ride untouched — the
+    /// `OverrideSurvival::kept()` construction). An empty patch is a no-op
+    /// receipt. Requires the calendar binding. `super::calendar_write`.
+    async fn patch_event(
+        &self,
+        _account: &AccountId,
+        base: &Event,
+        edit: &engine_provider::EventEdit,
+    ) -> ProviderResult<engine_provider::EventWriteReceipt> {
+        match &self.calendar {
+            Some(calendar) => {
+                super::calendar_write::patch(&self.client, calendar, &self.calendar_key, base, edit)
+                    .await
+            }
+            None => Err(super::calendar::unbound_calendar()),
+        }
+    }
+
+    /// The documented rejecting default: EAS's update verb is a field-level
+    /// Sync `Change`, not a document PUT, and there is no iCalendar document
+    /// on an EAS server — [`Provider::patch_event`](Provider::patch_event)
+    /// is the supported path. The trait explicitly allows an adapter
+    /// advertising `calendar_writes` to leave this at the refusal.
+    async fn put_event(
+        &self,
+        _account: &AccountId,
+        write: &engine_provider::EventWrite,
+    ) -> ProviderResult<engine_provider::EventWriteReceipt> {
+        let _ = write;
+        Err(super::calendar_write::put_refusal())
+    }
+
+    /// Sync `Delete` of the ServerId for the series; an occurrence delete
+    /// is a `Change` of the master carrying the deleted-marker exception
+    /// (the EAS EXDATE form, [MS-ASCAL] §2.2.2.16) — which is why an
+    /// occurrence delete needs `base`. Already-gone is success (a per-item
+    /// 8, or no item status at all — [MS-ASCMD] §2.2.3.154). Requires the
+    /// calendar binding. `super::calendar_write`.
+    async fn delete_event(
+        &self,
+        _account: &AccountId,
+        base: Option<&Event>,
+        deletion: &engine_provider::EventDeletion,
+    ) -> ProviderResult<()> {
+        match &self.calendar {
+            Some(calendar) => {
+                super::calendar_write::delete(
+                    &self.client,
+                    calendar,
+                    &self.calendar_key,
+                    base,
+                    deletion,
+                )
+                .await
+            }
             None => Err(super::calendar::unbound_calendar()),
         }
     }

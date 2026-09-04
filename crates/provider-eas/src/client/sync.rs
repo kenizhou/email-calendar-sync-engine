@@ -241,6 +241,57 @@ impl EasClient {
         Ok(outcome)
     }
 
+    /// Sync — client-side Calendar `Commands` upsync (Add/Change/Delete)
+    /// for a single collection: the Calendar twin of [`Self::sync_changes`],
+    /// built through `build_calendar_change_request` (16.x Location gating,
+    /// calendar-page ApplicationData). The protocol version is the client's
+    /// own (the OPTIONS-negotiated one every command carries).
+    ///
+    /// One round, no chunking: the adapter's write verbs send exactly one
+    /// command per call (create/patch/delete of one event), far under the
+    /// §3.1.5.10 batch cap — a multi-command calendar batch would thread the
+    /// rotated key exactly as `sync_changes` does if one ever lands.
+    ///
+    /// The response parses through the same `Responses` path: the outcome
+    /// carries the rotated key, the collection status, the per-item Add
+    /// acknowledgements (`CalendarAddAck` — the server assigns the new
+    /// ServerId there), and per-item Change/Delete statuses (sent for
+    /// FAILURES only, [MS-ASCMD] §2.2.3.154 — absence means success).
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError`: `Transport`/`HttpStatus` when the HTTP round-trip
+    /// fails, `Wbxml` when the response bytes do not decode, and
+    /// `SyncStatus` when the collection status is not 1 (a dead key surfaces
+    /// with its Sync-family classification).
+    pub async fn calendar_sync_changes(
+        &mut self,
+        collection_id: &str,
+        sync_key: &str,
+        changes: &[commands::CalendarChange],
+    ) -> Result<commands::SyncChangeOutcome, EasError> {
+        let tree = commands::build_calendar_change_request(
+            collection_id,
+            sync_key,
+            changes,
+            &self.config.protocol_version,
+        );
+        let resp = self.send_command("Sync", &tree).await?;
+        expect_root(&resp, PAGE_AIRSYNC, AS_SYNC)?;
+        let outcome = commands::parse_sync_change_response(&resp)?;
+        if outcome.status != 1 {
+            return Err(EasError::SyncStatus {
+                status: outcome.status,
+                message: format!(
+                    "Calendar Sync upsync failed: {}",
+                    commands::common_status_message(outcome.status)
+                        .unwrap_or("collection status not success")
+                ),
+            });
+        }
+        Ok(outcome)
+    }
+
     /// FolderCreate — create a new folder under a parent.
     ///
     /// # Errors

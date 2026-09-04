@@ -38,7 +38,6 @@
 use std::collections::BTreeSet;
 
 use engine_core::{
-    error::FailureClass,
     ids::MailboxId,
     mail::{Keyword, SystemKeyword},
 };
@@ -46,12 +45,13 @@ use engine_provider::{MailEdit, MailEditReceipt, ProviderError, ProviderResult};
 use tokio::sync::Mutex;
 
 use super::{
-    CollectionKey,
+    CollectionKey, current_key,
     error::{move_status_error, provider_error, sync_status_error},
+    record_rotation,
 };
 use crate::{
     client::{EasClient, EasError},
-    commands::{EasChange, SyncChangeOutcome},
+    commands::EasChange,
 };
 
 /// Applies one [`MailEdit`] over the bound folder. See the module docs for
@@ -171,40 +171,6 @@ fn toggle_of(
         Some(false)
     } else {
         None
-    }
-}
-
-/// The key an edit rides: the ledger's, or the cold-ledger refusal.
-fn current_key(ledger: &CollectionKey) -> ProviderResult<String> {
-    ledger
-        .lock()
-        .expect("collection-key ledger")
-        .clone()
-        .ok_or_else(|| {
-            ProviderError::new(
-                FailureClass::NeedsResync,
-                "the collection's sync key is unknown to this adapter — run a \
-                 sync pass first (it seeds the key); the outbox retries the \
-                 edit after it",
-            )
-        })
-}
-
-/// Records an edit's key rotation. A response that piggybacked server rows
-/// (no `GetChanges` was sent, so a conforming server sends none — a
-/// nonconforming one might) drops the ledger instead: those rows cannot
-/// ride the receipt back, and falling to the engine cursor surfaces the
-/// gap as a Reconcile on the next pass rather than skipping them forever.
-fn record_rotation(ledger: &CollectionKey, outcome: &SyncChangeOutcome) {
-    let mut slot = ledger.lock().expect("collection-key ledger");
-    if outcome.has_piggybacked() {
-        log::warn!(
-            "EAS Sync change response piggybacked server commands — dropping \
-             the collection-key ledger; the next pass reconciles"
-        );
-        *slot = None;
-    } else {
-        *slot = Some(outcome.new_key.clone());
     }
 }
 

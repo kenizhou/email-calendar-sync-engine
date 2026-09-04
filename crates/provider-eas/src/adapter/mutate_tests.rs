@@ -15,7 +15,7 @@ use engine_core::{
 };
 
 use super::*;
-use crate::types::EasItem;
+use crate::{commands::SyncChangeOutcome, types::EasItem};
 
 fn target() -> ProviderKey {
     ProviderKey::new("sid:7").unwrap()

@@ -102,7 +102,7 @@ pub(super) fn apply_offset(wall: LocalDateTime, offset_minutes: i32) -> LocalDat
 
 /// The engine wall clock → the `time` crate's zoneless form (crate-local
 /// arithmetic; the engine's own `as_primitive` is `pub(crate)`-internal).
-fn to_primitive(wall: LocalDateTime) -> PrimitiveDateTime {
+pub(super) fn to_primitive(wall: LocalDateTime) -> PrimitiveDateTime {
     let date = Date::from_calendar_date(
         wall.year(),
         Month::try_from(wall.month()).unwrap_or(Month::January),
@@ -115,7 +115,7 @@ fn to_primitive(wall: LocalDateTime) -> PrimitiveDateTime {
 }
 
 /// The `time` crate's zoneless form → the engine wall clock.
-fn from_primitive(primitive: PrimitiveDateTime) -> LocalDateTime {
+pub(super) fn from_primitive(primitive: PrimitiveDateTime) -> LocalDateTime {
     LocalDateTime::new(
         primitive.year(),
         primitive.month() as u8,

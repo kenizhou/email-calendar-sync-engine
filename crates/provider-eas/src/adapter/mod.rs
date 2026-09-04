@@ -67,12 +67,15 @@
 //! and moves; `Delete` is refused per the protocol, see `mutate`) and
 //! `submission` + `scheduling_submission` (`submit_email` and
 //! `submit_email_source` — the raw-MIME send carries its own scheduling
-//! parameters). The **calendar read family is on with its slice**
-//! (`sync_calendars` + `sync_events`, `adapter/calendar.rs`) — but only on
-//! an adapter that carries a calendar binding
-//! ([`EasAdapter::with_calendar`]): event sync is per collection, and an
-//! unbound adapter cannot name one. The calendar write bits (`calendar_writes`,
-//! `calendar_rsvp`) and the contacts family stay off until their verbs land.
+//! parameters). The **calendar family is on with its binding**
+//! ([`EasAdapter::with_calendar`]): the read verbs (`sync_calendars` +
+//! `sync_events`, `adapter/calendar.rs`) AND the write verbs
+//! (`create_event`/`patch_event`/`delete_event` — Sync
+//! Add/Change/Delete-upsync, `adapter/calendar_write.rs`; `put_event` is
+//! refused, EAS's update verb is a field-level Change, not a document PUT)
+//! flip `calendars` + `calendar_writes` together — event addressing is per
+//! collection and an unbound adapter cannot name one. `calendar_rsvp` and
+//! the contacts family stay off until their verbs land.
 //!
 //! ## The calendar binding
 //!
@@ -104,6 +107,7 @@
 //! discipline and `email` for the pass-side rule.
 
 mod calendar;
+mod calendar_write;
 mod connection;
 mod email;
 mod error;
@@ -114,7 +118,7 @@ mod submit;
 mod watch;
 
 use engine_core::ids::{CalendarId, MailboxId};
-use engine_provider::Capabilities;
+use engine_provider::{Capabilities, OverrideSurvival, ProviderError, ProviderResult, WriteGuard};
 pub use watch::EasPingWatcher;
 
 use crate::client::{EasClient, EasError, pick_protocol_version};
@@ -180,6 +184,12 @@ pub struct EasAdapter {
     /// `SetKeywords` edit; `None` until the first pass completes (see the
     /// module docs' ledger section).
     collection_key: CollectionKey,
+    /// The bound calendar folder's collection-SyncKey ledger — the calendar
+    /// write verbs' key source (the trait's write seam carries no cursor,
+    /// exactly as `edit_mail`). Seeded by a completed `sync_events` pass,
+    /// consumed and rotated by each calendar write; `None` until the first
+    /// pass completes (the same cold-ledger `NeedsResync` refusal).
+    calendar_key: CollectionKey,
     /// The OPTIONS-negotiated protocol version ("16.1"-shaped), or `None`
     /// before [`EasAdapter::negotiate`]. Adapter-held by design: a host must
     /// not branch on it (`docs/agent-guidance/providers.md`), so it never
@@ -201,6 +211,7 @@ impl std::fmt::Debug for EasAdapter {
             .field("calendar", &self.calendar)
             .field("capabilities", &self.capabilities)
             .field("collection_key", &self.collection_key)
+            .field("calendar_key", &self.calendar_key)
             .field("protocol_version", &self.protocol_version)
             .finish()
     }
@@ -236,6 +247,7 @@ impl EasAdapter {
                 .with_scheduling_submission(),
             // Cold by construction — the first completed pass seeds it.
             collection_key: CollectionKey::default(),
+            calendar_key: CollectionKey::default(),
             protocol_version: None,
         }
     }
@@ -251,13 +263,29 @@ impl EasAdapter {
     ///
     /// The binding is the calendar folder's ServerId from the container sync
     /// (`sync_calendars` — itself per-account and callable on any adapter).
-    /// The calendar write verbs are NOT part of this slice: `with_calendar`
-    /// advertises reads only, and `calendar_writes`/`calendar_rsvp` stay
-    /// off until their verbs land.
+    ///
+    /// The **write verbs land with the binding too** (P2 Task 3:
+    /// `create_event`/`patch_event`/`delete_event` over Sync
+    /// Add/Change/Delete): the bit and the binding turn on together because
+    /// every write verb addresses the bound collection, exactly as the read
+    /// bit did. The guard is honest: EAS Sync Change carries **no server
+    /// revision tokens** ([MS-ASSYNC] has no per-object precondition — the
+    /// request names the item and nothing else), so the last write silently
+    /// wins and the guard is [`WriteGuard::Absent`]. The override-survival
+    /// claim is `kept()` **by construction**: a series Replace rebuilds the
+    /// whole `Exceptions` container from the base the caller read
+    /// (`calendar/convert_write.rs`), so every per-occurrence change rides
+    /// the write — the CalDAV structural-patcher argument; a stale base
+    /// losing a newer override is the `Absent` guard's documented
+    /// last-write-wins, not a survival failure. `calendar_rsvp` stays off
+    /// (its verb, `MeetingResponse`, is a later slice).
     #[must_use]
     pub fn with_calendar(mut self, calendar: CalendarId) -> Self {
         self.calendar = Some(calendar);
-        self.capabilities = self.capabilities.with_calendars();
+        self.capabilities = self
+            .capabilities
+            .with_calendars()
+            .with_calendar_writes(WriteGuard::Absent, OverrideSurvival::kept());
         self
     }
 
@@ -337,5 +365,45 @@ impl EasAdapter {
     /// [`EasPingWatcher::set_heartbeat_secs`].
     pub async fn watcher(&self) -> EasPingWatcher {
         EasPingWatcher::new(self.client.lock().await.clone(), self.folder.clone())
+    }
+}
+
+// ============================================================================
+// The shared collection-key ledger discipline (mutate + calendar_write)
+// ============================================================================
+
+/// The key a write rides: the ledger's, or the cold-ledger refusal (the
+/// `NeedsResync` cold path — the orchestrator re-syncs, the pass re-seeds
+/// the ledger, and the outbox retries the op; never a guessed key).
+pub(super) fn current_key(ledger: &CollectionKey) -> ProviderResult<String> {
+    ledger
+        .lock()
+        .expect("collection-key ledger")
+        .clone()
+        .ok_or_else(|| {
+            ProviderError::new(
+                engine_core::error::FailureClass::NeedsResync,
+                "the collection's sync key is unknown to this adapter — run a                  sync pass first (it seeds the key); the outbox retries the                  write after it",
+            )
+        })
+}
+
+/// Records a write's key rotation. A response that piggybacked server rows
+/// (no `GetChanges` was sent, so a conforming server sends none — a
+/// nonconforming one might) drops the ledger instead: those rows cannot
+/// ride the receipt back, and falling to the engine cursor surfaces the
+/// gap as a Reconcile on the next pass rather than skipping them forever.
+pub(super) fn record_rotation(
+    ledger: &CollectionKey,
+    outcome: &crate::commands::SyncChangeOutcome,
+) {
+    let mut slot = ledger.lock().expect("collection-key ledger");
+    if outcome.has_piggybacked() {
+        log::warn!(
+            "EAS Sync change response piggybacked server commands — dropping              the collection-key ledger; the next pass reconciles"
+        );
+        *slot = None;
+    } else {
+        *slot = Some(outcome.new_key.clone());
     }
 }

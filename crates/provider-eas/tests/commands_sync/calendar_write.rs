@@ -288,3 +288,143 @@ fn calendar_change_request_round_trips() {
     let back = round_trip(&tree);
     assert_eq!(tree, back);
 }
+
+// ============================================================================
+// P2 Task 3 — the Exceptions container + FirstDayOfWeek goldens
+// ============================================================================
+
+use provider_eas::calendar::{
+    CAL_DELETED, CAL_END_TIME, CAL_EXCEPTION, CAL_EXCEPTION_START_TIME, CAL_EXCEPTIONS,
+    CAL_RECURRENCE, CAL_RECURRENCE_DAY_OF_WEEK, CAL_RECURRENCE_FIRST_DAY_OF_WEEK,
+    CAL_RECURRENCE_TYPE, CAL_START_TIME, CAL_SUBJECT, CalendarException, CalendarRecurrence,
+    PAGE_CALENDAR,
+};
+use provider_eas::wbxml::tags::{base, pages};
+
+/// The `Exceptions` container lands after `Recurrence` inside the 16.1
+/// ApplicationData, mirroring the parse side's shapes: a deleted marker is
+/// `ExceptionStartTime` + `Deleted` and NOTHING else ([MS-ASCAL] §2.2.2.16),
+/// a modified occurrence carries `ExceptionStartTime` then its changed
+/// subset, with Location in the 16.x `airsyncbase:Location` container form
+/// inside exceptions exactly as at the top level.
+#[test]
+fn exceptions_container_matches_the_parse_side_shapes() {
+    let mut props = calendar_write_fixture("Weekly Standup");
+    props.exceptions = vec![
+        CalendarException {
+            deleted: true,
+            exception_start_time: Some("20260818T010000Z".to_owned()),
+            ..CalendarException::default()
+        },
+        CalendarException {
+            exception_start_time: Some("20260825T010000Z".to_owned()),
+            start_time: Some("20260825T030000Z".to_owned()),
+            end_time: Some("20260825T033000Z".to_owned()),
+            subject: Some("Late standup".to_owned()),
+            location: Some("Room 9".to_owned()),
+            body_plain: Some("Moved".to_owned()),
+            ..CalendarException::default()
+        },
+    ];
+    let app_data = build_calendar_application_data(&props, "16.1");
+    let exceptions = app_data
+        .children
+        .iter()
+        .find(|c| c.page == PAGE_CALENDAR && c.token == CAL_EXCEPTIONS)
+        .expect("the Exceptions container rides the ApplicationData");
+    assert_eq!(exceptions.children.len(), 2);
+
+    // Deleted marker: ExceptionStartTime + Deleted only.
+    let gone = &exceptions.children[0];
+    assert_eq!((gone.page, gone.token), (PAGE_CALENDAR, CAL_EXCEPTION));
+    assert_eq!(gone.children.len(), 2, "a deleted marker carries no data");
+    assert_eq!(
+        (gone.children[0].page, gone.children[0].token),
+        (PAGE_CALENDAR, CAL_EXCEPTION_START_TIME)
+    );
+    assert_eq!(text_value(&gone.children[0]).unwrap(), "20260818T010000Z");
+    assert_eq!(
+        (gone.children[1].page, gone.children[1].token),
+        (PAGE_CALENDAR, CAL_DELETED)
+    );
+    assert_eq!(text_value(&gone.children[1]).unwrap(), "1");
+
+    // Modified occurrence: the changed subset, Location as the 16.x
+    // airsyncbase container (the note-2 gate applies inside exceptions too).
+    let moved = &exceptions.children[1];
+    let tokens: Vec<(u8, u8)> = moved.children.iter().map(|c| (c.page, c.token)).collect();
+    assert_eq!(
+        tokens,
+        vec![
+            (PAGE_CALENDAR, CAL_EXCEPTION_START_TIME),
+            (PAGE_CALENDAR, CAL_START_TIME),
+            (PAGE_CALENDAR, CAL_END_TIME),
+            (PAGE_CALENDAR, CAL_SUBJECT),
+            (pages::BASE, base::LOCATION),
+            (pages::BASE, base::BODY),
+        ],
+        "ExceptionStartTime first, then the changed subset in the top-level \
+         builder's order"
+    );
+    let location = &moved.children[4];
+    assert_eq!(location.children.len(), 1);
+    assert_eq!(
+        (location.children[0].page, location.children[0].token),
+        (pages::BASE, base::DISPLAY_NAME)
+    );
+    assert_eq!(text_value(&location.children[0]).unwrap(), "Room 9");
+}
+
+/// An empty exceptions list omits the container entirely — the parse side's
+/// absent-element reading, not an empty container.
+#[test]
+fn an_empty_exceptions_list_omits_the_container() {
+    let props = calendar_write_fixture("Plain");
+    let app_data = build_calendar_application_data(&props, "16.1");
+    assert!(
+        app_data
+            .children
+            .iter()
+            .all(|c| !(c.page == PAGE_CALENDAR && c.token == CAL_EXCEPTIONS)),
+        "no Exceptions container when the list is empty"
+    );
+}
+
+/// `FirstDayOfWeek` rides the Recurrence container when set ([MS-ASCAL]
+/// §2.2.2.24, 14.0+) — after MonthOfYear, before the bound elements — and
+/// is absent otherwise (the Monday default is never written).
+#[test]
+fn recurrence_first_day_of_week_rides_when_set() {
+    let mut props = calendar_write_fixture("Week Start");
+    props.recurrence = Some(CalendarRecurrence {
+        recurrence_type: 1,
+        day_of_week: Some(4),
+        first_day_of_week: Some(0),
+        ..CalendarRecurrence::default()
+    });
+    let app_data = build_calendar_application_data(&props, "16.1");
+    let recurrence = app_data
+        .children
+        .iter()
+        .find(|c| c.page == PAGE_CALENDAR && c.token == CAL_RECURRENCE)
+        .expect("the Recurrence container rides");
+    let tokens: Vec<(u8, u8)> = recurrence
+        .children
+        .iter()
+        .map(|c| (c.page, c.token))
+        .collect();
+    assert_eq!(
+        tokens,
+        vec![
+            (PAGE_CALENDAR, CAL_RECURRENCE_TYPE),
+            (PAGE_CALENDAR, CAL_RECURRENCE_DAY_OF_WEEK),
+            (PAGE_CALENDAR, CAL_RECURRENCE_FIRST_DAY_OF_WEEK),
+        ],
+        "Type, DayOfWeek, FirstDayOfWeek — Sunday reads as 0"
+    );
+    assert_eq!(
+        text_value(&recurrence.children[2]).unwrap(),
+        "0",
+        "Sunday is the SYSTEMTIME wDayOfWeek index 0"
+    );
+}

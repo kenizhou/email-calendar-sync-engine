@@ -3,7 +3,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::calendar::{CalendarAttendee, CalendarRecurrence, is_valid_eas_datetime};
+use crate::calendar::{
+    CalendarAttendee, CalendarException, CalendarRecurrence, is_valid_eas_datetime,
+};
 
 // ============================================================================
 // Write model
@@ -61,6 +63,13 @@ pub struct CalendarEventWrite {
     pub attendees: Vec<CalendarAttendee>,
     /// `Recurrence` pattern ([MS-ASCAL] §2.2.2.37) — omitted when `None`.
     pub recurrence: Option<CalendarRecurrence>,
+    /// `Exceptions` ([MS-ASCAL] §2.2.2.22) — the series' exception list,
+    /// reusing the parse-model [`CalendarException`] (the attendees/
+    /// recurrence precedent) so a downsynced series round-trips. Deleted
+    /// markers carry only `Deleted` + `ExceptionStartTime`; modified
+    /// occurrences carry their own changed subset. The container is omitted
+    /// when empty.
+    pub exceptions: Vec<CalendarException>,
 }
 
 /// Validation failure for [`CalendarEventWrite::validate`] — one variant

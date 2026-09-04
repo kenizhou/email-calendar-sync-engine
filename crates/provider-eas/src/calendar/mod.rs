@@ -21,6 +21,9 @@ mod attendees;
 mod convert;
 mod convert_recurrence;
 mod convert_time;
+pub(crate) mod convert_write;
+mod convert_write_exceptions;
+mod convert_write_recurrence;
 mod datetime;
 mod exceptions;
 mod fields;
@@ -51,6 +54,14 @@ mod convert_tests;
 #[cfg(test)]
 #[path = "convert_recurrence_tests.rs"]
 mod convert_recurrence_tests;
+
+#[cfg(test)]
+#[path = "convert_write_exceptions_tests.rs"]
+mod convert_write_exceptions_tests;
+
+#[cfg(test)]
+#[path = "convert_write_tests.rs"]
+mod convert_write_tests;
 
 use crate::wbxml::tags::base;
 
