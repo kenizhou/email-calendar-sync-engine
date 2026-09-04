@@ -1,19 +1,14 @@
-//! Argument parsing and command dispatch.
+//! Command dispatch: the `run` entry point, the per-command handlers, and
+//! the usage banner.
 //!
-//! Kept in the library (not `main.rs`) so the whole CLI surface — flag parsing,
-//! command dispatch, and rendered output — is testable; the binary is a thin shim
-//! that prints [`run`]'s output. Commands return their output as a string rather
-//! than printing, so tests can assert it.
-
-use std::collections::HashMap;
-
-use engine_core::{
-    ids::AccountId,
-    time::{TimeZoneId, UtcDateTime},
-};
+//! Kept in the library (not `main.rs`) so the whole CLI surface — flag parsing
+//! ([`flags`](crate::flags)), command dispatch, and rendered output — is
+//! testable; the binary is a thin shim that prints [`run`]'s output. Commands
+//! return their output as a string rather than printing, so tests can assert
+//! it.
 
 use crate::{
-    CliError, Fixture, Horizon, ingest, open, reexpand_calendar, search_calendar, search_mail,
+    CliError, Fixture, flags::Flags, ingest, open, reexpand_calendar, search_calendar, search_mail,
 };
 
 /// The usage banner, shown for `--help`-less misuse.
@@ -22,10 +17,9 @@ usage:
   engine-cli ingest   --db <path> --account <id> [--zone <iana>] [--horizon-start <YYYY-MM-DD>] [--horizon-end <YYYY-MM-DD>] <fixture.json>
   engine-cli reexpand --db <path> --account <id> [--zone <iana>] [--horizon-start <YYYY-MM-DD>] [--horizon-end <YYYY-MM-DD>]
   engine-cli search   --db <path> --account <id> --kind <mail|calendar> [--limit <n>] <query...>
-  engine-cli eas-sync --db <path> --account <id> [--url <u> --user <u> --password <p> | env EAS_LIVE_URL/USER/PASSWORD] [--folder <fid>[,<fid>...]] [--rounds <n>] [--insecure]";
-
-/// Flags that stand alone — no value follows them on the command line.
-const BOOLEAN_FLAGS: &[&str] = &["insecure"];
+  engine-cli eas-sync --db <path> --account <id> [--kind <mail|calendar|contacts>] [--url <u> --user <u> --password <p> | env EAS_LIVE_URL/USER/PASSWORD]
+                      [--folder <fid>[,<fid>...]] [--calendar <cid>[,<cid>...]] [--book <bid>[,<bid>...]] [--rounds <n>] [--insecure]
+                      (calendar only: [--horizon-start <YYYY-MM-DD>] [--horizon-end <YYYY-MM-DD>] [--zone <iana>] [--create])";
 
 /// Parses `args` (the arguments after the program name) and runs the command,
 /// returning the output to print.
@@ -51,9 +45,10 @@ pub async fn run(args: &[String]) -> Result<String, CliError> {
 }
 
 /// The `eas-sync` command: one EAS account through the engine's own sync
-/// (see `eas_sync`'s module docs). Credentials come from the flags or the
-/// `EAS_LIVE_*` gates; `--rounds 2` against one `--db` is the full-then-
-/// incremental acceptance run.
+/// (see `eas_sync`'s and `eas_pim`'s module docs). Credentials come from
+/// the flags or the `EAS_LIVE_*` gates; `--rounds 2` against one `--db` is
+/// the full-then-incremental acceptance run. `--kind` picks the family:
+/// `mail` (the default), `calendar`, or `contacts`.
 async fn cmd_eas_sync(flags: &Flags) -> Result<String, CliError> {
     let account = flags.account()?;
     let target = crate::eas_sync::EasTarget::resolve(
@@ -62,15 +57,6 @@ async fn cmd_eas_sync(flags: &Flags) -> Result<String, CliError> {
         flags.get("password"),
         flags.has("insecure"),
     )?;
-    let mut folders = Vec::new();
-    if let Some(list) = flags.get("folder") {
-        for id in list.split(',') {
-            folders.push(
-                engine_core::ids::MailboxId::try_from(id.trim())
-                    .map_err(|_| CliError::Usage("--folder ids must be non-empty".to_owned()))?,
-            );
-        }
-    }
     let rounds = flags
         .get("rounds")
         .and_then(|s| s.parse::<usize>().ok())
@@ -78,16 +64,92 @@ async fn cmd_eas_sync(flags: &Flags) -> Result<String, CliError> {
     if rounds == 0 {
         return Err(CliError::Usage("--rounds must be at least 1".to_owned()));
     }
+    // Everything that can be a usage error is refused before the store
+    // opens, so a mistyped command never leaves a stray `--db` file.
+    let kind = match flags.get("kind").unwrap_or("mail") {
+        kind @ ("mail" | "calendar" | "contacts") => kind,
+        other => {
+            return Err(CliError::Usage(format!(
+                "--kind must be mail|calendar|contacts, got {other:?}"
+            )));
+        }
+    };
+    match kind {
+        "mail" => reject(flags, &["calendar", "book", "create"])?,
+        "calendar" => reject(flags, &["folder", "book"])?,
+        _ => reject(flags, &["folder", "calendar", "create"])?,
+    }
     let store = crate::open(flags.require("db")?)?;
-    crate::eas_sync::eas_sync(
-        &store,
-        &account,
-        &target,
-        &folders,
-        rounds,
-        engine_sync::StreamTuning::responsive(),
-    )
-    .await
+    match kind {
+        "mail" => {
+            let mut folders = Vec::new();
+            if let Some(list) = flags.get("folder") {
+                for id in list.split(',') {
+                    folders.push(engine_core::ids::MailboxId::try_from(id.trim()).map_err(
+                        |_| CliError::Usage("--folder ids must be non-empty".to_owned()),
+                    )?);
+                }
+            }
+            crate::eas_sync::eas_sync(
+                &store,
+                &account,
+                &target,
+                &folders,
+                rounds,
+                engine_sync::StreamTuning::responsive(),
+            )
+            .await
+        }
+        "calendar" => {
+            let mut calendars = Vec::new();
+            if let Some(list) = flags.get("calendar") {
+                for id in list.split(',') {
+                    calendars.push(parse_id(id, "--calendar")?);
+                }
+            }
+            let horizon = flags.horizon()?;
+            let zone = flags.zone()?;
+            crate::eas_pim::eas_sync_calendar(
+                &store,
+                &account,
+                &target,
+                &calendars,
+                rounds,
+                horizon,
+                &zone,
+                flags.has("create"),
+            )
+            .await
+        }
+        _ => {
+            let mut books = Vec::new();
+            if let Some(list) = flags.get("book") {
+                for id in list.split(',') {
+                    books.push(parse_id(id, "--book")?);
+                }
+            }
+            crate::eas_pim::eas_sync_contacts(&store, &account, &target, &books, rounds).await
+        }
+    }
+}
+
+/// One comma-separated id flag entry, parsed into its id type.
+fn parse_id<'a, T: TryFrom<&'a str>>(id: &'a str, flag: &str) -> Result<T, CliError> {
+    T::try_from(id.trim()).map_err(|_| CliError::Usage(format!("{flag} ids must be non-empty")))
+}
+
+/// Refuses flags that belong to another `eas-sync` kind — silently
+/// ignoring them would let a mistyped command "succeed" without doing
+/// what was asked.
+fn reject(flags: &Flags, owned_elsewhere: &[&str]) -> Result<(), CliError> {
+    for flag in owned_elsewhere {
+        if flags.get(flag).is_some() {
+            return Err(CliError::Usage(format!(
+                "--{flag} does not apply to this --kind"
+            )));
+        }
+    }
+    Ok(())
 }
 
 async fn cmd_ingest(flags: &Flags) -> Result<String, CliError> {
@@ -143,78 +205,6 @@ async fn cmd_search(flags: &Flags) -> Result<String, CliError> {
     Ok(lines.join("\n"))
 }
 
-/// A minimal `--flag value` plus positionals parser.
-struct Flags {
-    map: HashMap<String, String>,
-    positionals: Vec<String>,
-}
-
-impl Flags {
-    fn parse(args: &[String]) -> Result<Self, CliError> {
-        let mut map = HashMap::new();
-        let mut positionals = Vec::new();
-        let mut iter = args.iter();
-        while let Some(arg) = iter.next() {
-            if let Some(flag) = arg.strip_prefix("--") {
-                if BOOLEAN_FLAGS.contains(&flag) {
-                    map.insert(flag.to_owned(), "1".to_owned());
-                    continue;
-                }
-                let value = iter
-                    .next()
-                    .ok_or_else(|| CliError::Usage(format!("--{flag} needs a value")))?;
-                map.insert(flag.to_owned(), value.clone());
-            } else {
-                positionals.push(arg.clone());
-            }
-        }
-        Ok(Self { map, positionals })
-    }
-
-    fn get(&self, key: &str) -> Option<&str> {
-        self.map.get(key).map(String::as_str)
-    }
-
-    /// Whether a boolean flag was passed.
-    fn has(&self, key: &str) -> bool {
-        self.map.get(key).is_some_and(|v| v == "1")
-    }
-
-    fn require(&self, key: &str) -> Result<&str, CliError> {
-        self.get(key)
-            .ok_or_else(|| CliError::Usage(format!("--{key} is required")))
-    }
-
-    fn account(&self) -> Result<AccountId, CliError> {
-        AccountId::try_from(self.require("account")?)
-            .map_err(|_| CliError::Usage("--account is not a valid account id".to_owned()))
-    }
-
-    fn zone(&self) -> Result<TimeZoneId, CliError> {
-        let name = self.get("zone").unwrap_or("Etc/UTC");
-        TimeZoneId::iana(name).map_err(|_| CliError::Usage("--zone must not be empty".to_owned()))
-    }
-
-    fn limit(&self) -> usize {
-        self.get("limit").and_then(|s| s.parse().ok()).unwrap_or(20)
-    }
-
-    /// The expansion horizon, defaulting to a wide window when unspecified.
-    fn horizon(&self) -> Result<Horizon, CliError> {
-        let start = self.day_instant("horizon-start", "2020-01-01")?;
-        let end = self.day_instant("horizon-end", "2030-01-01")?;
-        Ok(Horizon::new(start, end)?)
-    }
-
-    /// Parses a `YYYY-MM-DD` flag into the UTC midnight instant, or `default`.
-    fn day_instant(&self, key: &str, default: &str) -> Result<UtcDateTime, CliError> {
-        let date = self.get(key).unwrap_or(default);
-        format!("{date}T00:00:00Z")
-            .parse()
-            .map_err(|_| CliError::Usage(format!("--{key} must be YYYY-MM-DD")))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use engine_core::{
@@ -268,6 +258,78 @@ mod tests {
             err.to_string().contains("--rounds"),
             "the error names the flag: {err}"
         );
+    }
+
+    /// An unknown `--kind` is refused before the store is even opened.
+    #[tokio::test]
+    async fn eas_sync_refuses_unknown_kind() {
+        let err = run(&args(&[
+            "eas-sync",
+            "--db",
+            "unused",
+            "--account",
+            "acct-1",
+            "--url",
+            "http://server.invalid/Microsoft-Server-ActiveSync",
+            "--user",
+            "user@example.test",
+            "--password",
+            "app-password",
+            "--rounds",
+            "1",
+            "--kind",
+            "tasks",
+        ]))
+        .await
+        .expect_err("an unknown kind is a usage error");
+        assert!(
+            err.to_string().contains("--kind"),
+            "the error names the flag: {err}"
+        );
+    }
+
+    /// Flags that belong to another `--kind` are refused, not silently
+    /// ignored — a mistyped command must not "succeed" without doing what
+    /// was asked.
+    #[tokio::test]
+    async fn eas_sync_refuses_flags_of_another_kind() {
+        for (kind, flag) in [
+            ("contacts", "--folder"),
+            ("contacts", "--create"),
+            ("calendar", "--book"),
+            ("mail", "--create"),
+        ] {
+            let mut call = args(&[
+                "eas-sync",
+                "--db",
+                "unused",
+                "--account",
+                "acct-1",
+                "--url",
+                "http://server.invalid/Microsoft-Server-ActiveSync",
+                "--user",
+                "user@example.test",
+                "--password",
+                "app-password",
+                "--rounds",
+                "1",
+                "--kind",
+                kind,
+            ]);
+            if flag == "--create" {
+                call.push("--create".to_owned());
+            } else {
+                call.push(flag.to_owned());
+                call.push("some-id".to_owned());
+            }
+            let err = run(&call)
+                .await
+                .expect_err("a foreign flag is a usage error");
+            assert!(
+                err.to_string().contains(flag),
+                "the error names the flag {flag}: {err}"
+            );
+        }
     }
 
     #[tokio::test]

@@ -60,6 +60,8 @@ mod calendar_item_probe;
 mod calendar_smoke;
 #[path = "live_eas/contacts_smoke.rs"]
 mod contacts_smoke;
+#[path = "live_eas/engine_cli_pim.rs"]
+mod engine_cli_pim;
 #[path = "live_eas/provision_smoke.rs"]
 mod provision_smoke;
 #[path = "live_eas/sync_smoke.rs"]

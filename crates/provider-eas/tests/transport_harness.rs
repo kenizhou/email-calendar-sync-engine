@@ -75,6 +75,8 @@ mod codec_and_parse;
 mod compose_flow;
 #[path = "transport_harness/engine_cli_flow.rs"]
 mod engine_cli_flow;
+#[path = "transport_harness/engine_cli_pim_flow.rs"]
+mod engine_cli_pim_flow;
 #[path = "transport_harness/folders_flow.rs"]
 mod folders_flow;
 #[path = "transport_harness/http_errors.rs"]

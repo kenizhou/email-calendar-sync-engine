@@ -64,8 +64,11 @@ rustls = { workspace = true }
 futures-util = { workspace = true }
 # The engine-cli acceptance scenario: `eas-sync` (full + incremental) driven
 # end-to-end against the mock server — a dev-only cycle, since the CLI is
-# itself built on this crate (cargo permits dev-dependency cycles).
-engine-cli = { workspace = true }
+# itself built on this crate (cargo permits dev-dependency cycles). The
+# `eas-insecure-tls` diagnostic feature rides along for the LIVE engine-cli
+# tests (the self-signed lab server; dev builds only, exactly like the
+# `dangerous-testing` engine-tls dependency above).
+engine-cli = { workspace = true, features = ["eas-insecure-tls"] }
 tempfile = { workspace = true }
 # The conversion golden tests assert the neutral `Event` the props fold into
 # expands under the engine's own expander (occurrence counts) — the read-side

@@ -40,8 +40,9 @@ use crate::{CliError, WORKER};
 
 /// The lease TTL for the sync scopes this command claims. The harness clock
 /// is fixed, so any positive window holds every claim for the run — the
-/// same reasoning as `ingest`'s TTL.
-const LEASE_TTL: Duration = Duration::from_mins(5);
+/// same reasoning as `ingest`'s TTL. Shared with the PIM arms
+/// (`eas_pim.rs`), which claim under the same discipline.
+pub(crate) const LEASE_TTL: Duration = Duration::from_mins(5);
 
 /// The EAS device identity this diagnostic client presents ([MS-ASHTTP]:
 /// alphanumeric, ≤16 chars).
@@ -58,6 +59,11 @@ pub(crate) struct EasTarget {
     pub user: String,
     /// The account password / app password.
     pub password: String,
+    /// The Basic-auth identity when it differs from the EAS `User` param
+    /// (the on-prem lab shape: auth realm ≠ mailbox address). Resolved
+    /// from `EAS_LIVE_USERNAME` only — the live suites' gate, unset in
+    /// every other shape so identity equals `user`.
+    pub auth_user: Option<String>,
     /// Whether to trust any certificate (the lab server's self-signed
     /// cert). Only compilable with the `eas-insecure-tls` diagnostic
     /// feature.
@@ -91,6 +97,7 @@ impl EasTarget {
                 .map(str::to_owned)
                 .or_else(|| std::env::var("EAS_LIVE_PASSWORD").ok())
                 .ok_or_else(|| missing("password", "EAS_LIVE_PASSWORD"))?,
+            auth_user: std::env::var("EAS_LIVE_USERNAME").ok(),
             insecure,
         })
     }
@@ -98,6 +105,13 @@ impl EasTarget {
     /// The TLS config: bundled roots, or — behind the diagnostic feature —
     /// the test-only accept-any config for the lab server's self-signed
     /// cert.
+    // The `Err` arm exists only in builds WITHOUT the diagnostic feature,
+    // so a feature-on compile (provider-eas's dev graph) sees an all-`Ok`
+    // body — the wrap is load-bearing in the shipped shape.
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "the refusal arm is compiled out only with eas-insecure-tls"
+    )]
     fn tls(&self) -> Result<engine_tls::TlsClientConfig, CliError> {
         if self.insecure {
             #[cfg(feature = "eas-insecure-tls")]
@@ -132,37 +146,11 @@ pub(crate) async fn eas_sync(
     rounds: usize,
     tuning: StreamTuning,
 ) -> Result<String, CliError> {
-    let mut client = EasClient::new(
-        EasConfig {
-            url: target.url.clone(),
-            username: target.user.clone(),
-            user: target.user.clone(),
-            password: target.password.clone(),
-            device_id: DEVICE_ID.to_owned(),
-            device_type: "EngineCli".to_owned(),
-            user_agent: "engine-cli".to_owned(),
-            ..EasConfig::default()
-        },
-        &target.tls()?,
-    )
-    .map_err(|e| CliError::Eas(e.to_string()))?;
+    let mut client = configured_client(target)?;
 
     // The `EasAdapter::negotiate` dance, client-side: one OPTIONS, the
     // shared version applied to the client every later command carries.
-    let options = client
-        .options()
-        .await
-        .map_err(|e| CliError::Eas(e.to_string()))?;
-    let advertised = options.protocol_versions.join(", ");
-    let version =
-        pick_protocol_version(&advertised, &CLIENT_KNOWN_PROTOCOL_VERSIONS).ok_or_else(|| {
-            CliError::Eas(format!(
-                "the server's protocol versions [{advertised}] share none with the client \
-                 ([{}])",
-                CLIENT_KNOWN_PROTOCOL_VERSIONS.join(", ")
-            ))
-        })?;
-    client.set_protocol_version(version.clone());
+    let version = negotiate(&mut client).await?;
 
     // Discovery through the adapter's own verb (the class filtering is
     // theirs): one bootstrap FolderSync, unapplied. The bound folder of a
@@ -208,6 +196,49 @@ pub(crate) async fn eas_sync(
     } else {
         Ok(out)
     }
+}
+
+/// The configured protocol client for `target` (credentials, device
+/// identity, TLS) — the shared first step of every `eas-sync` arm.
+pub(crate) fn configured_client(target: &EasTarget) -> Result<EasClient, CliError> {
+    EasClient::new(
+        EasConfig {
+            url: target.url.clone(),
+            username: target
+                .auth_user
+                .clone()
+                .unwrap_or_else(|| target.user.clone()),
+            user: target.user.clone(),
+            password: target.password.clone(),
+            device_id: DEVICE_ID.to_owned(),
+            device_type: "EngineCli".to_owned(),
+            user_agent: "engine-cli".to_owned(),
+            ..EasConfig::default()
+        },
+        &target.tls()?,
+    )
+    .map_err(|e| CliError::Eas(e.to_string()))
+}
+
+/// One OPTIONS exchange: the server's advertised versions negotiated
+/// against the client's, the shared version applied to `client` so every
+/// later command carries it. Returns the negotiated version string.
+pub(crate) async fn negotiate(client: &mut EasClient) -> Result<String, CliError> {
+    let options = client
+        .options()
+        .await
+        .map_err(|e| CliError::Eas(e.to_string()))?;
+    let advertised = options.protocol_versions.join(", ");
+    let version =
+        pick_protocol_version(&advertised, &CLIENT_KNOWN_PROTOCOL_VERSIONS).ok_or_else(|| {
+            CliError::Eas(format!(
+                "the server's protocol versions [{advertised}] share none with the client \
+                 ([{}])",
+                CLIENT_KNOWN_PROTOCOL_VERSIONS.join(", ")
+            ))
+        })?;
+    client.set_protocol_version(version.clone());
+    Ok(version)
 }
 
 /// The folders to sync: all discovered, or the requested subset — a

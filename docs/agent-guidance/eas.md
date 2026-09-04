@@ -270,6 +270,18 @@ the counterpart of 110's "do not retry") as transient — the server answers it
 under fan-out load and recovers, and classifying it permanent reported a hard
 failure for every folder that followed.
 
+The P2 arms extend the same command over the PIM families (offline twins in
+`tests/transport_harness/engine_cli_pim_flow.rs`, live twins in
+`tests/live_eas/engine_cli_pim.rs`): `--kind calendar` drives the engine's own
+`sync_calendar` fan-out over the discovered class-`Calendar` collections
+(per-collection adapters, the container pass riding the shared store cursor)
+and ends with the occurrence materialization summary;
+`--kind calendar --create` adds the create→re-sync round-trip that proves the
+Sync Add ack's ServerId backfill (the probe's uid is deterministic in the
+account, so a repeat run against the same store resolves as a duplicate);
+`--kind contacts` drives `sync_contacts` over the discovered type-9 address
+books and ends with the people count.
+
 **Fixtures**: anything learned from a live run (a wire shape, a status quirk, a
 version-specific behaviour) must be captured as a **scrubbed fixture** wired into
 the offline suite — observed bytes with every identifier moved to a reserved
