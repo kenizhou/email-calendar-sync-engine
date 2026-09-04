@@ -293,13 +293,15 @@ fn calendar_change_request_round_trips() {
 // P2 Task 3 — the Exceptions container + FirstDayOfWeek goldens
 // ============================================================================
 
-use provider_eas::calendar::{
-    CAL_DELETED, CAL_END_TIME, CAL_EXCEPTION, CAL_EXCEPTION_START_TIME, CAL_EXCEPTIONS,
-    CAL_RECURRENCE, CAL_RECURRENCE_DAY_OF_WEEK, CAL_RECURRENCE_FIRST_DAY_OF_WEEK,
-    CAL_RECURRENCE_TYPE, CAL_START_TIME, CAL_SUBJECT, CalendarException, CalendarRecurrence,
-    PAGE_CALENDAR,
+use provider_eas::{
+    calendar::{
+        CAL_DELETED, CAL_END_TIME, CAL_EXCEPTION, CAL_EXCEPTION_START_TIME, CAL_EXCEPTIONS,
+        CAL_RECURRENCE, CAL_RECURRENCE_DAY_OF_WEEK, CAL_RECURRENCE_FIRST_DAY_OF_WEEK,
+        CAL_RECURRENCE_TYPE, CAL_START_TIME, CAL_SUBJECT, CalendarException, CalendarRecurrence,
+        PAGE_CALENDAR,
+    },
+    wbxml::tags::{base, pages},
 };
-use provider_eas::wbxml::tags::{base, pages};
 
 /// The `Exceptions` container lands after `Recurrence` inside the 16.1
 /// ApplicationData, mirroring the parse side's shapes: a deleted marker is

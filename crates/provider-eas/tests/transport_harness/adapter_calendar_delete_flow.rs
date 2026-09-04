@@ -11,8 +11,10 @@ use engine_provider::{
     Capabilities, DeleteTarget, EventDeletion, EventEdit, EventPatch, Occurrence, OverrideSurvival,
     PatchTarget, Provider as _, WriteGuard,
 };
-use provider_eas::calendar::{CAL_DELETED, CAL_EXCEPTION_START_TIME, PAGE_CALENDAR};
-use provider_eas::commands::{AS_DELETE, AS_SERVER_ID, PAGE_AIRSYNC};
+use provider_eas::{
+    calendar::{CAL_DELETED, CAL_EXCEPTION_START_TIME, PAGE_CALENDAR},
+    commands::{AS_DELETE, AS_SERVER_ID, PAGE_AIRSYNC},
+};
 
 use super::{
     adapter_calendar_flow::{account, adapter_at},

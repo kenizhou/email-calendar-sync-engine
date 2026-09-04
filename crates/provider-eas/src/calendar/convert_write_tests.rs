@@ -6,7 +6,6 @@
 
 use core::num::{NonZeroI32, NonZeroU32};
 
-use crate::calendar_write::build_calendar_application_data;
 use engine_core::{
     calendar::{Frequency, NDay, RecurrenceBound, Weekday},
     ids::{CalendarId, Uid},
@@ -18,6 +17,7 @@ use super::{
     CalendarEventProps, CalendarException, CalendarRecurrence, TimeZoneBlob, TziTimeZone,
     calendar_event_from_props, parse_calendar_application_data,
 };
+use crate::calendar_write::build_calendar_application_data;
 
 const FOLDER: &str = "fid-cal-1";
 const SERVER_ID: &str = "srv:ev-9";

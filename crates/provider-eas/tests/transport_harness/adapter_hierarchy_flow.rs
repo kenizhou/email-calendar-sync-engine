@@ -8,7 +8,10 @@
 
 use std::sync::Arc;
 
-use engine_core::{ids::ProviderKey, sync::SyncUpdate};
+use engine_core::{
+    ids::ProviderKey,
+    sync::{SyncState, SyncUpdate},
+};
 use engine_provider::Provider as _;
 use provider_eas::commands::{FH_SYNC_KEY, PAGE_FOLDER};
 
@@ -234,4 +237,179 @@ async fn cross_scope_deletions_ride_the_backlog() {
         vec!["fid-cal-1"],
         "fid-cal-9 is gone from the authority set — the deletion rode the backlog"
     );
+}
+
+/// The fresh-scope guard: a scope whose engine cursor is absent (its
+/// first-ever pass — the calendar scope enabled after mail rounds warmed
+/// the ledger from a RESTORED mail cursor, so no snapshot backlog exists)
+/// must not ride the warm key. The delta a warm key answers carries no
+/// snapshot authority, and the rotated key persisted as the fresh scope's
+/// cursor would permanently hide every standing folder of its class (a
+/// restart resumes from the poisoned cursor, so even the status-9
+/// self-heal is bypassed). The fresh scope bootstraps from `"0"` and
+/// enumerates the full hierarchy as a snapshot.
+#[tokio::test]
+async fn a_fresh_scope_bootstraps_under_a_warm_ledger() {
+    super::harness::init_logger();
+    let server = MockServer::http(Arc::new(|req: &CapturedRequest, _ordinal: usize| {
+        assert_eq!(req.cmd().as_deref(), Some("FolderSync"));
+        // Route like a real server: the bootstrap key enumerates the full
+        // hierarchy, every other key answers a delta.
+        match folder_sync_key(req).as_str() {
+            "0" => MockResponse::wbxml(&super::fixtures::folder_sync_response(
+                "hier-2",
+                &[
+                    ("fid-inbox", "0", "Inbox", "2"),
+                    ("fid-cal-1", "0", "Calendar", "8"),
+                    ("fid-cal-2", "0", "Work Calendar", "8"),
+                ],
+            )),
+            // A restored mail cursor's delta — the round that warms the
+            // ledger WITHOUT bootstrapping, so no present-set pends for
+            // the calendar scope anywhere.
+            "hier-0" => MockResponse::wbxml(&super::adapter_folders_flow::folder_sync_delta(
+                "hier-1",
+                &[("fid-archive", "fid-inbox", "Archive", "1")],
+                &[],
+                &[],
+            )),
+            _ => MockResponse::wbxml(&super::adapter_folders_flow::folder_sync_delta(
+                "hier-poisoned",
+                &[],
+                &[],
+                &[],
+            )),
+        }
+    }) as Handler);
+    let adapter = adapter_at(&server);
+
+    // A delta-only mail round off the restored cursor warms the ledger.
+    let mail = adapter
+        .sync_mailboxes(&account(), Some(&SyncState::new("hier-0")))
+        .await
+        .expect("the mail delta off the restored cursor lands");
+    assert_eq!(mail.next_cursor.as_str(), "hier-1");
+    assert!(!mail.is_snapshot(), "no bootstrap happened on the way");
+
+    // The calendar scope's FIRST-EVER pass: it must bootstrap, not ride.
+    let calendars = adapter
+        .sync_calendars(&account(), None)
+        .await
+        .expect("the calendar bootstrap lands");
+    assert_eq!(
+        folder_sync_key(&server.request(2)),
+        "0",
+        "a scope with no engine cursor bootstraps even under a warm ledger"
+    );
+    let SyncUpdate::Snapshot { objects, present } = &calendars.update else {
+        panic!(
+            "the fresh scope's first pass is a full enumeration, got {:?}",
+            calendars.update
+        )
+    };
+    let ids: Vec<&str> = objects.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["fid-cal-1", "fid-cal-2"],
+        "every standing calendar folder is enumerated — including the ones older than the warm key"
+    );
+    let keys: Vec<&str> = present.iter().map(ProviderKey::as_str).collect();
+    assert_eq!(keys, vec!["fid-cal-1", "fid-cal-2"]);
+    assert_eq!(calendars.next_cursor.as_str(), "hier-2");
+    assert_eq!(server.count(), 2, "one bootstrap, no recovery round needed");
+}
+
+/// The recovery-arm guard: a status-9 recovery round that FAILS (the
+/// engine's 5xx policy — surface, never retry in-command) must restore
+/// the drained backlog before surfacing, so the retried pass still sees
+/// the rows and the snapshot authority the failed one drained.
+#[tokio::test]
+async fn a_failed_recovery_round_restores_the_drained_backlog() {
+    super::harness::init_logger();
+    let server = MockServer::http(Arc::new(|req: &CapturedRequest, ordinal: usize| {
+        assert_eq!(req.cmd().as_deref(), Some("FolderSync"));
+        assert_eq!(
+            folder_sync_key(req),
+            match ordinal {
+                // The bootstraps (1: mail, 4: the status-9 recovery) both
+                // request "0"; the deltas ride the shared key.
+                1 | 4 => "0",
+                2 => "hier-1",     // the mail delta
+                3 | 5 => "hier-2", // the calendar passes (first try, retry)
+                _ => panic!("unexpected request {ordinal}"),
+            },
+            "request {ordinal} carries the scripted key"
+        );
+        match ordinal {
+            // Mail bootstrap: one mail folder, one calendar folder (the
+            // calendar backlog's present-set).
+            1 => MockResponse::wbxml(&super::fixtures::folder_sync_response(
+                "hier-1",
+                &[
+                    ("fid-inbox", "0", "Inbox", "2"),
+                    ("fid-cal-1", "0", "Calendar", "8"),
+                ],
+            )),
+            // A mail delta adding a SECOND calendar folder — a row that
+            // pends into the calendar scope's backlog.
+            2 => MockResponse::wbxml(&super::adapter_folders_flow::folder_sync_delta(
+                "hier-2",
+                &[("fid-cal-2", "0", "Work Calendar", "8")],
+                &[],
+                &[],
+            )),
+            // The calendar pass rides hier-2 and the key is stale: 9.
+            3 => MockResponse::wbxml(&super::fixtures::folder_sync_status("9")),
+            // The retried calendar pass: a clean delta closes the round.
+            5 => MockResponse::wbxml(&super::adapter_folders_flow::folder_sync_delta(
+                "hier-3",
+                &[],
+                &[],
+                &[],
+            )),
+            // 4 — the in-call recovery bootstrap — fails outright, as does
+            // anything beyond the script.
+            _ => MockResponse::bare(500),
+        }
+    }) as Handler);
+    let adapter = adapter_at(&server);
+
+    let mail = adapter
+        .sync_mailboxes(&account(), None)
+        .await
+        .expect("the mail bootstrap lands");
+    let mail = adapter
+        .sync_mailboxes(&account(), Some(&mail.next_cursor))
+        .await
+        .expect("the mail delta pends the calendar row");
+    assert_eq!(mail.next_cursor.as_str(), "hier-2");
+
+    // The calendar pass drains its backlog (the spare row + the mail
+    // bootstrap's present-set), hits status 9, and the recovery round
+    // fails — the error surfaces, and the backlog must survive it.
+    adapter
+        .sync_calendars(&account(), None)
+        .await
+        .expect_err("the failed recovery round surfaces");
+    assert_eq!(server.count(), 4);
+
+    // The retry: the restored backlog rides again, so the round reads as
+    // a snapshot carrying BOTH calendar folders — the bootstrap's
+    // present-set and the pended spare row.
+    let calendars = adapter
+        .sync_calendars(&account(), None)
+        .await
+        .expect("the retried calendar pass lands");
+    assert_eq!(folder_sync_key(&server.request(5)), "hier-2");
+    let SyncUpdate::Snapshot { objects, present } = &calendars.update else {
+        panic!(
+            "the restored backlog gives the retry snapshot authority, got {:?}",
+            calendars.update
+        )
+    };
+    let ids: Vec<&str> = objects.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(ids, vec!["fid-cal-1", "fid-cal-2"]);
+    let keys: Vec<&str> = present.iter().map(ProviderKey::as_str).collect();
+    assert_eq!(keys, vec!["fid-cal-1", "fid-cal-2"]);
+    assert_eq!(calendars.next_cursor.as_str(), "hier-3");
 }
