@@ -14,13 +14,15 @@ use engine_core::{
     sync::{SyncState, SyncUpdate},
 };
 use engine_provider::{Capabilities, ContactSourceSync, ContactsProvider as _, Provider as _};
-use provider_eas::adapter::EasAdapter;
-use provider_eas::commands::{
-    AS_ADD, AS_APPLICATION_DATA, AS_COLLECTION, AS_COLLECTION_ID, AS_COLLECTIONS, AS_COMMANDS,
-    AS_SERVER_ID, AS_STATUS, AS_SYNC, AS_SYNC_KEY, PAGE_AIRSYNC,
+use provider_eas::{
+    adapter::EasAdapter,
+    commands::{
+        AS_ADD, AS_APPLICATION_DATA, AS_COLLECTION, AS_COLLECTION_ID, AS_COLLECTIONS, AS_COMMANDS,
+        AS_SERVER_ID, AS_STATUS, AS_SYNC, AS_SYNC_KEY, PAGE_AIRSYNC,
+    },
+    contacts::{CON_EMAIL_1, CON_FILE_AS, PAGE_CONTACTS},
+    wbxml::WbxmlElement,
 };
-use provider_eas::contacts::{CON_EMAIL_1, CON_FILE_AS, PAGE_CONTACTS};
-use provider_eas::wbxml::WbxmlElement;
 
 use super::{
     adapter_calendar_flow::account,

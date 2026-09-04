@@ -131,11 +131,10 @@ mod watch;
 
 use engine_core::ids::{AddressBookId, CalendarId, MailboxId};
 use engine_provider::{Capabilities, OverrideSurvival, RsvpControls, WriteGuard};
+pub(super) use ledger::{CollectionKey, current_key, record_rotation};
 pub use watch::EasPingWatcher;
 
 use crate::client::{EasClient, EasError, pick_protocol_version};
-
-pub(super) use ledger::{CollectionKey, current_key, record_rotation};
 
 /// The protocol versions this adapter can negotiate over OPTIONS: exactly
 /// the versions whose feature gates the crate implements — `MeetingResponse`

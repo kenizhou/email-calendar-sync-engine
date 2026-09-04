@@ -3,11 +3,12 @@
 //! Task 5) — the twin of `calendar_write.rs`'s goldens for the Contacts
 //! class.
 
-use super::*;
 use provider_eas::{
     commands::{AS_CLASS, AS_GET_CHANGES, ContactsChange},
     contacts::{CON_EMAIL_1, CON_FILE_AS, PAGE_CONTACTS},
 };
+
+use super::*;
 
 /// A minimal-but-populated contacts payload for the goldens — one
 /// DISTINCT value per element so a crossed wire cannot hide behind

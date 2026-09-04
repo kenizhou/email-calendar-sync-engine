@@ -5,12 +5,17 @@
 use engine_core::ids::AddressBookId;
 
 use super::*;
-use crate::contacts::{
-    ContactsContactProps, contact_card_from_props, parse_contacts_application_data,
-    write::write_from_draft,
+use crate::{
+    contacts::{
+        ContactsContactProps, contact_card_from_props, parse_contacts_application_data,
+        write::write_from_draft,
+    },
+    contacts_testutil,
+    wbxml::{
+        WbxmlValue,
+        tags::{base, pages},
+    },
 };
-use crate::contacts_testutil;
-use crate::wbxml::{WbxmlValue, tags::base, tags::pages};
 
 /// The full-fixture card — the same construction the conversion tests
 /// use (the downsync of the shared golden fixture).

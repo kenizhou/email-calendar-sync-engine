@@ -280,19 +280,16 @@ pub fn build_calendar_change_request(
 /// ```
 ///
 /// - `ApplicationData` is
-///   [`build_contacts_application_data`](crate::contacts::build_contacts_application_data)'s
-///   output VERBATIM — this builder adds no contacts properties.
-/// - Same element gates as the email/calendar builders: NO `airsync:Class`
-///   (14.0+ rejects it — CollectionId identifies the collection) and NO
-///   `GetChanges` (invalid in 16.1).
-/// - No protocol-version parameter: no contacts element this builder emits
-///   is version-gated (the `airsyncbase:Body` container is 12.0+, and every
-///   version [`crate::adapter::CLIENT_KNOWN_PROTOCOL_VERSIONS`] negotiates is
-///   14.1+).
-/// - Infallible like the calendar precedent: the callers run the
-///   conversion seam first (`contacts::write` refuses what it cannot
-///   represent), and supply the Add `client_id` themselves (synthesize
-///   with [`new_contacts_client_id`](crate::types::new_contacts_client_id),
+///   [`build_contacts_application_data`](crate::contacts::build_contacts_application_data)'s output
+///   VERBATIM — this builder adds no contacts properties.
+/// - Same element gates as the email/calendar builders: NO `airsync:Class` (14.0+ rejects it —
+///   CollectionId identifies the collection) and NO `GetChanges` (invalid in 16.1).
+/// - No protocol-version parameter: no contacts element this builder emits is version-gated (the
+///   `airsyncbase:Body` container is 12.0+, and every version
+///   [`crate::adapter::CLIENT_KNOWN_PROTOCOL_VERSIONS`] negotiates is 14.1+).
+/// - Infallible like the calendar precedent: the callers run the conversion seam first
+///   (`contacts::write` refuses what it cannot represent), and supply the Add `client_id`
+///   themselves (synthesize with [`new_contacts_client_id`](crate::types::new_contacts_client_id),
 ///   which guarantees the [MS-ASCMD] 40-char cap).
 pub fn build_contacts_change_request(
     collection_id: &str,

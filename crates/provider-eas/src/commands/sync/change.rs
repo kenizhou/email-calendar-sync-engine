@@ -76,8 +76,8 @@ pub enum CalendarChange {
 ///
 /// - `Add` → wire `airsync:Add` { ClientId, ApplicationData } — the item has no ServerId yet; the
 ///   server correlates the response through the ClientId.
-/// - `Replace` → wire `airsync:Change` carrying ServerId — "Replace" is OUR client-side
-///   vocabulary only.
+/// - `Replace` → wire `airsync:Change` carrying ServerId — "Replace" is OUR client-side vocabulary
+///   only.
 /// - `Remove` → wire `airsync:Delete` { ServerId }.
 ///
 /// The payload is the ghost model ([`ContactsContactProps`] — see

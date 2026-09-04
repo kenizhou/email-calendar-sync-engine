@@ -8,13 +8,13 @@
 //! asymmetry (create drops unrepresentable extras; a patch REFUSES
 //! them).
 
+use std::collections::BTreeMap;
+
 use engine_core::contact::{
     Anniversary, ContactAddress, ContactEmail, ContactField, ContactKind, ContactName, ContactNote,
     ContactPatch, ContactPhone, ContactProperty, FieldPatch, Organization, PropertyId, Title,
 };
 use engine_provider::{ProviderError, ProviderResult};
-use std::collections::BTreeMap;
-
 use serde::de::DeserializeOwned;
 
 use super::write::{

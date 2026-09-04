@@ -17,8 +17,9 @@
 //! observed a pass) refuses `NeedsResync` rather than guessing: the
 //! orchestrator re-syncs, the pass re-seeds, the outbox retries the op.
 
-use crate::commands::SyncChangeOutcome;
 use engine_provider::{ProviderError, ProviderResult};
+
+use crate::commands::SyncChangeOutcome;
 
 /// The bound collection's SyncKey ledger: the key the server last handed
 /// this adapter for that collection — the write path's key source. A

@@ -9,14 +9,19 @@
 
 use std::sync::Arc;
 
-use engine_core::contact::{ContactField, ContactPatch, FieldPatch};
-use engine_core::ids::{AddressBookId, ContactId, MailboxId};
-use engine_provider::{ContactsProvider as _, Provider as _};
-use provider_eas::adapter::EasAdapter;
-use provider_eas::commands::{
-    AS_CHANGE, AS_CLIENT_ID, AS_COLLECTION_ID, AS_DELETE, AS_SERVER_ID, AS_SYNC_KEY, PAGE_AIRSYNC,
+use engine_core::{
+    contact::{ContactField, ContactPatch, FieldPatch},
+    ids::{AddressBookId, ContactId, MailboxId},
 };
-use provider_eas::contacts::{CON_EMAIL_1, CON_EMAIL_2, CON_FILE_AS, PAGE_CONTACTS};
+use engine_provider::{ContactsProvider as _, Provider as _};
+use provider_eas::{
+    adapter::EasAdapter,
+    commands::{
+        AS_CHANGE, AS_CLIENT_ID, AS_COLLECTION_ID, AS_DELETE, AS_SERVER_ID, AS_SYNC_KEY,
+        PAGE_AIRSYNC,
+    },
+    contacts::{CON_EMAIL_1, CON_EMAIL_2, CON_FILE_AS, PAGE_CONTACTS},
+};
 
 use super::{
     adapter_calendar_flow::account,

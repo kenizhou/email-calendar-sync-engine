@@ -5,17 +5,15 @@
 //! collection-key ledger. See `contacts.rs` module docs for the family
 //! map and the honest refusals; the write-half rules restated:
 //!
-//! - **`create_contact` → Sync `Add`** with a synthesized `ClientId` — the
-//!   only id-reveal point: the receipt keys the `ServerId` the ack assigns
-//!   ([MS-ASCMD] §2.2.3.7.2); an ack-less success keys the ClientId
-//!   placeholder, reconciled by the next card pass.
-//! - **`patch_contact` → Sync `Change`** carrying only the patched families
-//!   (the ghost model — untouched fields omitted, cleared slots emit empty
-//!   values). An empty patch is a no-op receipt: the outbox driver does not
-//!   pre-filter emptiness (checked `engine-sync/src/outbox/contact.rs`), so
-//!   the adapter honors it here — no wire round.
-//! - **`delete_contact` → Sync `Delete`** — already-gone is success (a
-//!   per-item status 8, or no item status at all, §2.2.3.154).
+//! - **`create_contact` → Sync `Add`** with a synthesized `ClientId` — the only id-reveal point:
+//!   the receipt keys the `ServerId` the ack assigns ([MS-ASCMD] §2.2.3.7.2); an ack-less success
+//!   keys the ClientId placeholder, reconciled by the next card pass.
+//! - **`patch_contact` → Sync `Change`** carrying only the patched families (the ghost model —
+//!   untouched fields omitted, cleared slots emit empty values). An empty patch is a no-op receipt:
+//!   the outbox driver does not pre-filter emptiness (checked `engine-sync/src/outbox/contact.rs`),
+//!   so the adapter honors it here — no wire round.
+//! - **`delete_contact` → Sync `Delete`** — already-gone is success (a per-item status 8, or no
+//!   item status at all, §2.2.3.154).
 //!
 //! A cold ledger refuses `NeedsResync`; a dead key surfaces as Sync status
 //! 3 through the family classifier; a failed item status surfaces with its
@@ -29,10 +27,15 @@ use engine_provider::{ContactWriteReceipt, ProviderError, ProviderResult};
 use tokio::sync::Mutex;
 
 use super::{
-    CollectionKey, current_key, error::provider_error, error::sync_status_error, record_rotation,
+    CollectionKey, current_key,
+    error::{provider_error, sync_status_error},
+    record_rotation,
 };
-use crate::contacts::write_from_patch;
-use crate::{client::EasClient, commands::ContactsChange, contacts::write_from_draft};
+use crate::{
+    client::EasClient,
+    commands::ContactsChange,
+    contacts::{write_from_draft, write_from_patch},
+};
 
 /// The per-item "object not found" status ([MS-ASCMD] §2.2.3.177.17): the
 /// delete's already-gone success, and a patch's refetch signal.
