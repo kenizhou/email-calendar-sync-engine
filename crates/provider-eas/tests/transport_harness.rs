@@ -32,8 +32,13 @@ mod harness;
 #[path = "transport_harness/server.rs"]
 mod server;
 
+#[path = "transport_harness/adapter_calendar_flow.rs"]
+mod adapter_calendar_flow;
 #[path = "transport_harness/adapter_edit_flow.rs"]
 mod adapter_edit_flow;
+#[path = "transport_harness/adapter_events_flow.rs"]
+mod adapter_events_flow;
+
 #[path = "transport_harness/adapter_email_flow.rs"]
 mod adapter_email_flow;
 #[path = "transport_harness/adapter_email_wire.rs"]

@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: MPL-2.0
 //! The trait half of the adapter: what [`EasAdapter`] reports, which scopes
-//! it names, and the verbs that have landed (FolderSync, Sync class Email,
+//! it names, and the verbs that have landed (FolderSync containers for mail
+//! and calendars, Sync class Email messages and class Calendar events,
 //! ItemOperations message-source fetch). The un-overridden defaults remain
 //! the honest behavior for every verb still to come (the module docs in
 //! `super` carry the ladder).
 
 use engine_core::{
+    calendar::{Calendar, Event},
     ids::AccountId,
     mail::{Mailbox, Message},
     raw::RawMime,
-    sync::{SyncScope, SyncState, SyncWindow},
+    sync::{JmapDataType, SyncScope, SyncState, SyncWindow},
 };
 use engine_provider::{ConnectionInfo, EmailStream, Provider, ProviderResult, ScopeSync};
 
@@ -171,5 +173,69 @@ impl Provider for EasAdapter {
         edit: &engine_provider::MailEdit,
     ) -> ProviderResult<engine_provider::MailEditReceipt> {
         super::mutate::edit(&self.client, &self.folder, &self.collection_key, edit).await
+    }
+
+    /// The same FolderSync hierarchy as the mail container scope, split into
+    /// its own per-account container scope — the calendar folders (class
+    /// `Calendar` / folder Type 8) are claimed and applied before the
+    /// per-calendar event scopes they parent.
+    fn calendar_scope(&self, account: &AccountId) -> SyncScope {
+        SyncScope::EasCalendarList {
+            account: account.clone(),
+        }
+    }
+
+    /// EAS item `Sync` is per collection, so event sync is per calendar
+    /// folder — [`SyncScope::EasCalendar`] keyed by the bound calendar's
+    /// ServerId, the Graph `GraphCalendar` / CalDAV `DavCollection` binding
+    /// precedent. Without a binding ([`EasAdapter::with_calendar`]) the
+    /// default JMAP shape stands — never consulted, since an unbound
+    /// adapter's capabilities do not advertise the calendar family.
+    fn event_scope(&self, account: &AccountId) -> SyncScope {
+        match &self.calendar {
+            Some(calendar) => SyncScope::EasCalendar {
+                account: account.clone(),
+                calendar: calendar.clone(),
+            },
+            None => SyncScope::JmapType {
+                account: account.clone(),
+                data_type: JmapDataType::CalendarEvent,
+            },
+        }
+    }
+
+    /// FolderSync filtered to the Calendar class ([MS-ASFD] folder Type 8):
+    /// the hierarchy SyncKey is the cursor (`None` bootstraps from `"0"` as
+    /// a snapshot, `Some(key)` returns the wire's Add/Update/Delete delta),
+    /// and a status-9 invalidation recovers inside the call as a
+    /// re-bootstrapped snapshot — the `sync_mailboxes` recovery shape.
+    /// `super::calendar` owns the mapping and its contract.
+    async fn sync_calendars(
+        &self,
+        _account: &AccountId,
+        cursor: Option<&SyncState>,
+    ) -> ProviderResult<ScopeSync<Calendar>> {
+        super::calendar::sync_calendars(&self.client, cursor).await
+    }
+
+    /// Sync class "Calendar" over the bound calendar folder ([MS-ASSYNC]):
+    /// the collection SyncKey is the cursor (`None`/empty → bootstrap `"0"`
+    /// → snapshot), `MoreAvailable` pages the pass inside the call, and a
+    /// SyncKey invalidation (collection status 3/12) recovers inside the
+    /// call by re-bootstrapping once as a snapshot — the mail stream's
+    /// recovery adapted to the whole-scope verb. Items convert through the
+    /// read-side seam (`calendar::calendar_event_from_props`); a malformed
+    /// item is skipped, never failing the pass. Requires the calendar
+    /// binding ([`EasAdapter::with_calendar`]) — an unbound adapter refuses
+    /// `InvalidState`, and its capabilities never advertise the family.
+    async fn sync_events(
+        &self,
+        _account: &AccountId,
+        cursor: Option<&SyncState>,
+    ) -> ProviderResult<ScopeSync<Event>> {
+        match &self.calendar {
+            Some(calendar) => super::calendar::sync_events(&self.client, calendar, cursor).await,
+            None => Err(super::calendar::unbound_calendar()),
+        }
     }
 }

@@ -88,8 +88,9 @@ use crate::{
 /// adapter's maximum / one chunk per batch"): the Kylins/Android drain-loop
 /// cap — larger windows risk multi-megabyte responses ([MS-ASCMD]
 /// §2.2.3.199 notes values above the 100 optimum risk oversized,
-/// error-prone responses).
-const MAX_WINDOW_SIZE: u32 = 512;
+/// error-prone responses). Shared with the calendar event slice (its trait
+/// verb has no fetch-batch knob, so it always runs at the maximum).
+pub(super) const MAX_WINDOW_SIZE: u32 = 512;
 
 /// The adapter's extended-property namespace (the mailboxes slice's
 /// convention): the EAS-native facts with no first-class `Message` field.
@@ -298,8 +299,9 @@ fn additive_round_chunks(
 /// with one more round iff the round was a bootstrap, returned nothing,
 /// claims nothing more, and rotated to a usable key. Loop-safe by
 /// construction: the follow-up's request key is the rotated key (`!= "0"`),
-/// so the predicate cannot re-fire.
-fn should_follow_empty_bootstrap(
+/// so the predicate cannot re-fire. Shared with the calendar event slice
+/// (its bootstrap rounds hit the same server quirk).
+pub(super) fn should_follow_empty_bootstrap(
     request_key: &str,
     items_returned: usize,
     more_available: bool,

@@ -76,7 +76,7 @@ fn change_element(token: u8, entry: &FolderEntry) -> WbxmlElement {
 /// A FolderSync response with Add/Update/Delete changes mixed — the delta
 /// vocabulary beyond `fixtures::folder_sync_response`'s adds-only shape,
 /// built inline with the public tag constants (same convention).
-fn folder_sync_delta(
+pub(crate) fn folder_sync_delta(
     new_key: &str,
     adds: &[FolderEntry],
     updates: &[FolderEntry],

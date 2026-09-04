@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 //! The [`Provider`](engine_provider::Provider) adapter over the EAS client —
-//! connection facts, the EAS scope overrides, the read verbs
-//! (FolderSync containers, Sync class Email messages, ItemOperations
-//! message-source fetch), and the write verbs (SendMail submission from a
-//! `Draft` or caller-rendered bytes; keyword edits, moves, and the
-//! documented per-verb refusals of `edit_mail`).
+//! connection facts, the EAS scope overrides, the read verbs (FolderSync
+//! containers for mail AND calendars, Sync class Email messages and class
+//! Calendar events, ItemOperations message-source fetch), and the write
+//! verbs (SendMail submission from a `Draft` or caller-rendered bytes;
+//! keyword edits, moves, and the documented per-verb refusals of
+//! `edit_mail`).
 //!
 //! ## Binding
 //!
@@ -66,8 +67,25 @@
 //! and moves; `Delete` is refused per the protocol, see `mutate`) and
 //! `submission` + `scheduling_submission` (`submit_email` and
 //! `submit_email_source` — the raw-MIME send carries its own scheduling
-//! parameters). The calendar/contacts families stay off until their verbs
-//! land.
+//! parameters). The **calendar read family is on with its slice**
+//! (`sync_calendars` + `sync_events`, `adapter/calendar.rs`) — but only on
+//! an adapter that carries a calendar binding
+//! ([`EasAdapter::with_calendar`]): event sync is per collection, and an
+//! unbound adapter cannot name one. The calendar write bits (`calendar_writes`,
+//! `calendar_rsvp`) and the contacts family stay off until their verbs land.
+//!
+//! ## The calendar binding
+//!
+//! EAS item `Sync` carries one collection per request, so calendar event
+//! sync is per calendar folder — like email per mail folder, and exactly the
+//! [`GraphCalendarProvider`](provider_graph::GraphCalendarProvider) /
+//! `CalDavProvider` shape. A host builds its calendar adapters from the
+//! container sync's discovery: any adapter can list the calendars
+//! (`sync_calendars` is per-account FolderSync), then each event-syncing
+//! adapter is bound to one calendar folder with
+//! [`EasAdapter::with_calendar`] (or [`EasAdapter::calendar_adapter`] — one
+//! ServerId serving as both bindings for a calendar-only host). The
+//! cross-calendar fan-out is the orchestrator's job, exactly as for mail.
 //!
 //! ## The collection-key ledger
 //!
@@ -85,6 +103,7 @@
 //! re-seeds, the outbox retries the op. See `mutate` for the write-side
 //! discipline and `email` for the pass-side rule.
 
+mod calendar;
 mod connection;
 mod email;
 mod error;
@@ -94,7 +113,7 @@ mod source;
 mod submit;
 mod watch;
 
-use engine_core::ids::MailboxId;
+use engine_core::ids::{CalendarId, MailboxId};
 use engine_provider::Capabilities;
 pub use watch::EasPingWatcher;
 
@@ -114,14 +133,20 @@ pub(super) type CollectionKey = std::sync::Mutex<Option<String>>;
 /// has been gated for or exercised, so it is not claimed.
 pub const CLIENT_KNOWN_PROTOCOL_VERSIONS: [&str; 3] = ["14.1", "16.0", "16.1"];
 
-/// An EAS read/sync provider bound to one mail folder for email.
+/// An EAS read/sync provider bound to one mail folder for email and,
+/// optionally, one calendar folder for events (see the module docs' calendar
+/// binding section).
 ///
 /// Construct with [`EasAdapter::new`] from a configured [`EasClient`] and
 /// the folder to bind, then [`EasAdapter::negotiate`] at connection time.
 /// The folder list syncs under the per-account
 /// [`SyncScope::EasFolderList`](engine_core::sync::SyncScope::EasFolderList);
 /// email syncs under the bound folder's
-/// [`SyncScope::EasFolder`](engine_core::sync::SyncScope::EasFolder).
+/// [`SyncScope::EasFolder`](engine_core::sync::SyncScope::EasFolder). With a
+/// calendar binding ([`EasAdapter::with_calendar`]) the calendar containers
+/// sync under [`SyncScope::EasCalendarList`](engine_core::sync::SyncScope::EasCalendarList)
+/// and events under the bound calendar's
+/// [`SyncScope::EasCalendar`](engine_core::sync::SyncScope::EasCalendar).
 pub struct EasAdapter {
     /// The protocol client this adapter drives, behind the verb lock (see
     /// the module docs): command methods rotate session state in place, so
@@ -134,13 +159,20 @@ pub struct EasAdapter {
     /// The bound folder — the `Sync` `CollectionId` (a folder ServerId) this
     /// adapter's email scope names, per the IMAP/Graph one-folder binding.
     folder: MailboxId,
+    /// The bound calendar folder — the class-`Calendar` `CollectionId` this
+    /// adapter's event scope names, when the adapter serves the calendar
+    /// family (`None` until [`EasAdapter::with_calendar`]; its capabilities
+    /// then never advertise the family).
+    calendar: Option<CalendarId>,
     /// The verb ladder, read by
-    /// [`connection_info`](engine_provider::Provider::connection_info):
+    /// [`connection_info`](Provider::connection_info):
     /// `mail` since the read verbs (`sync_mailboxes` + `stream_email`) both
-    /// landed; `mail_writes`/`submission` since the write verbs landed; every
-    /// other bit stays off until its verb does (see the module docs).
-    /// Deliberately not a constructor parameter — a host must not be able to
-    /// advertise a verb this adapter does not implement.
+    /// landed; `mail_writes`/`submission` since the write verbs landed;
+    /// `calendars` since the calendar read verbs landed WITH their binding
+    /// ([`EasAdapter::with_calendar`] sets both together); every other bit
+    /// stays off until its verb does (see the module docs). Deliberately not
+    /// a constructor parameter — a host must not be able to advertise a verb
+    /// this adapter does not implement.
     capabilities: Capabilities,
     /// The bound folder's collection-SyncKey ledger — the write path's key
     /// source (the trait's `edit_mail` carries no cursor). Seeded by a
@@ -166,6 +198,7 @@ impl std::fmt::Debug for EasAdapter {
             // lock-free read side from panic inspection.
             .field("http", &self.http.get())
             .field("folder", &self.folder)
+            .field("calendar", &self.calendar)
             .field("capabilities", &self.capabilities)
             .field("collection_key", &self.collection_key)
             .field("protocol_version", &self.protocol_version)
@@ -187,6 +220,9 @@ impl EasAdapter {
             http: client.http_version_handle(),
             client: tokio::sync::Mutex::new(client),
             folder,
+            // The calendar binding arrives only through `with_calendar`
+            // (which flips the `calendars` bit with it — the honest ladder).
+            calendar: None,
             // The honest ladder: `mail` names containers AND messages —
             // both read verbs are live, so the bit is on; ditto
             // `message_source`; and the write verbs (edit_mail,
@@ -202,6 +238,40 @@ impl EasAdapter {
             collection_key: CollectionKey::default(),
             protocol_version: None,
         }
+    }
+
+    /// Binds the calendar family: names the calendar folder whose events
+    /// this adapter syncs ([`event_scope`](Provider::event_scope) →
+    /// [`SyncScope::EasCalendar`](engine_core::sync::SyncScope::EasCalendar))
+    /// and turns the `calendars` capability bit on with it — the bit and
+    /// the binding land together because event sync is per collection: an
+    /// unbound adapter cannot name one, so advertising the family without a
+    /// binding would point a capability-checking caller straight at the
+    /// `InvalidState` refusal.
+    ///
+    /// The binding is the calendar folder's ServerId from the container sync
+    /// (`sync_calendars` — itself per-account and callable on any adapter).
+    /// The calendar write verbs are NOT part of this slice: `with_calendar`
+    /// advertises reads only, and `calendar_writes`/`calendar_rsvp` stay
+    /// off until their verbs land.
+    #[must_use]
+    pub fn with_calendar(mut self, calendar: CalendarId) -> Self {
+        self.calendar = Some(calendar);
+        self.capabilities = self.capabilities.with_calendars();
+        self
+    }
+
+    /// The calendar-role constructor: one calendar folder ServerId serving
+    /// as both bindings, for a host that syncs calendars only through this
+    /// adapter (`EasAdapter::new(client, folder).with_calendar(calendar)`
+    /// collapsed — the folder binding holds the same ServerId under its mail
+    /// id type, unused for mail by a calendar-role host).
+    #[must_use]
+    pub fn calendar_adapter(client: EasClient, calendar: CalendarId) -> Self {
+        let folder = MailboxId::try_from(calendar.as_str()).unwrap_or_else(|e| {
+            unreachable!("a ServerId that keys a CalendarId keys a MailboxId too: {e}")
+        });
+        Self::new(client, folder).with_calendar(calendar)
     }
 
     /// The connection-time OPTIONS exchange ([MS-ASHTTP] §2.2.1.1): the
