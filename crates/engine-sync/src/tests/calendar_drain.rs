@@ -314,3 +314,48 @@ async fn an_occurrence_delete_whose_event_is_gone_completes() {
         Some(PendingOpState::Succeeded)
     );
 }
+
+#[tokio::test]
+async fn a_crash_orphaned_invite_rsvp_replays_without_a_stored_event() {
+    // The from-invite answer is the one calendar verb whose replay needs no
+    // base: the message-referencing transports answer even when the store
+    // holds no event, so a replay re-reads the base, finds none, and the verb
+    // still runs — resolving Succeeded, not the Conflict the event-addressed
+    // RSVP resolves as.
+    let provider = FakeMail::new(vec![], vec![]);
+    let store = SqliteStore::open_in_memory(clock()).unwrap();
+    let rsvp = EventRsvp::to(&stored_event(), "alice@test.local", RsvpResponse::Accepted);
+    let op = enqueue_op(
+        &store,
+        "drain:calendar:rsvp-invite",
+        "event:evt-1@test.local",
+        serde_json::to_value(OutboxIntent::RsvpEventFromInvite {
+            rsvp,
+            invite: crate::outbox::InviteRef {
+                message: engine_core::ids::MessageId::try_from("imap:v1:u42@INBOX").unwrap(),
+                mailboxes: engine_core::membership::Memberships::of_one(
+                    engine_core::ids::MailboxId::try_from("INBOX").unwrap(),
+                ),
+            },
+        })
+        .unwrap(),
+    )
+    .await;
+
+    let drained = drain_calendar(&provider, &store).await.unwrap();
+
+    assert_eq!(drained, 1);
+    assert_eq!(
+        store.pending_op_state(op).await.unwrap(),
+        Some(PendingOpState::Succeeded)
+    );
+    assert_eq!(
+        provider.invite_answers.lock().unwrap()[0],
+        (
+            "imap:v1:u42@INBOX".to_owned(),
+            false,
+            "alice@test.local".to_owned()
+        ),
+        "the replay reconstructed the invite's addressing half and passed no base"
+    );
+}

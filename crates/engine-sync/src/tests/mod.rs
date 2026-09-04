@@ -40,10 +40,12 @@ use super::{
     AccountId, AccountProgress, IgnoreCommits, OutboxIntent, StreamTuning, SyncCommit,
     SyncObserver, create_calendar_event, delete_calendar_event, edit_mail, expand_calendar_horizon,
     patch_calendar_event, put_calendar_document, reconcile_calendar_events, refresh_folders,
-    rsvp_calendar_event, submit_mail, submit_mail_source, sync_calendar, sync_mail,
+    rsvp_calendar_event, rsvp_event_from_invite, submit_mail, submit_mail_source, sync_calendar,
+    sync_mail,
 };
 
 mod calendar_drain;
+mod calendar_invite;
 mod calendar_sync;
 mod calendar_write;
 mod contact_sync;
@@ -94,6 +96,9 @@ struct FakeMail {
     /// Records, in order, the scopes whose mail was fetched — so a test can assert *which folder
     /// went first*, which a report ordered by completion cannot show.
     started: Arc<Mutex<Vec<MailboxId>>>,
+    /// Records each invite-referencing answer as `(invite message id, had a stored base,
+    /// attendee)` — the capture the from-invite verb's tests assert.
+    invite_answers: Mutex<Vec<(String, bool, String)>>,
 }
 
 impl FakeMail {
@@ -114,6 +119,7 @@ impl FakeMail {
             state_delta: Mutex::default(),
             folder: None,
             started: Arc::new(Mutex::new(Vec::new())),
+            invite_answers: Mutex::default(),
         }
     }
 
@@ -366,6 +372,29 @@ impl Provider for FakeMail {
             rsvp.event.clone(),
             rsvp.uid.clone(),
             RevisionTokens::from_etag(ETag::new("\"put-v1\"")),
+        ))
+    }
+
+    async fn rsvp_event_from_invite(
+        &self,
+        _account: &AccountId,
+        invite: &Message,
+        base: Option<&Event>,
+        rsvp: &EventRsvp,
+    ) -> ProviderResult<EventWriteReceipt> {
+        if self.fails(Fault::WriteGuard) {
+            return Err(ProviderError::conflict("etag precondition failed"));
+        }
+        // The EAS shape: the base is ignored — the answer addresses the message.
+        self.invite_answers.lock().unwrap().push((
+            invite.id.as_str().to_owned(),
+            base.is_some(),
+            rsvp.attendee.clone(),
+        ));
+        Ok(EventWriteReceipt::new(
+            rsvp.event.clone(),
+            rsvp.uid.clone(),
+            RevisionTokens::default(),
         ))
     }
 

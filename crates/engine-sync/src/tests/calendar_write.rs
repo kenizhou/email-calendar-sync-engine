@@ -37,7 +37,7 @@ fn draft(uid: &str) -> EventDraft {
 
 /// A stored event as the store hands it back: the raw it was synced with, and the revision
 /// it was read at.
-fn stored(href: &str, uid: &str) -> Event {
+pub(super) fn stored(href: &str, uid: &str) -> Event {
     let mut event = Event::new(
         EventId::try_from(href).unwrap(),
         Uid::new(uid).unwrap(),

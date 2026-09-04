@@ -337,11 +337,11 @@ pub use horizon::{HorizonExpansion, UnexpandableEvent, expand_calendar_horizon};
 pub use mail_account::{FolderSync, MailSyncReport, SyncTiming, refresh_folders, sync_mail};
 pub use observer::{IgnoreCommits, SyncCommit, SyncObserver};
 pub use outbox::{
-    CalendarWriteOutcome, ContactWriteOutcome, MailEditOutcome, OutboxIntent, ReportOutcome,
-    SubmitOutcome, create_calendar_event, create_contact, delete_calendar_event, delete_contact,
-    drain_calendar_ops, drain_contact_ops, drain_mail_ops, edit_mail, patch_calendar_event,
-    patch_contact, put_calendar_document, report_message, rsvp_calendar_event, submit_mail,
-    submit_mail_source,
+    CalendarWriteOutcome, ContactWriteOutcome, InviteRef, MailEditOutcome, OutboxIntent,
+    ReportOutcome, SubmitOutcome, create_calendar_event, create_contact, delete_calendar_event,
+    delete_contact, drain_calendar_ops, drain_contact_ops, drain_mail_ops, edit_mail,
+    patch_calendar_event, patch_contact, put_calendar_document, report_message,
+    rsvp_calendar_event, rsvp_event_from_invite, submit_mail, submit_mail_source,
 };
 pub use progress::{AccountProgress, ProgressSnapshot};
 pub use stream::StreamTuning;

@@ -28,6 +28,7 @@ use engine_core::{
     contact::ContactCard,
     error::FailureClass,
     ids::{AccountId, ContactId, EventId},
+    mail::Message,
     write::PendingOutcome,
 };
 use engine_provider::{ContactsProvider, DeleteTarget, Provider};
@@ -40,6 +41,7 @@ use super::{
         execute_rsvp_event,
     },
     contact::{execute_create_contact, execute_delete_contact, execute_patch_contact},
+    invite::execute_rsvp_event_from_invite,
     mail::{execute_edit_mail, execute_report_message, execute_submit_mail, send_failure_outcome},
     write_failure_outcome,
 };
@@ -128,6 +130,7 @@ where
         | OutboxIntent::PatchEvent { .. }
         | OutboxIntent::PutEventDoc { .. }
         | OutboxIntent::RsvpEvent { .. }
+        | OutboxIntent::RsvpEventFromInvite { .. }
         | OutboxIntent::DeleteEvent { .. } => Err(ExecuteFailure::OutOfScope),
     }
 }
@@ -201,15 +204,16 @@ where
         | OutboxIntent::PatchEvent { .. }
         | OutboxIntent::PutEventDoc { .. }
         | OutboxIntent::RsvpEvent { .. }
+        | OutboxIntent::RsvpEventFromInvite { .. }
         | OutboxIntent::DeleteEvent { .. } => Err(ExecuteFailure::OutOfScope),
     }
 }
 
 /// Executes one claimed **calendar** op — `create_calendar_event`,
-/// `patch_calendar_event`, `put_calendar_document`, `rsvp_calendar_event`, or
-/// `delete_calendar_event` — with exactly the inline drivers' semantics.
-/// Returns the outcome for the caller to record under the lease; does not
-/// touch the store's op state itself.
+/// `patch_calendar_event`, `put_calendar_document`, `rsvp_calendar_event`,
+/// `rsvp_event_from_invite`, or `delete_calendar_event` — with exactly the
+/// inline drivers' semantics. Returns the outcome for the caller to record
+/// under the lease; does not touch the store's op state itself.
 ///
 /// Patch, RSVP, and an occurrence delete re-read the base event the intent
 /// targets from the store (the intent deliberately carries only the change;
@@ -218,7 +222,9 @@ where
 /// for a dead target — terminal, corrected by the next sync, never retried
 /// into success — while an occurrence delete whose event is gone completes,
 /// because an occurrence of an absent event is already removed. A series
-/// delete and a document replace need no base at all.
+/// delete, a document replace, and a from-invite answer need no base at all:
+/// the last answers from the invitation message, so a re-read that finds no
+/// stored event still executes against the transports that address the email.
 ///
 /// Every other verb is [`ExecuteFailure::OutOfScope`]: mail verbs belong to
 /// [`execute_claimed_mail`], contact verbs to
@@ -278,6 +284,30 @@ where
                 },
             },
         ),
+        // The from-invite answer is the one calendar verb whose replay runs
+        // without a base: a message-referencing transport answers from the
+        // email alone, so a re-read that finds none still executes — only the
+        // document transports' default refuses, as it would inline.
+        OutboxIntent::RsvpEventFromInvite { rsvp, invite } => {
+            let base = event_base(store, provider, account, &rsvp.event).await?;
+            let message = Message::new(invite.message.clone(), invite.mailboxes.clone());
+            Ok(
+                match execute_rsvp_event_from_invite(
+                    provider,
+                    account,
+                    &message,
+                    base.as_ref(),
+                    &rsvp,
+                )
+                .await
+                {
+                    Ok(receipt) => PendingOutcome::Succeeded {
+                        provider_key: receipt.event.key().clone(),
+                    },
+                    Err(err) => write_failure_outcome(&err),
+                },
+            )
+        }
         OutboxIntent::DeleteEvent { deletion } => Ok(match &deletion.target {
             DeleteTarget::Series => {
                 match execute_delete_event(provider, account, None, &deletion).await {

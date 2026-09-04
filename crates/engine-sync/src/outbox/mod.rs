@@ -30,6 +30,7 @@ mod contact;
 pub(crate) mod drain;
 pub(crate) mod execute;
 mod intent;
+mod invite;
 mod mail;
 
 use core::time::Duration;
@@ -45,7 +46,8 @@ use engine_core::{
     write::{PendingOp, PendingOutcome},
 };
 use engine_store::{LeaseRequest, LeasedPendingOp, Store, WorkerId};
-pub use intent::OutboxIntent;
+pub use intent::{InviteRef, OutboxIntent};
+pub use invite::rsvp_event_from_invite;
 pub use mail::{
     MailEditOutcome, ReportOutcome, SubmitOutcome, edit_mail, report_message, submit_mail,
     submit_mail_source,

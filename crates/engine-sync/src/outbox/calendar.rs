@@ -320,7 +320,7 @@ where
 }
 
 /// Records the outcome of a write that returns a receipt, under the op's lease.
-async fn resolve<S: Store>(
+pub(super) async fn resolve<S: Store>(
     store: &S,
     leased: LeasedPendingOp,
     result: engine_provider::ProviderResult<EventWriteReceipt>,
@@ -435,7 +435,7 @@ pub(crate) async fn execute_delete_event<P: Provider>(
 /// provider id, because the `UID` is the one identity that exists *before* a create has an
 /// id and survives a transport that assigns its own — so a create and a follow-up edit of
 /// the same event serialize against each other on either provider.
-async fn enqueue_calendar_op<S: Store>(
+pub(super) async fn enqueue_calendar_op<S: Store>(
     store: &S,
     account: &AccountId,
     worker: WorkerId,
