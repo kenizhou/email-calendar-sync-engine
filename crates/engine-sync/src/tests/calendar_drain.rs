@@ -90,6 +90,43 @@ async fn a_crash_orphaned_event_create_drains_to_succeeded() {
 }
 
 #[tokio::test]
+async fn a_provider_failure_drains_to_a_counted_terminal_failed() {
+    // The provider-failure arm every calendar verb's replay shares: the drain
+    // executes the create, the provider refuses it (the WriteGuard fault — a
+    // classified conflict), and the outcome is a terminal Failed — counted as
+    // an outcome, never re-claimed, exactly as the inline driver records the
+    // same refusal. Only a foreign-scope skip or a failed store read recycles
+    // through the lease; a provider failure does not.
+    let provider = FakeMail::new(vec![], vec![]).failing(Fault::WriteGuard);
+    let store = SqliteStore::open_in_memory(clock()).unwrap();
+    let op = enqueue_op(
+        &store,
+        "drain:calendar:create-refused",
+        "event:evt-9@test.local",
+        serde_json::to_value(OutboxIntent::CreateEvent {
+            draft: event_draft("evt-9@test.local"),
+        })
+        .unwrap(),
+    )
+    .await;
+
+    let drained = drain_calendar(&provider, &store).await.unwrap();
+
+    assert_eq!(drained, 1, "the terminal Failed mark is an outcome");
+    assert_eq!(
+        store.pending_op_state(op).await.unwrap(),
+        Some(PendingOpState::Failed)
+    );
+
+    let again = drain_calendar(&provider, &store).await.unwrap();
+    assert_eq!(again, 0, "a terminally Failed op is never re-claimed");
+    assert_eq!(
+        store.pending_op_state(op).await.unwrap(),
+        Some(PendingOpState::Failed)
+    );
+}
+
+#[tokio::test]
 async fn a_crash_orphaned_patch_replays_against_the_stored_base() {
     // The base the intent deliberately does not carry: the replay re-reads the
     // event from the store — the freshly fetched base the intent contract
