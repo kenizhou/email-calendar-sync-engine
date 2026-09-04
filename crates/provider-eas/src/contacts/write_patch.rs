@@ -130,3 +130,7 @@ fn decode<T: DeserializeOwned>(value: &serde_json::Value) -> ProviderResult<T> {
         ProviderError::permanent(format!("the contact patch value cannot decode: {e}"))
     })
 }
+
+#[cfg(test)]
+#[path = "write_patch_tests.rs"]
+mod tests;

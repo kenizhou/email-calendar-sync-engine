@@ -7,12 +7,12 @@ use serde::{Deserialize, Serialize};
 use super::sync::default_true;
 // ---------- SendMail / SmartForward / SmartReply ----------
 
-/// SendMail request ([MS-ASCMD] Â§2.2.1.19): one raw RFC 5322 message,
+/// SendMail request ([MS-ASCMD] §2.2.1.19): one raw RFC 5322 message,
 /// uploaded as an opaque MIME blob.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SendMailRequest {
     /// Raw RFC 5322 message bytes. Emitted on the wire as a WBXML OPAQUE
-    /// `<Mime>` element (token 0x10, page 21) â NOT a base64 string. EAS
+    /// `<Mime>` element (token 0x10, page 21) — NOT a base64 string. EAS
     /// mandates OPAQUE for `<Mime>`: the server treats STR_I `<Mime>` as
     /// truncated/inline-text, which silently corrupts binary MIME.
     pub mime: Vec<u8>,
@@ -23,7 +23,7 @@ pub struct SendMailRequest {
     pub save_to_sent: bool,
     /// Optional client-generated correlation id (e.g. `"SendMail-{uuid}"`).
     /// Emitted as `<ClientId>` (STR_I) when `Some`. [MS-ASCMD] caps the value
-    /// at 40 characters and servers DO enforce it â Exchange 15.2 rejects an
+    /// at 40 characters and servers DO enforce it — Exchange 15.2 rejects an
     /// over-cap ClientId with in-body Status 103 (task-11 live evidence: a
     /// 45-char `"SendMail-{uuid}"` send was rejected and the mail silently
     /// never existed). Synthesize via [`new_send_client_id`], which clamps.
@@ -33,7 +33,7 @@ pub struct SendMailRequest {
 
 /// [MS-ASCMD] ClientId length cap: "The ClientId element value can be up to
 /// 40 characters in length." Exchange 15.2 enforces this with in-body Status
-/// 103 (task-11 live evidence) â every synthesized ClientId must fit.
+/// 103 (task-11 live evidence) — every synthesized ClientId must fit.
 pub const CLIENT_ID_MAX_LEN: usize = 40;
 
 /// Synthesize a compose-command ClientId (`SendMail` / `SmartForward`
@@ -55,7 +55,7 @@ pub fn new_send_client_id(prefix: &str) -> String {
 }
 
 /// Synthesize a Calendar Sync-Add ClientId (`"CalAdd-"` + simple uuid = 39
-/// chars, under the [MS-ASCMD] 40-char cap with no clamping needed) â the
+/// chars, under the [MS-ASCMD] 40-char cap with no clamping needed) — the
 /// sibling of [`new_send_client_id`] for the M8 calendar upsync Add command.
 /// The added item has no ServerId yet, so the server correlates its
 /// response through this id.
@@ -71,7 +71,7 @@ pub fn new_contacts_client_id() -> String {
     new_send_client_id("ConAdd-")
 }
 
-/// SmartForward request ([MS-ASCMD] Â§2.2.1.18): forward the message named
+/// SmartForward request ([MS-ASCMD] §2.2.1.18): forward the message named
 /// by `source_server_id`, sending the forwarded MIME built by the caller.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SmartForwardRequest {
@@ -89,13 +89,13 @@ pub struct SmartForwardRequest {
     pub replace_mime: bool,
     /// Client-generated correlation id (e.g. `"SmartForward-{uuid}"`), emitted
     /// as `<ClientId>` when `Some`. Exchange 15.2 rejects compose commands
-    /// without a ClientId with in-body Status 103 (F10-3 live evidence) â
+    /// without a ClientId with in-body Status 103 (F10-3 live evidence) —
     /// callers should always set one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
 }
 
-/// SmartReply request ([MS-ASCMD] Â§2.2.1.20): reply to the message named
+/// SmartReply request ([MS-ASCMD] §2.2.1.20): reply to the message named
 /// by `source_server_id`, sending the reply MIME built by the caller.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SmartReplyRequest {
@@ -120,8 +120,8 @@ pub struct SmartReplyRequest {
 mod tests {
     use super::*;
 
-    // ---- task-11 fix-round: ClientId â¤ 40-char cap ([MS-ASCMD]; Exchange
-    // 15.2 enforces with in-body Status 103 â the 45-char "SendMail-{uuid}"
+    // ---- task-11 fix-round: ClientId ≤ 40-char cap ([MS-ASCMD]; Exchange
+    // 15.2 enforces with in-body Status 103 — the 45-char "SendMail-{uuid}"
     // production id was a live-verified phantom send) ----
 
     #[test]
@@ -130,7 +130,7 @@ mod tests {
             let id = new_send_client_id(prefix);
             assert!(
                 id.len() <= CLIENT_ID_MAX_LEN,
-                "ClientId {id:?} is {} chars â over the [MS-ASCMD] 40-char cap",
+                "ClientId {id:?} is {} chars — over the [MS-ASCMD] 40-char cap",
                 id.len()
             );
             assert!(id.starts_with(prefix), "{id:?} lost its prefix {prefix:?}");
@@ -149,11 +149,11 @@ mod tests {
         let prefix = "P".repeat(100);
         let id = new_send_client_id(&prefix);
         assert_eq!(id.len(), CLIENT_ID_MAX_LEN);
-        // Prefix truncated to cap-8 so â¥8 chars of uuid entropy survive.
+        // Prefix truncated to cap-8 so ≥8 chars of uuid entropy survive.
         assert!(id[..CLIENT_ID_MAX_LEN - 8].chars().all(|c| c == 'P'));
     }
 
-    /// M8 calendar upsync Task 2: the Sync-Add ClientId constructor â
+    /// M8 calendar upsync Task 2: the Sync-Add ClientId constructor —
     /// sibling of `new_send_client_id` with the fixed "CalAdd-" prefix
     /// (7 + 32-hex uuid = 39, under the cap with no clamping needed).
     #[test]
@@ -163,7 +163,7 @@ mod tests {
         for id in [&a, &b] {
             assert!(
                 id.len() <= CLIENT_ID_MAX_LEN,
-                "ClientId {id:?} is {} chars â over the [MS-ASCMD] 40-char cap",
+                "ClientId {id:?} is {} chars — over the [MS-ASCMD] 40-char cap",
                 id.len()
             );
             assert!(id.starts_with("CalAdd-"), "{id:?} lost its prefix");

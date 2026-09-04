@@ -239,3 +239,15 @@ fn parse_full_core_item() {
         .expect("parse must not fail on a well-formed item");
     assert_eq!(props, expected_full_contact_props());
 }
+
+/// The golden props converted through the downsync seam — the
+/// comprehensive neutral card the conversion/write tests edit (one
+/// source of truth beside the wire fixture it derives from).
+pub(crate) fn full_card() -> engine_core::contact::ContactCard {
+    crate::contacts::contact_card_from_props(
+        &engine_core::ids::AddressBookId::try_from("fid-contacts-1")
+            .expect("a fixed valid folder id"),
+        "srv:con-1",
+        &expected_full_contact_props(),
+    )
+}

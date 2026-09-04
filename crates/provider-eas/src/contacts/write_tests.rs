@@ -1,37 +1,30 @@
 // SPDX-License-Identifier: MPL-2.0
-// Upsync conversion + emission tests: the neutral ContactCard/ContactPatch
-// → the ghost-model ContactsContactProps → the ApplicationData element
-// (P2 Task 5). The envelope goldens (Add/Change/Delete around the
-// ApplicationData) live in tests/commands_sync/contacts_write.rs.
+// Upsync draft-conversion tests: the neutral ContactCard → the
+// ghost-model ContactsContactProps (P2 Task 5). The patch-conversion
+// tests live in `write_patch_tests.rs` (the module split); the emission
+// tests in `emit_tests.rs`; the envelope goldens (Add/Change/Delete
+// around the ApplicationData) in tests/commands_sync/contacts_write.rs.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use engine_core::contact::{
-    ContactCard, ContactEmail, ContactField, ContactName, ContactNickname, ContactPatch,
-    ContactPhone,
-    ContactProperty, ContactRelation, ContactResource, FieldPatch, PropertyId, Title,
+    ContactCard, ContactEmail, ContactNickname, ContactPhone, ContactProperty, ContactRelation,
+    ContactResource, PropertyId, Title,
 };
 use engine_provider::ProviderError;
 
 use super::*;
-use crate::{
-    contacts::contact_card_from_props,
-    contacts::write_patch::write_from_patch, contacts_testutil,
-};
+use crate::contacts_testutil;
 
 fn id(value: &str) -> PropertyId {
     PropertyId::new(value).unwrap()
 }
 
 /// A comprehensive card shaped like the full wire fixture — every
-/// representable field, distinct values, the downsync's own stable ids.
+/// representable field, distinct values, the downsync's own stable ids
+/// (the shared fixture the patch/emission tests also derive from).
 fn comprehensive_card() -> ContactCard {
-    let props = contacts_testutil::expected_full_contact_props();
-    contact_card_from_props(
-        &engine_core::ids::AddressBookId::try_from("fid-contacts-1").unwrap(),
-        "srv:con-1",
-        &props,
-    )
+    contacts_testutil::full_card()
 }
 
 /// The full card converts back to the wire model with every
@@ -271,145 +264,6 @@ fn fresh_phone_ids_route_by_classification() {
     );
 }
 
-/// A patch Set replaces its field's whole slot family — leftover slots
-/// clear (empty wire values), so a stale value cannot survive the replace.
-#[test]
-fn a_patch_set_replaces_the_whole_slot_family() {
-    let card = comprehensive_card();
-    let mut patch = ContactPatch::default();
-    patch.fields.insert(
-        ContactField::Emails,
-        FieldPatch::Set(serde_json::to_value(one_email_map()).unwrap()),
-    );
-    let written = write_from_patch(&patch).expect("converts");
-    assert_eq!(written.email_1.as_deref(), Some("solo@example.test"));
-    assert_eq!(
-        written.email_2,
-        Some(String::new()),
-        "the leftover slot clears"
-    );
-    assert_eq!(
-        written.email_3,
-        Some(String::new()),
-        "the leftover slot clears"
-    );
-    // Everything outside the patched family stays ghosted (None = omit).
-    assert_eq!(written.file_as, None);
-    assert_eq!(written.business_phone, None);
-
-    // A Clear empties the family.
-    let mut clear = ContactPatch::default();
-    clear.fields.insert(ContactField::Emails, FieldPatch::Clear);
-    let written = write_from_patch(&clear).expect("converts");
-    assert_eq!(written.email_1, Some(String::new()));
-    assert_eq!(written.email_2, Some(String::new()));
-    assert_eq!(written.email_3, Some(String::new()));
-    let _ = card;
-}
-
-/// A name Set emits the filing name plus every part; a name Clear empties
-/// them all.
-#[test]
-fn a_name_patch_emits_file_as_and_every_part() {
-    let mut patch = ContactPatch::default();
-    patch.fields.insert(
-        ContactField::Name,
-        FieldPatch::Set(
-            serde_json::to_value(&ContactName {
-                full: None,
-                components: vec![
-                    engine_core::contact::NameComponent::new(
-                        engine_core::contact::NameComponentKind::Given,
-                        "Anat",
-                    ),
-                    engine_core::contact::NameComponent::new(
-                        engine_core::contact::NameComponentKind::Surname,
-                        "Kerry",
-                    ),
-                ],
-                ..ContactName::default()
-            })
-            .unwrap(),
-        ),
-    );
-    let written = write_from_patch(&patch).expect("converts");
-    assert_eq!(written.file_as.as_deref(), Some("Anat Kerry"));
-    assert_eq!(written.first_name.as_deref(), Some("Anat"));
-    assert_eq!(written.last_name.as_deref(), Some("Kerry"));
-    assert_eq!(
-        written.middle_name,
-        Some(String::new()),
-        "unset parts clear"
-    );
-
-    let mut clear = ContactPatch::default();
-    clear.fields.insert(ContactField::Name, FieldPatch::Clear);
-    let written = write_from_patch(&clear).expect("converts");
-    for slot in [
-        &written.file_as,
-        &written.first_name,
-        &written.middle_name,
-        &written.last_name,
-        &written.name_prefix,
-        &written.name_suffix,
-    ] {
-        assert_eq!(slot, &Some(String::new()));
-    }
-}
-
-/// Kind: setting Individual is the no-op it already is; anything else —
-/// or a clear — refuses, exactly like Graph's individual-only ruling.
-#[test]
-fn only_individual_kind_patches_are_representable() {
-    let patch = ContactPatch {
-        kind: Some(FieldPatch::Set(
-            engine_core::contact::ContactKind::Individual,
-        )),
-        ..ContactPatch::default()
-    };
-    assert!(write_from_patch(&patch).is_ok());
-
-    let patch = ContactPatch {
-        kind: Some(FieldPatch::Set(
-            engine_core::contact::ContactKind::Organization,
-        )),
-        ..ContactPatch::default()
-    };
-    assert!(write_from_patch(&patch).is_err());
-
-    let patch = ContactPatch {
-        kind: Some(FieldPatch::Clear),
-        ..ContactPatch::default()
-    };
-    assert!(write_from_patch(&patch).is_err());
-}
-
-/// A patch field with no EAS slot refuses (the Graph patch-precedent) —
-/// a targeted Set the transport would silently drop is a contract
-/// violation, not a degrade.
-#[test]
-fn unrepresentable_patch_fields_refuse() {
-    for field in [
-        ContactField::Nicknames,
-        ContactField::Relations,
-        ContactField::Languages,
-        ContactField::Keywords,
-        ContactField::TimeZone,
-        ContactField::PersonalInfo,
-        ContactField::OnlineServices,
-    ] {
-        let mut patch = ContactPatch::default();
-        patch.fields.insert(field, FieldPatch::Clear);
-        let err = write_from_patch(&patch).expect_err("no EAS slot");
-        assert_permanent_naming(&err, "no slot");
-        assert!(
-            err.detail().contains("field"),
-            "the refusal names the field: {}",
-            err.detail()
-        );
-    }
-}
-
 /// A partial date form the wire cannot carry refuses rather than being
 /// mangled into a wrong date.
 #[test]
@@ -425,16 +279,6 @@ fn a_partial_anniversary_date_refuses() {
         "1975-11",
     );
 }
-
-fn one_email_map() -> BTreeMap<PropertyId, ContactProperty<ContactEmail>> {
-    let mut map = BTreeMap::new();
-    map.insert(
-        id("email-1"),
-        ContactProperty::new(ContactEmail::new("solo@example.test")),
-    );
-    map
-}
-
 fn assert_permanent_naming(err: &ProviderError, needle: &str) {
     assert!(
         matches!(err.class(), engine_core::error::FailureClass::Permanent),

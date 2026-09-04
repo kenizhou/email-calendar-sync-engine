@@ -257,7 +257,11 @@ pub fn build_contacts_application_data(props: &ContactsContactProps) -> WbxmlEle
     )
 }
 
-/// Emits one address set's five flat components when the set rides.
+/// Emits one address set when it rides — with EVERY component as an
+/// explicit element: a `None`/absent component is the empty clear, never
+/// a ghost. The fill side guarantees `Some` on the family path; the emit
+/// side enforces the same contract for any riding set, so a family
+/// replace can never silently drop a removal off the wire.
 fn emit_address(
     children: &mut Vec<WbxmlElement>,
     set: Option<&ContactsAddress>,
@@ -267,13 +271,13 @@ fn emit_address(
         return;
     };
     for (token, value) in [
-        (tokens.0, set.street.as_deref()),
-        (tokens.1, set.city.as_deref()),
-        (tokens.2, set.state.as_deref()),
-        (tokens.3, set.postal_code.as_deref()),
-        (tokens.4, set.country.as_deref()),
+        (tokens.0, set.street.as_deref().unwrap_or("")),
+        (tokens.1, set.city.as_deref().unwrap_or("")),
+        (tokens.2, set.state.as_deref().unwrap_or("")),
+        (tokens.3, set.postal_code.as_deref().unwrap_or("")),
+        (tokens.4, set.country.as_deref().unwrap_or("")),
     ] {
-        text(children, PAGE_CONTACTS, token, value);
+        children.push(WbxmlElement::text(PAGE_CONTACTS, token, value));
     }
 }
 

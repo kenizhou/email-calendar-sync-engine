@@ -202,7 +202,11 @@ pub(super) fn fill_emails(
 
 /// Fills the phone slots: id-first routing (the downsync's stable ids),
 /// then classification chains; every collision that cannot overflow
-/// refuses. On the patch path all twelve slots ride.
+/// refuses. The family-replace rule is the e-mail precedent's verbatim:
+/// on the patch path ALL twelve slots ride — an unfilled slot is an
+/// explicit empty value (the clear), never a ghost, or the server's
+/// stale number would survive the replace and resurrect over the host's
+/// removal on the next downsync.
 pub(super) fn fill_phones(
     props: &mut ContactsContactProps,
     phones: &BTreeMap<PropertyId, ContactProperty<ContactPhone>>,
@@ -247,10 +251,9 @@ pub(super) fn fill_phones(
         (&mut props.radio_phone, "phone-radio"),
     ];
     for (field, name) in &mut assignments {
-        if let Some(value) = taken.get(name)
-            && (family || !value.is_empty())
-        {
-            **field = Some(value.clone());
+        let value = taken.get(name).cloned();
+        if family || value.is_some() {
+            **field = Some(value.unwrap_or_default());
         }
     }
     Ok(())
@@ -284,14 +287,20 @@ pub(super) fn fill_addresses(
         *slot = Some(&address.value);
     }
     let fill = |target: &mut Option<ContactsAddress>, source: Option<&ContactAddress>| {
+        // The family-replace rule, at both granularities: on the patch
+        // path every set rides and EVERY component of a riding set is an
+        // explicit value — an unset component is the empty clear, never a
+        // ghost, or the server's stale address (or stale component)
+        // would survive the replace and resurrect on the next downsync.
         if family || source.is_some() {
             let component = |key: &str| -> Option<String> {
                 source
                     .and_then(|address| address.components.get(key))
                     .and_then(|values| values.first())
                     .map(|value| value.trim())
-                    .filter(|value| family || !value.is_empty())
+                    .filter(|value| !value.is_empty())
                     .map(str::to_owned)
+                    .or_else(|| family.then(String::new))
             };
             *target = Some(ContactsAddress {
                 street: component("street"),
