@@ -39,16 +39,18 @@ use crate::SyncError;
 /// a tagged intent is poison-marked with), or a parked `NeedsConfirmation`.
 /// Not counted: ops left unmarked, which are (a) **foreign-scope verbs** — a
 /// calendar or contact intent, claimed because claims are scope-blind, skipped
-/// without a mark so the right executor — the calendar or contact drain — can
-/// take it after the lease expires — and (b) an op whose
+/// without a mark and **released** back to `Pending` under the claim's own
+/// lease, so the right executor — the calendar or contact drain — can claim it
+/// immediately, in the same round — and (b) an op whose
 /// mark came back `StaleLease` (another worker re-claimed it; its outcome is
 /// that worker's to record, dropped here silently).
 ///
-/// The TTL cost of a skip: the claim moves a skipped op to `InFlight` and its
-/// lease holds it there (with its resource key, deferring same-resource ops)
-/// until the lease expires — one TTL of unrunnability per skip. A host should
-/// schedule the drains so each loop gets clean claim windows rather than
-/// letting one repeatedly burn the other's ops.
+/// The cost of a skip is its claim slot, not a lease TTL: the claim moves a
+/// skipped op to `InFlight` only momentarily — the settle half hands it
+/// straight back, with its fencing token bumped so the skipper's dead lease
+/// can never mark or release it again. Drains can therefore run in any order
+/// without burning each other's ops into lease-holds; a skip costs the op its
+/// place in this batch, nothing more.
 ///
 /// A replayed submission's `SentCopy` fact (what became of the sender's own
 /// copy) is lost: the outcome records only the op state. Phase-1 limitation;
@@ -56,9 +58,9 @@ use crate::SyncError;
 ///
 /// # Errors
 ///
-/// Returns [`SyncError::Store`] when the claim, a mark, or a replay's store
-/// read fails (an execution failure is not an error: it arrives as the outcome
-/// this call records).
+/// Returns [`SyncError::Store`] when the claim, a mark, a release, or a
+/// replay's store read fails (an execution failure is not an error: it arrives
+/// as the outcome this call records).
 pub async fn drain_mail_ops<P, S>(
     provider: &P,
     store: &S,
@@ -85,15 +87,15 @@ where
 /// Drains up to `limit` of this account's runnable **contact** ops —
 /// `create_contact`, `patch_contact`, and `delete_contact` intents — with the
 /// same claim/replay/settle discipline and the same counting semantics as
-/// [`drain_mail_ops`] (see its docs for the exact accounting and the skip's TTL
-/// cost). Patch and delete replays re-read the base card by id from the store,
+/// [`drain_mail_ops`] (see its docs for the exact accounting and the skip's
+/// release). Patch and delete replays re-read the base card by id from the store,
 /// exactly as the contact execute half prescribes.
 ///
 /// # Errors
 ///
-/// Returns [`SyncError::Store`] when the claim, a mark, or a replay's base-card
-/// read fails (an execution failure is not an error: it arrives as the outcome
-/// this call records).
+/// Returns [`SyncError::Store`] when the claim, a mark, a release, or a
+/// replay's base-card read fails (an execution failure is not an error: it
+/// arrives as the outcome this call records).
 pub async fn drain_contact_ops<P, S>(
     provider: &P,
     store: &S,
@@ -121,7 +123,7 @@ where
 /// `create_event`, `patch_event`, `put_event_doc`, `rsvp_event`, and
 /// `delete_event` intents — with the same claim/replay/settle discipline and
 /// the same counting semantics as [`drain_mail_ops`] (see its docs for the
-/// exact accounting and the skip's TTL cost). A replayed patch, RSVP, or
+/// exact accounting and the skip's release). A replayed patch, RSVP, or
 /// occurrence delete re-reads the base event by id from the store, exactly as
 /// the calendar execute half prescribes: a patch or RSVP whose event is gone
 /// is a terminal `Conflict`, an occurrence delete whose event is gone is a
@@ -129,9 +131,9 @@ where
 ///
 /// # Errors
 ///
-/// Returns [`SyncError::Store`] when the claim, a mark, or a replay's
-/// base-event read fails (an execution failure is not an error: it arrives as
-/// the outcome this call records).
+/// Returns [`SyncError::Store`] when the claim, a mark, a release, or a
+/// replay's base-event read fails (an execution failure is not an error: it
+/// arrives as the outcome this call records).
 pub async fn drain_calendar_ops<P, S>(
     provider: &P,
     store: &S,
@@ -163,11 +165,12 @@ where
 /// Returns whether this drain drove the op to an outcome (the count the loops
 /// report). The two no-count cases:
 ///
-/// - **Out of scope** — the op is another drain's to execute; skipped *unmarked*, so it stays
-///   lease-held until the lease expires (the documented one-TTL cost) rather than being resolved by
-///   a loop that cannot know its semantics.
-/// - **Stale lease on the mark** — another worker re-claimed the op underneath; its outcome is that
-///   worker's to record, so the result is dropped silently.
+/// - **Out of scope** — the op is another drain's to execute; skipped *unmarked* and **released**
+///   back to `Pending` under the lease the claim minted (its fencing token bumped, so this drain's
+///   lease is dead), so the right executor can claim it immediately rather than being resolved by a
+///   loop that cannot know its semantics — or waiting out a lease TTL, the pre-release cost.
+/// - **Stale lease on the mark or release** — another worker re-claimed the op underneath; its
+///   outcome is that worker's to record, so the result is dropped silently.
 ///
 /// Terminal poison (an undecodable payload) is marked terminally `Failed` with
 /// class [`Permanent`](FailureClass::Permanent) so the lease never expires back
@@ -188,7 +191,17 @@ where
             class: FailureClass::Permanent,
             retry_after: None,
         },
-        Err(ExecuteFailure::OutOfScope) => return Ok(false),
+        Err(ExecuteFailure::OutOfScope) => {
+            // Hand the op straight back: this drain claimed an intent it cannot
+            // execute, and the lease it holds is the only thing standing between
+            // the op and its own drain. A stale release means the lease already
+            // expired and another worker re-claimed the op — that worker owns it
+            // now, dropped silently exactly as a stale mark is.
+            return match store.release_pending_op(&leased.lease).await {
+                Ok(()) | Err(StoreError::StaleLease) => Ok(false),
+                Err(err) => Err(SyncError::Store(err)),
+            };
+        }
         Err(ExecuteFailure::Store(err)) => return Err(SyncError::Store(err)),
     };
     match store.mark_pending_op(&leased.lease, outcome).await {

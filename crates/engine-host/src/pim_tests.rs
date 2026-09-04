@@ -133,11 +133,15 @@ async fn a_drained_calendar_op_reports_the_outbox_after_the_calendar_drain() {
 }
 
 #[tokio::test]
-async fn a_contact_op_the_calendar_drain_skipped_stays_lease_held() {
-    // Claims are scope-blind and the round's order is fixed: the calendar
-    // drain claims the account's runnable ops first, executes its own verbs,
-    // and leaves a claimed contact op skipped-unmarked and lease-held — so
-    // the contact drain in the SAME round finds nothing runnable.
+async fn a_contact_op_the_calendar_drain_released_is_driven_in_the_same_round() {
+    // The drain-ordering starvation fix, pinned end to end (engine task T7b;
+    // the pre-T7b pin was `a_contact_op_the_calendar_drain_skipped_stays_
+    // lease_held`, which held the op InFlight under the calendar drain's lease
+    // — permanent starvation under this round's fixed calendar-first order).
+    // Claims are still scope-blind and the round's order is still fixed, but a
+    // skip now releases the op's lease straight back to Pending: the calendar
+    // drain claims the contact op, skips it unmarked, releases it — and the
+    // contact drain in the SAME round claims and drives it.
     let engine = Engine::open_in_memory().expect("engine");
     let first = seed_contact_create(&engine, "card-9").await;
     let sink = CollectingSink::default();
@@ -148,57 +152,63 @@ async fn a_contact_op_the_calendar_drain_skipped_stays_lease_held() {
 
     assert_eq!(
         sink.events(),
-        vec![calendar_changed(), contacts_changed()],
-        "the calendar drain settled nothing, so it reported no depth"
+        vec![
+            calendar_changed(),
+            contacts_changed(),
+            EngineEvent::OutboxChanged {
+                account: "acct-1".to_owned(),
+                pending: 0,
+            },
+        ],
+        "the calendar drain settled nothing (a skip is not a settled op); the \
+         contact drain drove the released op and reported the depth"
     );
-    assert_eq!(report.drained_cal, 0);
     assert_eq!(
-        report.drained_contacts, 0,
-        "the op is lease-held, not runnable this round"
+        report.drained_cal, 0,
+        "the calendar drain claims and skips the contact op, counting nothing"
+    );
+    assert_eq!(
+        report.drained_contacts, 1,
+        "the released op was claimable by this round's contact drain"
     );
     assert_eq!(
         engine.pending_op_state(first).await.expect("op state read"),
-        Some(PendingOpState::InFlight),
-        "the skip left the op lease-held, unmarked"
+        Some(PendingOpState::Succeeded),
+        "the contact op reached its terminal outcome in the same round"
     );
 
-    // The second round skips again — and this is the permanent starvation
-    // under this round's fixed calendar-first order, not a one-TTL wait: the
-    // fresh contact op is claimed and skipped by the calendar drain exactly
-    // as the first was, and the first is still lease-held. When its lease
-    // does expire, the next round's calendar drain re-claims it (claims look
-    // at runnability only, limit 16) and skips it again — no round under
-    // this ordering ever hands a runnable contact op to the contact drain.
-    // This pin is what the intent-aware claims escalated as engine task T7b
-    // will flip; until then, a host must run `drain_contact_ops` on its own
-    // cadence between rounds to clear contact writes.
+    // The second round proves the fix holds round over round: a fresh contact
+    // op is claimed, released, and driven by the second round's own contact
+    // drain — the pre-T7b behavior burned each fresh op into a lease-hold the
+    // calendar drain re-claimed every round, so no round ever cleared one.
     sink.clear();
     let second = seed_contact_create(&engine, "card-10").await;
     let report = round(&engine, &RoundPim::full(), &sink, horizon())
         .await
         .expect("the second round completes");
 
-    assert!(sink.events().is_empty(), "the second round is quiet");
     assert_eq!(
-        report.drained_cal, 0,
-        "a skip is not a settled op — the calendar drain reports nothing"
+        sink.events(),
+        vec![EngineEvent::OutboxChanged {
+            account: "acct-1".to_owned(),
+            pending: 0,
+        }],
+        "a quiet sync delta; the drain's depth event is the round's only news"
     );
-    assert_eq!(
-        report.drained_contacts, 0,
-        "the second round's contact drain found nothing runnable either"
-    );
+    assert_eq!(report.drained_cal, 0);
+    assert_eq!(report.drained_contacts, 1);
     assert_eq!(
         engine
             .pending_op_state(second)
             .await
             .expect("op state read"),
-        Some(PendingOpState::InFlight),
-        "the calendar drain claimed and skipped the fresh op too"
+        Some(PendingOpState::Succeeded),
+        "the second round's contact drain drove the fresh op too"
     );
     assert_eq!(
         engine.pending_op_state(first).await.expect("op state read"),
-        Some(PendingOpState::InFlight),
-        "the first op is still lease-held, never run"
+        Some(PendingOpState::Succeeded),
+        "the first op stays terminally settled"
     );
 }
 

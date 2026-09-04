@@ -52,21 +52,18 @@
 //! failed calendar sync. The store keeps whatever committed before the fault,
 //! and the next round is a plain retry.
 //!
-//! # The drain-ordering cost: contact starvation
+//! # The drain order: why calendar-first is safe
 //!
 //! Outbox claims are scope-blind, and this round's order is fixed — the
-//! calendar drain always runs first — so a contact op it claims is skipped
-//! unmarked and lease-held, and when that lease expires the next round's
-//! calendar drain claims the op *again* (a claim sees runnability only,
-//! bounded at 16). Under a scheduler that runs only [`run_pim_round`], a
-//! runnable contact backlog is therefore starved **permanently**: every round
-//! burns it into a fresh lease-hold before the contact drain could ever take
-//! it, and no round of this shape clears it. The mitigations live outside
-//! this ordering: a host runs [`Engine::drain_contact_ops`] on its own
-//! cadence between rounds, or the engine's claims become intent-aware (the
-//! escalated fix, tracked as task T7b) so the calendar drain stops claiming
-//! what it cannot execute. The behavior is pinned by
-//! `a_contact_op_the_calendar_drain_skipped_stays_lease_held`.
+//! calendar drain always runs first — so it does claim contact ops. What it
+//! cannot execute it skips unmarked and **releases** back to `Pending` under
+//! the claim's own lease (the release-on-skip discipline the engine's drainers
+//! settle with, landed as engine task T7b): the op's fencing token is bumped,
+//! the skipper's lease dies, and the op is runnable again the moment the
+//! calendar drain moves on. The contact drain in the same round therefore
+//! claims and drives it — a fixed order costs a claim slot, never a lease-hold,
+//! and no ordering of the drains can starve a scope. The guarantee is pinned by
+//! `a_contact_op_the_calendar_drain_released_is_driven_in_the_same_round`.
 
 use engine_api::{
     AccountId, ApiError, CalendarSyncReport, ContactSyncReport, Engine, Horizon, HorizonExpansion,

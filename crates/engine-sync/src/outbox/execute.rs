@@ -71,8 +71,9 @@ pub(crate) enum ExecuteFailure {
     /// The op's verb belongs to another drain's scope (a contact verb in the
     /// mail or calendar drain; a mail verb in the contact or calendar drain;
     /// a calendar verb in the mail or contact drain). The caller skips the op
-    /// unmarked — the op stays lease-held until its lease expires, and the
-    /// right executor takes it after that: one TTL of unrunnability per skip.
+    /// unmarked and releases its lease back to `Pending` — the fencing token
+    /// is bumped, so this lease is dead — and the right executor claims the
+    /// op immediately: a skip costs its claim slot, never a lease TTL.
     OutOfScope,
     /// The store read a replay needed (a contact patch/delete's base card)
     /// failed — transient; the caller surfaces it, and the lease's expiry

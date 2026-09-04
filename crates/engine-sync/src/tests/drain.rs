@@ -3,8 +3,9 @@
 //! under its lease. The founding case is the crash orphan (an op an inline
 //! worker claimed and died holding, its lease expired); the pins are that an
 //! ambiguous send parks as `NeedsConfirmation` and never recycles, poison is
-//! terminally `Failed`, and a foreign-scope verb is skipped unmarked at the
-//! documented cost of one lease TTL.
+//! terminally `Failed`, and a foreign-scope verb is skipped unmarked and
+//! released straight back to `Pending`, so its own drain can claim it in the
+//! same round.
 
 use engine_core::{
     calendar::Event,
@@ -17,7 +18,7 @@ use engine_core::{
 use engine_store::PendingOpState;
 
 use super::*;
-use crate::outbox::drain::{drain_contact_ops, drain_mail_ops, settle_claimed};
+use crate::outbox::drain::{drain_calendar_ops, drain_contact_ops, drain_mail_ops, settle_claimed};
 
 /// The lease the tests arm — long enough to span a claim, short enough that a
 /// two-minute advance expires it.
@@ -172,12 +173,13 @@ async fn an_undecodable_payload_is_terminally_failed_and_never_reclaimed() {
 }
 
 #[tokio::test]
-async fn a_calendar_op_in_the_mail_drain_is_skipped_unmarked() {
+async fn a_calendar_op_in_the_mail_drain_is_released_back_to_pending() {
     // The mail drain cannot execute a calendar verb (its provider may carry no
-    // calendar surface), so it claims the op (claims are scope-blind) and leaves
-    // it unmarked — InFlight under the drain's lease until it expires, the
-    // documented one-TTL cost. The calendar drain is the op's executor once the
-    // lease recycles it.
+    // calendar surface), so it claims the op (claims are scope-blind), skips it
+    // unmarked, and releases the lease straight back to Pending — the
+    // release-on-skip fix (engine task T7b); the pre-T7b pin
+    // `a_calendar_op_in_the_mail_drain_is_skipped_unmarked` held the op
+    // InFlight until its lease expired. The calendar drain can claim it now.
     let provider = FakeMail::new(vec![], vec![]);
     let store = SqliteStore::open_in_memory(clock()).unwrap();
     let op = enqueue_op(
@@ -196,16 +198,17 @@ async fn a_calendar_op_in_the_mail_drain_is_skipped_unmarked() {
     assert_eq!(drained, 0, "a foreign-scope op is not counted");
     assert_eq!(
         store.pending_op_state(op).await.unwrap(),
-        Some(PendingOpState::InFlight),
-        "skipped unmarked: lease-held until expiry"
+        Some(PendingOpState::Pending),
+        "skipped unmarked and released: runnable again, not lease-held"
     );
 }
 
 #[tokio::test]
-async fn a_contact_verb_in_the_mail_drain_is_skipped_unmarked() {
+async fn a_contact_verb_in_the_mail_drain_is_released_back_to_pending() {
     // The same skip for the contacts half of the split: the mail drain cannot
     // execute a contact verb (its provider may carry no contacts surface), so
-    // it claims, skips, and leaves the op to its lease expiry.
+    // it claims, skips unmarked, and releases the op back to Pending — no TTL
+    // of unrunnability.
     let provider = FakeMail::new(vec![], vec![]);
     let store = SqliteStore::open_in_memory(clock()).unwrap();
     let op = enqueue_op(
@@ -224,12 +227,12 @@ async fn a_contact_verb_in_the_mail_drain_is_skipped_unmarked() {
     assert_eq!(drained, 0);
     assert_eq!(
         store.pending_op_state(op).await.unwrap(),
-        Some(PendingOpState::InFlight)
+        Some(PendingOpState::Pending)
     );
 }
 
 #[tokio::test]
-async fn a_mail_verb_in_the_contact_drain_is_skipped_unmarked() {
+async fn a_mail_verb_in_the_contact_drain_is_released_back_to_pending() {
     // The mirror: the contact drain returns the favor for a mail verb.
     let provider = FakeMail::new(vec![], vec![]);
     let store = SqliteStore::open_in_memory(clock()).unwrap();
@@ -251,7 +254,69 @@ async fn a_mail_verb_in_the_contact_drain_is_skipped_unmarked() {
     assert_eq!(drained, 0);
     assert_eq!(
         store.pending_op_state(op).await.unwrap(),
-        Some(PendingOpState::InFlight)
+        Some(PendingOpState::Pending)
+    );
+}
+
+#[tokio::test]
+async fn a_foreign_op_a_drain_skipped_is_driven_by_its_own_drain_in_the_same_round() {
+    // The drain-ordering starvation fix (engine task T7b), pinned at the loop
+    // level: a calendar op and a contact op both runnable, one calendar drain
+    // call followed by one contact drain call — the run_pim_round shape —
+    // drives BOTH to terminal outcomes. Claims stay scope-blind (the calendar
+    // drain claims the contact op too), but the skip releases the op's lease
+    // back to Pending, so the contact drain takes it immediately; before T7b
+    // the contact op was left InFlight under the calendar drain's lease and
+    // the second call found nothing runnable.
+    let provider = FakeMail::new(vec![], vec![]);
+    let store = SqliteStore::open_in_memory(clock()).unwrap();
+    let calendar_op = enqueue_op(
+        &store,
+        "drain:mixed:calendar",
+        "event:evt-mixed@test.local",
+        serde_json::to_value(OutboxIntent::DeleteEvent {
+            deletion: EventDeletion::of(&stored_event()),
+        })
+        .unwrap(),
+    )
+    .await;
+    let contact_op = enqueue_op(
+        &store,
+        "drain:mixed:contact",
+        "contact:card-mixed",
+        serde_json::to_value(OutboxIntent::CreateContact {
+            draft: contact_draft(),
+        })
+        .unwrap(),
+    )
+    .await;
+
+    let drained_cal = drain_calendar_ops(&provider, &store, &account(), worker(), ttl(), 16)
+        .await
+        .unwrap();
+
+    assert_eq!(drained_cal, 1, "the calendar verb was driven to an outcome");
+    assert_eq!(
+        store.pending_op_state(calendar_op).await.unwrap(),
+        Some(PendingOpState::Succeeded)
+    );
+    assert_eq!(
+        store.pending_op_state(contact_op).await.unwrap(),
+        Some(PendingOpState::Pending),
+        "the skip released the contact op — runnable, not lease-held"
+    );
+
+    let drained_contacts = drain_contact_ops(&provider, &store, &account(), worker(), ttl(), 16)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        drained_contacts, 1,
+        "the released op was claimable in the same round"
+    );
+    assert_eq!(
+        store.pending_op_state(contact_op).await.unwrap(),
+        Some(PendingOpState::Succeeded)
     );
 }
 

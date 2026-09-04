@@ -43,10 +43,11 @@ impl Engine {
     /// parked op is not claimable). **Failed is terminal** and confirmation is a
     /// host decision, so the drain's work is done when an op holds any of the
     /// three. Not counted: an op skipped as out of scope — a contact or calendar
-    /// verb this drain claimed only because claims are scope-blind, left unmarked
-    /// so the right executor can take it after the lease expires (one lease TTL
-    /// of unrunnability per skip) — and an op whose mark lost its
-    /// lease to another worker (that worker owns the outcome).
+    /// verb this drain claimed only because claims are scope-blind, left
+    /// unmarked and released straight back to `Pending` under its own lease, so
+    /// the right executor can claim it immediately (no TTL of unrunnability) —
+    /// and an op whose mark lost its lease to another worker (that worker owns
+    /// the outcome).
     ///
     /// Calendar verbs are not this drain's — they are
     /// [`drain_calendar_ops`](Self::drain_calendar_ops)' — and a replayed
@@ -56,10 +57,9 @@ impl Engine {
     ///
     /// **Host scheduling.** One call is one bounded batch, not a loop: call this
     /// periodically (a timer) and again while it returns non-zero to clear a
-    /// backlog. Schedule it against [`drain_contact_ops`](Self::drain_contact_ops)
-    /// so each drain gets a clean claim window rather than repeatedly burning the
-    /// other's ops into lease-holds — the natural rhythm is both, once per sync
-    /// pass.
+    /// backlog. A skip releases its op rather than lease-holding it, so the
+    /// drains cannot burn each other's ops and any ordering between them is
+    /// safe; the natural rhythm is still both, once per sync pass.
     ///
     /// # Errors
     ///
@@ -88,7 +88,7 @@ impl Engine {
     /// were recorded but never resolved — under the same claim/replay/settle
     /// discipline and the same counting semantics as
     /// [`drain_mail_ops`](Self::drain_mail_ops) (see its docs for the exact
-    /// accounting, the exclusions, and the skip's TTL cost). A replayed patch or
+    /// accounting, the exclusions, and the skip's release). A replayed patch or
     /// delete re-reads its base card by id from the store, exactly as the contact
     /// execute half prescribes: a card already gone is a `Conflict` for a patch
     /// (corrected by the next contact sync, never retried into success) and a
@@ -122,7 +122,7 @@ impl Engine {
     /// `delete_calendar_event` intents that were recorded but never resolved —
     /// under the same claim/replay/settle discipline and the same counting
     /// semantics as [`drain_mail_ops`](Self::drain_mail_ops) (see its docs for
-    /// the exact accounting, the exclusions, and the skip's TTL cost). Every
+    /// the exact accounting, the exclusions, and the skip's release). Every
     /// calendar verb lives on [`Provider`] itself, so this drain needs no
     /// tighter provider bound than the mail one.
     ///
