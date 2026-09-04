@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 //! The calendar write verbs: `create_event` / `patch_event` /
-//! `delete_event` over the Sync `Commands` upsync (P2 Task 3), and the
-//! documented `put_event` refusal.
+//! `delete_event` over the Sync `Commands` upsync (P2 Task 3), the
+//! documented `put_event` refusal, and the invitation answer —
+//! `rsvp_event_from_invite` over `MeetingResponse` (P2 Task 4).
 //!
 //! ## Mapping
 //!
@@ -36,6 +37,19 @@
 //! `EventWrite.ical` payload has no EAS form at all (there is no iCalendar
 //! on an EAS server).
 //!
+//! **`rsvp_event_from_invite` is `MeetingResponse`** ([MS-ASCMD] §2.2.1.11,
+//! [`rsvp_from_invite`]): the one calendar write that addresses the **mail**
+//! collection, not the bound calendar — `CollectionId` is the invitation
+//! email's own folder (its mailbox membership), `RequestId` the email's
+//! `ServerId` (the message id, verbatim), `UserResponse` the answer's wire
+//! code (1 accept / 2 tentative / 3 decline), `SendResponse` emitted only on
+//! a 16.0/16.1 server asked to notify. The stored `base` is ignored — the
+//! protocol has no way to address it, which is exactly why the verb exists.
+//! The event-addressed `rsvp_event` is refused ([`rsvp_refusal`]) pointing
+//! at the invitation facade. No `InstanceId` is ever sent today: the neutral
+//! `EventRsvp` carries no occurrence target, and a per-occurrence answer
+//! (the `InstanceId` 14.1+ form, §2.2.3.92.1) maps here when one lands.
+//!
 //! ## The collection key
 //!
 //! Every verb rides the adapter's **calendar collection-key ledger**
@@ -52,11 +66,12 @@ use engine_core::{
     calendar::Event,
     error::FailureClass,
     ids::{CalendarId, EventId},
+    mail::Message,
     version::RevisionTokens,
 };
 use engine_provider::{
-    DeleteTarget, EventDeletion, EventDraft, EventEdit, EventWriteReceipt, PatchTarget,
-    ProviderError, ProviderResult,
+    DeleteTarget, EventDeletion, EventDraft, EventEdit, EventRsvp, EventWriteReceipt, PatchTarget,
+    ProviderError, ProviderResult, RsvpControls, RsvpResponse,
 };
 use tokio::sync::Mutex;
 
@@ -264,6 +279,79 @@ pub(super) fn put_refusal() -> ProviderError {
         "EAS has no whole-document calendar write — its update verb is a field-level Sync \
          Change (patch_event), and an EAS server stores no iCalendar document to PUT",
     )
+}
+
+/// The event-addressed `rsvp_event` refusal: `MeetingResponse` addresses the
+/// invitation EMAIL, so a stored event names nothing the protocol can answer
+/// from — the supported path answers from the message.
+pub(super) fn rsvp_refusal() -> ProviderError {
+    ProviderError::invalid_state(
+        "EAS answers an invitation by referencing the invitation email (MeetingResponse) — \
+         answer from the message (rsvp_invitation), not from a stored event",
+    )
+}
+
+/// Answers an invitation through `MeetingResponse` ([MS-ASCMD] §2.2.1.11) —
+/// see the module docs for the addressing map. No `base` parameter: the
+/// protocol addresses the email, and the trait hands the base only to
+/// adapters that can use it.
+///
+/// # Errors
+///
+/// A control the negotiated version cannot honour (a note anywhere; a quiet
+/// answer on a server with no `SendResponse` token) refuses `InvalidState`
+/// before the wire — the adapter never sends what its advertisement
+/// disclaimed. A non-1 Result Status surfaces classified through the shared
+/// error map (MeetingResponse is family-untagged `CommandStatus`), a
+/// transport failure as `Retryable`.
+pub(super) async fn rsvp_from_invite(
+    client: &Mutex<EasClient>,
+    controls: RsvpControls,
+    send_response: bool,
+    invite: &Message,
+    rsvp: &EventRsvp,
+) -> ProviderResult<EventWriteReceipt> {
+    controls.accept(rsvp)?;
+    // The invite email's own folder is the CollectionId — never the adapter's
+    // bound calendar, which may name a collection the message has never
+    // touched (and for a calendar-role adapter, is not even a mail folder).
+    let collection_id = invite
+        .mailboxes
+        .iter()
+        .next()
+        .map(|folder| folder.as_str().to_owned())
+        .ok_or_else(|| {
+            ProviderError::invalid_state(
+                "the invitation message names no mailbox — the MeetingResponse CollectionId \
+                 cannot be derived from it",
+            )
+        })?;
+    let user_response = match rsvp.response {
+        RsvpResponse::Accepted => "1",
+        RsvpResponse::Tentative => "2",
+        RsvpResponse::Declined => "3",
+    };
+    let mut client = client.lock().await;
+    client
+        .meeting_response(
+            &collection_id,
+            invite.id.as_str(),
+            user_response,
+            // No occurrence target rides the neutral EventRsvp (module docs).
+            None,
+            send_response,
+        )
+        .await
+        .map_err(provider_error)?;
+    // MeetingResponse returns no id and no revision: the receipt echoes the
+    // answer's own event identity (the invitation's placeholder until a
+    // calendar sync reconciles by uid) and reports nothing about delivery —
+    // the protocol says only that the command succeeded.
+    Ok(EventWriteReceipt::new(
+        rsvp.event.clone(),
+        rsvp.uid.clone(),
+        RevisionTokens::default(),
+    ))
 }
 
 /// One calendar upsync round: the verb lock, the Sync-family status

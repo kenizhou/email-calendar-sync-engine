@@ -53,6 +53,8 @@ mod adapter_flow;
 mod adapter_folders_flow;
 #[path = "transport_harness/adapter_hierarchy_flow.rs"]
 mod adapter_hierarchy_flow;
+#[path = "transport_harness/adapter_meeting_flow.rs"]
+mod adapter_meeting_flow;
 #[path = "transport_harness/adapter_source_flow.rs"]
 mod adapter_source_flow;
 #[path = "transport_harness/adapter_source_wire.rs"]

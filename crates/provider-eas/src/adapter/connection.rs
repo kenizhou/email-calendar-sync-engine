@@ -37,9 +37,16 @@ impl Provider for EasAdapter {
     ///   per-server EAS ceiling exists to justify a wider one — the Graph precedent set its 4 from
     ///   live throttling evidence.
     fn connection_info(&self) -> ConnectionInfo {
+        // The RSVP controls are version-negotiated facts, so they compose per
+        // call with the calendar binding — never into the stored ladder (which
+        // must stay pre-negotiate-safe).
+        let capabilities = match self.calendar {
+            Some(_) => self.capabilities.with_calendar_rsvp(self.rsvp_controls()),
+            None => self.capabilities,
+        };
         ConnectionInfo {
             http_version: self.http.get(),
-            ..ConnectionInfo::new(self.capabilities)
+            ..ConnectionInfo::new(capabilities)
         }
     }
 
@@ -297,6 +304,50 @@ impl Provider for EasAdapter {
     ) -> ProviderResult<engine_provider::EventWriteReceipt> {
         let _ = write;
         Err(super::calendar_write::put_refusal())
+    }
+
+    /// The documented rejecting default made explicit: EAS answers an
+    /// invitation by referencing the invitation **email** (`MeetingResponse`,
+    /// the `rsvp_event_from_invite` override below) — a stored event names
+    /// nothing the protocol can address. `super::calendar_write` owns the
+    /// refusal text.
+    async fn rsvp_event(
+        &self,
+        _account: &AccountId,
+        _base: &Event,
+        _rsvp: &engine_provider::EventRsvp,
+    ) -> ProviderResult<engine_provider::EventWriteReceipt> {
+        Err(super::calendar_write::rsvp_refusal())
+    }
+
+    /// `MeetingResponse` ([MS-ASCMD] §2.2.1.11): the answer addresses the
+    /// invitation **email** — the `CollectionId` is the message's own mailbox
+    /// membership, the `RequestId` its `ServerId` (the message id, verbatim),
+    /// the `UserResponse` the answer's wire code, and `SendResponse` rides
+    /// only a 16.0/16.1 server asked to notify. `base` is ignored by design:
+    /// the store's copy of the event names nothing the protocol can address,
+    /// which is exactly why this verb exists — an EAS account can answer an
+    /// invitation whose event the store has never held. Requires the calendar
+    /// binding (the RSVP capability lands with it, like every calendar bit).
+    /// `super::calendar_write` owns the mapping and the control refusals.
+    async fn rsvp_event_from_invite(
+        &self,
+        _account: &AccountId,
+        invite: &Message,
+        _base: Option<&Event>,
+        rsvp: &engine_provider::EventRsvp,
+    ) -> ProviderResult<engine_provider::EventWriteReceipt> {
+        if self.calendar.is_none() {
+            return Err(super::calendar::unbound_calendar());
+        }
+        let controls = self.rsvp_controls();
+        // Emit SendResponse iff the answer asks the organizer be told AND the
+        // negotiated version carries the token — the same fact the controls
+        // advertise, so the wire can never disagree with them.
+        let send_response = rsvp.notify_organizer
+            && matches!(self.protocol_version.as_deref(), Some("16.0" | "16.1"));
+        super::calendar_write::rsvp_from_invite(&self.client, controls, send_response, invite, rsvp)
+            .await
     }
 
     /// Sync `Delete` of the ServerId for the series; an occurrence delete

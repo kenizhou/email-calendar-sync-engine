@@ -69,13 +69,16 @@
 //! `submit_email_source` — the raw-MIME send carries its own scheduling
 //! parameters). The **calendar family is on with its binding**
 //! ([`EasAdapter::with_calendar`]): the read verbs (`sync_calendars` +
-//! `sync_events`, `adapter/calendar.rs`) AND the write verbs
+//! `sync_events`, `adapter/calendar.rs`), the write verbs
 //! (`create_event`/`patch_event`/`delete_event` — Sync
 //! Add/Change/Delete-upsync, `adapter/calendar_write.rs`; `put_event` is
 //! refused, EAS's update verb is a field-level Change, not a document PUT)
 //! flip `calendars` + `calendar_writes` together — event addressing is per
-//! collection and an unbound adapter cannot name one. `calendar_rsvp` and
-//! the contacts family stay off until their verbs land.
+//! collection and an unbound adapter cannot name one. `calendar_rsvp` is
+//! on with the binding too (`rsvp_event_from_invite` over `MeetingResponse`
+//! — the controls composed per call from the negotiated version, see
+//! [`EasAdapter::rsvp_controls`]); the contacts family stays off until its
+//! verbs land.
 //!
 //! ## The calendar binding
 //!
@@ -119,7 +122,9 @@ mod submit;
 mod watch;
 
 use engine_core::ids::{CalendarId, MailboxId};
-use engine_provider::{Capabilities, OverrideSurvival, ProviderError, ProviderResult, WriteGuard};
+use engine_provider::{
+    Capabilities, OverrideSurvival, ProviderError, ProviderResult, RsvpControls, WriteGuard,
+};
 pub use watch::EasPingWatcher;
 
 use crate::client::{EasClient, EasError, pick_protocol_version};
@@ -285,8 +290,10 @@ impl EasAdapter {
     /// (`calendar/convert_write.rs`), so every per-occurrence change rides
     /// the write — the CalDAV structural-patcher argument; a stale base
     /// losing a newer override is the `Absent` guard's documented
-    /// last-write-wins, not a survival failure. `calendar_rsvp` stays off
-    /// (its verb, `MeetingResponse`, is a later slice).
+    /// last-write-wins, not a survival failure. The RSVP bit lands with the
+    /// binding as well (P2 Task 4: `rsvp_event_from_invite` over
+    /// `MeetingResponse`), composed per call from the negotiated version —
+    /// see [`EasAdapter::rsvp_controls`].
     #[must_use]
     pub fn with_calendar(mut self, calendar: CalendarId) -> Self {
         self.calendar = Some(calendar);
@@ -358,6 +365,32 @@ impl EasAdapter {
     #[must_use]
     pub fn protocol_version(&self) -> Option<&str> {
         self.protocol_version.as_deref()
+    }
+
+    /// The RSVP controls the **negotiated** version can honour — the facts
+    /// [`connection_info`](Provider::connection_info) composes into the
+    /// `calendar_rsvp` capability and the write path consults before the wire,
+    /// so the two can never disagree:
+    ///
+    /// - **comment: false** — `MeetingResponse` carries no note element on any protocol version
+    ///   ([MS-ASWBXML] page 8 has nowhere to put one), so a note is refused rather than silently
+    ///   dropped.
+    /// - **suppress_notification** — `true` only where the `SendResponse` token exists (16.0/16.1,
+    ///   [MS-ASWBXML] §2.1.2.1.9): there, presence asks the server to email the organizer and
+    ///   absence keeps it out. On 14.1 the token is unregistered and the server emails per its own
+    ///   default, so silence cannot be promised. Pre-negotiation (`None`) the conservative shape
+    ///   stands: no version is known, so no client choice is claimed.
+    /// - **guard: [`WriteGuard::Absent`]** — `MeetingResponse` names the email and nothing else;
+    ///   there is no revision token to guard on.
+    fn rsvp_controls(&self) -> RsvpControls {
+        RsvpControls {
+            comment: false,
+            suppress_notification: matches!(
+                self.protocol_version.as_deref(),
+                Some("16.0" | "16.1")
+            ),
+            guard: WriteGuard::Absent,
+        }
     }
 
     /// Builds a [`Watch`](engine_provider::Watch) session — an
