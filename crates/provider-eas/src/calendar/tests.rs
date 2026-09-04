@@ -41,6 +41,7 @@ fn calendar_token_constants_match_spec() {
     assert_eq!(CAL_RECURRENCE_DAY_OF_MONTH, 0x21);
     assert_eq!(CAL_RECURRENCE_WEEK_OF_MONTH, 0x22);
     assert_eq!(CAL_RECURRENCE_MONTH_OF_YEAR, 0x23);
+    assert_eq!(CAL_RECURRENCE_FIRST_DAY_OF_WEEK, 0x39);
     assert_eq!(CAL_REMINDER, 0x24);
     assert_eq!(CAL_SENSITIVITY, 0x25);
     assert_eq!(CAL_SUBJECT, 0x26);
@@ -82,6 +83,11 @@ fn calendar_token_constants_match_spec() {
         (PAGE_CALENDAR, CAL_RECURRENCE_DAY_OF_MONTH, "DayOfMonth"),
         (PAGE_CALENDAR, CAL_RECURRENCE_WEEK_OF_MONTH, "WeekOfMonth"),
         (PAGE_CALENDAR, CAL_RECURRENCE_MONTH_OF_YEAR, "MonthOfYear"),
+        (
+            PAGE_CALENDAR,
+            CAL_RECURRENCE_FIRST_DAY_OF_WEEK,
+            "FirstDayOfWeek",
+        ),
         (PAGE_CALENDAR, CAL_REMINDER, "Reminder"),
         (PAGE_CALENDAR, CAL_SENSITIVITY, "Sensitivity"),
         (PAGE_CALENDAR, CAL_SUBJECT, "Subject"),

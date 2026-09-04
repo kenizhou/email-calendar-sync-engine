@@ -145,6 +145,12 @@ pub const CAL_RECURRENCE_WEEK_OF_MONTH: u8 = 0x22;
 /// `MonthOfYear` = 0x23 (all versions). Child of `Recurrence`: 1-12
 /// ([MS-ASCAL] §2.2.2.29).
 pub const CAL_RECURRENCE_MONTH_OF_YEAR: u8 = 0x23;
+/// `FirstDayOfWeek` = 0x39 (14.0+). Child of `Recurrence`: the calendar
+/// week's first day, unsignedByte 0=Sunday..6=Saturday — the RFC 5545 `WKST`
+/// counterpart that disambiguates INTERVAL>1 weekly recurrences across
+/// localities ([MS-ASCAL] §2.2.2.24; §3.2.5: the server MUST return it when
+/// `Type` is 1).
+pub const CAL_RECURRENCE_FIRST_DAY_OF_WEEK: u8 = 0x39;
 /// `Reminder` = 0x24 (all versions). unsignedInt minutes, or an EmptyTag in
 /// 16.x meaning "no reminder" ([MS-ASCAL] §2.2.2.38).
 pub const CAL_REMINDER: u8 = 0x24;

@@ -304,6 +304,49 @@ fn malformed_values_degrade_without_dropping_the_item() {
     assert_eq!(event.uid, Uid::new("srv:ev-14").unwrap());
 }
 
+/// A wire UID past the engine's 1024-octet cap (server-controlled bytes —
+/// [MS-ASCAL] §2.2.2.46 caps at 300 chars but a hostile/broken server can
+/// send more) must degrade to the ServerId, never panic: the module doc
+/// promises "never panic on wire data", and `sync_events` feeds this
+/// straight off the Sync response.
+#[test]
+fn an_oversized_wire_uid_degrades_to_the_server_id_without_panicking() {
+    let oversized = "x".repeat(Uid::MAX_OCTETS + 1);
+    let props = CalendarEventProps {
+        start_time: Some("20260818T090000Z".to_owned()),
+        uid: Some(oversized),
+        ..Default::default()
+    };
+    let event = calendar_event_from_props("fid-cal-1", "srv:ev-16", &props);
+    assert_eq!(event.id.as_str(), "srv:ev-16");
+    assert_eq!(
+        event.uid.as_str(),
+        "srv:ev-16",
+        "an unusable wire UID falls back to the ServerId"
+    );
+}
+
+/// The fallback itself can be unusable: `ProviderKey` (hence `EventId`) has
+/// no length cap, so an over-long ServerId misses the UID cap too — the uid
+/// then degrades to a fixed placeholder and the event still flows.
+#[test]
+fn an_oversized_uid_and_server_id_degrade_to_the_placeholder() {
+    let wire_too_long = "u".repeat(Uid::MAX_OCTETS + 1);
+    let server_id_too_long = "s".repeat(2048);
+    let props = CalendarEventProps {
+        start_time: Some("20260818T090000Z".to_owned()),
+        uid: Some(wire_too_long),
+        ..Default::default()
+    };
+    let event = calendar_event_from_props("fid-cal-1", &server_id_too_long, &props);
+    assert_eq!(event.id.as_str(), server_id_too_long);
+    assert_eq!(
+        event.uid.as_str(),
+        "eas:uid-overflow",
+        "both candidates unusable → the deterministic placeholder, still no panic"
+    );
+}
+
 /// The MeetingStatus cancelled bit (C, value 4 — wire values {5,7,13,15})
 /// maps to the engine's `cancelled` tombstone status; Sensitivity 3
 /// (Confidential) maps to `secret`.

@@ -87,8 +87,8 @@ pub struct CalendarAttendee {
 }
 
 /// Recurrence container ([MS-ASCAL] §2.2.2.37) — raw wire values only;
-/// RRULE conversion is M8 Task 6. Children not modeled here
-/// (`CalendarType`/`IsLeapMonth`/`FirstDayOfWeek`) are debug-skipped.
+/// RRULE conversion is downstream. Children not modeled here
+/// (`CalendarType`/`IsLeapMonth`) are debug-skipped.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CalendarRecurrence {
     /// `Type` ([MS-ASCAL] §2.2.2.45, v20220429): 0=daily, 1=weekly,
@@ -112,6 +112,11 @@ pub struct CalendarRecurrence {
     pub week_of_month: Option<u32>,
     /// `MonthOfYear` — 1-12 ([MS-ASCAL] §2.2.2.29).
     pub month_of_year: Option<u32>,
+    /// `FirstDayOfWeek` — the calendar week's first day, 0=Sunday..6=
+    /// Saturday ([MS-ASCAL] §2.2.2.24, 14.0+); the RFC 5545 `WKST`
+    /// counterpart that disambiguates INTERVAL>1 weekly recurrences.
+    /// Values outside 0..=6 warn but are kept raw (downsync fidelity).
+    pub first_day_of_week: Option<u32>,
     /// `Until` — start time of the last instance as carried on the wire
     /// (Compact DateTime string, [MS-ASCAL] §2.2.2.47). Mutually exclusive
     /// with `occurrences`.

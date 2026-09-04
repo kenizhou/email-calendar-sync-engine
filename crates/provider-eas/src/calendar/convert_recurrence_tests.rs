@@ -10,11 +10,31 @@ use engine_core::{
     calendar::{Frequency, NDay, RecurrenceBound, RecurrenceOverride, Weekday},
     time::LocalDateTime,
 };
+use engine_recurrence::{Horizon, expand};
 
 use super::{
     CalendarEventProps, CalendarException, CalendarRecurrence, calendar_event_from_props,
     convert_tests::{flat_utc8, occurrence_count},
 };
+
+/// The occurrence START DATES (UTC) an event expands to over `[from, to)` —
+/// the set-level pin the week-start test needs (a count alone cannot see
+/// WKST move two of the four occurrences).
+fn occurrence_dates(event: &engine_core::calendar::Event, from: &str, to: &str) -> Vec<String> {
+    let horizon = Horizon::new(from.parse().unwrap(), to.parse().unwrap()).expect("horizon");
+    let rows = expand(event, &horizon, &engine_core::time::TimeZoneId::utc())
+        .expect("the rule is expandable");
+    rows.iter()
+        .map(|row| {
+            format!(
+                "{:04}-{:02}-{:02}",
+                row.start.year(),
+                row.start.month(),
+                row.start.day()
+            )
+        })
+        .collect()
+}
 
 /// A daily COUNT series (Type 0, Occurrences): the EAS count includes the
 /// first occurrence — exactly RFC 5545/`RecurrenceBound::Count` semantics —
@@ -256,5 +276,90 @@ fn exceptions_fold_to_exclusion_and_moved_patch_overrides() {
     assert_eq!(
         occurrence_count(&event, "2026-08-01T00:00:00Z", "2026-10-01T00:00:00Z"),
         3
+    );
+}
+
+/// FirstDayOfWeek ([MS-ASCAL] §2.2.2.24) maps to `first_day_of_week` and is
+/// OBSERVABLE in the expanded set: the RFC 5545 §3.8.5.3 WKST example as an
+/// EAS shape — biweekly (Type 1, INTERVAL=2) SU+TU (mask 5), COUNT=4,
+/// starting Tuesday 1997-08-05. A Monday week start yields Aug 5, 10, 19,
+/// 24; a Sunday one yields Aug 5, 17, 19, 31 — the same count, a different
+/// set, which is exactly why the wire element must survive the conversion.
+#[test]
+fn first_day_of_week_maps_and_moves_the_biweekly_set() {
+    fn series(first_day_of_week: Option<u32>) -> CalendarEventProps {
+        CalendarEventProps {
+            start_time: Some("19970805T090000Z".to_owned()),
+            end_time: Some("19970805T100000Z".to_owned()),
+            recurrence: Some(CalendarRecurrence {
+                recurrence_type: 1,
+                interval: Some(2),
+                day_of_week: Some(5), // Sunday (1) + Tuesday (4)
+                occurrences: Some(4),
+                first_day_of_week,
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+    let monday = calendar_event_from_props("fid-cal-1", "srv:wkst-mo", &series(Some(1)));
+    let sunday = calendar_event_from_props("fid-cal-1", "srv:wkst-su", &series(Some(0)));
+
+    assert_eq!(
+        monday.recurrence.as_ref().unwrap().rules[0].first_day_of_week,
+        Weekday::Mo,
+        "FirstDayOfWeek 1 = Monday"
+    );
+    assert_eq!(
+        sunday.recurrence.as_ref().unwrap().rules[0].first_day_of_week,
+        Weekday::Su,
+        "FirstDayOfWeek 0 = Sunday"
+    );
+
+    let window = ("1997-08-01T00:00:00Z", "1997-10-01T00:00:00Z");
+    assert_eq!(
+        occurrence_dates(&monday, window.0, window.1),
+        vec!["1997-08-05", "1997-08-10", "1997-08-19", "1997-08-24"],
+        "WKST=MO — the RFC 5545 §3.8.5.3 first set"
+    );
+    assert_eq!(
+        occurrence_dates(&sunday, window.0, window.1),
+        vec!["1997-08-05", "1997-08-17", "1997-08-19", "1997-08-31"],
+        "WKST=SU — the same four-count, two occurrences moved"
+    );
+}
+
+/// An absent or out-of-enum FirstDayOfWeek keeps the engine default (Monday,
+/// `RecurrenceRule::new`'s) — the §2.2.2.24 value has no other honest
+/// mapping, so the week start is loudly the default, never a guess.
+#[test]
+fn absent_or_invalid_first_day_of_week_keeps_the_monday_default() {
+    let mut props = CalendarEventProps {
+        start_time: Some("19970805T090000Z".to_owned()),
+        end_time: Some("19970805T100000Z".to_owned()),
+        recurrence: Some(CalendarRecurrence {
+            recurrence_type: 1,
+            interval: Some(1),
+            day_of_week: Some(4),
+            first_day_of_week: None,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let event = calendar_event_from_props("fid-cal-1", "srv:wkst-none", &props);
+    assert_eq!(
+        event.recurrence.as_ref().unwrap().rules[0].first_day_of_week,
+        Weekday::Mo,
+        "absent → the engine default"
+    );
+
+    if let Some(rec) = props.recurrence.as_mut() {
+        rec.first_day_of_week = Some(7); // outside the §2.2.2.24 enum {0..=6}
+    }
+    let event = calendar_event_from_props("fid-cal-1", "srv:wkst-bad", &props);
+    assert_eq!(
+        event.recurrence.as_ref().unwrap().rules[0].first_day_of_week,
+        Weekday::Mo,
+        "out-of-enum → warned away to the engine default"
     );
 }

@@ -6,7 +6,10 @@
 //!
 //! Identity: `id` = the item **ServerId** (the store row key), `uid` = the
 //! EAS `UID` (the GlobalObjectId join key, [MS-ASEMAIL] §3.1.4.7) falling
-//! back to the ServerId — never an invented identity. Membership: the
+//! back to the ServerId — never an invented identity, and never a panic:
+//! both candidates are server-controlled strings that can exceed the
+//! engine's 1024-octet `Uid` cap, so the last resort is the fixed
+//! `eas:uid-overflow` placeholder (reconcile by `id`). Membership: the
 //! calendar folder's `CalendarId` (the `folder` parameter — the Sync
 //! `CollectionId` the adapter is bound to).
 //!
@@ -77,14 +80,7 @@ pub(crate) fn calendar_event_from_props(
         );
         EventId::try_from("eas:unkeyed").unwrap_or_else(|_| unreachable!("a fixed valid key"))
     });
-    let uid = props
-        .uid
-        .as_deref()
-        .filter(|uid| !uid.is_empty())
-        .map_or_else(
-            || Uid::new(server_id).unwrap_or_else(|_| unreachable!("id already keyed above")),
-            |uid| Uid::new(uid).unwrap_or_else(|_| unreachable!("checked non-empty by filter")),
-        );
+    let uid = uid_of(props.uid.as_deref(), server_id);
     let calendar = CalendarId::try_from(folder).unwrap_or_else(|e| {
         log::warn!(
             "calendar conversion: folder {folder:?} cannot key a calendar ({e}); membership \
@@ -169,6 +165,41 @@ pub(crate) fn calendar_event_from_props(
         }
     }
     event
+}
+
+/// The event's [`Uid`], as a degrade chain, never a panic: the wire `UID`
+/// when present and usable, else the ServerId, else the fixed placeholder —
+/// both candidates are server-controlled strings, `Uid` rejects anything
+/// past its 1024-octet cap, and `EventId`/`ProviderKey` carry no length
+/// limit, so over-long wire bytes reach here. The module doc's "never panic
+/// on wire data" reaches all the way to this function, and a non-unique uid
+/// is recoverable (the store reconciles by `id`).
+fn uid_of(wire_uid: Option<&str>, server_id: &str) -> Uid {
+    if let Some(uid) = wire_uid.filter(|uid| !uid.is_empty()) {
+        match Uid::new(uid) {
+            Ok(uid) => return uid,
+            Err(e) => {
+                log::warn!(
+                    "calendar conversion: wire UID of {} octets is unusable ({e}); falling \
+                     back to the ServerId",
+                    uid.len()
+                );
+            }
+        }
+    }
+    match Uid::new(server_id) {
+        Ok(uid) => uid,
+        Err(e) => {
+            log::warn!(
+                "calendar conversion: ServerId of {} octets is unusable as a uid ({e}); the \
+                 event flows under the fixed eas:uid-overflow placeholder (non-unique — \
+                 reconcile by id)",
+                server_id.len()
+            );
+            Uid::new("eas:uid-overflow")
+                .unwrap_or_else(|_| unreachable!("a short fixed constant keys a Uid"))
+        }
+    }
 }
 
 /// The engine start value for a wire UTC instant: an all-day event takes the

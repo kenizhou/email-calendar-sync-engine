@@ -131,6 +131,14 @@ fn rule_from(rec: &CalendarRecurrence, fold: &TimeFold, all_day: bool) -> Option
     if let Some(interval) = rec.interval.filter(|n| *n > 1) {
         rule.interval = NonZeroU32::new(interval)?;
     }
+    // §2.2.2.24: the calendar week's first day — load-bearing for INTERVAL>1
+    // weekly rules (the RFC 5545 WKST counterpart; absent/out-of-enum keeps
+    // the engine's Monday default).
+    if let Some(week_start) = rec.first_day_of_week
+        && let Some(weekday) = week_start_weekday(week_start)
+    {
+        rule.first_day_of_week = weekday;
+    }
 
     // Per-Type BYxxx parts; a missing §2.2.2.37.1-required part or an
     // unexpressible value aborts the whole rule (warned). A Type 0/1 without
@@ -217,6 +225,29 @@ fn required(part: Option<u32>, name: &str, rec_type: u8) -> Option<u32> {
          single-occurrence)"
     );
     None
+}
+
+/// [MS-ASCAL] §2.2.2.24 FirstDayOfWeek (0=Sunday..6=Saturday, the SYSTEMTIME
+/// wDayOfWeek convention) → the engine weekday. Out-of-enum values warn and
+/// return `None` (the caller keeps the rule's Monday default).
+fn week_start_weekday(value: u32) -> Option<Weekday> {
+    let weekday = match value {
+        0 => Weekday::Su,
+        1 => Weekday::Mo,
+        2 => Weekday::Tu,
+        3 => Weekday::We,
+        4 => Weekday::Th,
+        5 => Weekday::Fr,
+        6 => Weekday::Sa,
+        other => {
+            log::warn!(
+                "calendar conversion: FirstDayOfWeek {other} outside [MS-ASCAL] §2.2.2.24 \
+                 0..=6; keeping the Monday default"
+            );
+            return None;
+        }
+    };
+    Some(weekday)
 }
 
 /// [MS-ASCAL] §2.2.2.15 DayOfWeek bitmask → plain `NDay`s in canonical
