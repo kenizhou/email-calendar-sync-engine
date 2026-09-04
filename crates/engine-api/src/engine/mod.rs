@@ -3,10 +3,11 @@
 //! The methods are grouped across sibling modules to keep each file small:
 //! provider-driven sync and cache maintenance (`sync`), the read and search surface
 //! (`reads`), the outbox-mediated mail writes (`writes`), the calendar writes, which
-//! additionally reconcile the store to the server's copy (`calendar_writes`), and the
-//! outbox drains that replay ops no write resolved (`drain`). This module holds the type
-//! itself, its lifecycle constructors, the shared per-domain scope helper, and the
-//! sync-error mapping every group reuses.
+//! additionally reconcile the store to the server's copy (`calendar_writes`), the
+//! invitation answer that composes the scheduling read with those writes
+//! (`invitation`), and the outbox drains that replay ops no write resolved (`drain`).
+//! This module holds the type itself, its lifecycle constructors, the shared per-domain
+//! scope helper, and the sync-error mapping every group reuses.
 
 use core::time::Duration;
 use std::path::Path;
@@ -27,6 +28,7 @@ mod contact_query;
 mod contacts;
 mod drain;
 mod host_access;
+mod invitation;
 mod reads;
 mod sync;
 mod writes;
