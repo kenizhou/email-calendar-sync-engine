@@ -318,6 +318,7 @@ mod tests {
             ],
             deletions: Vec::new(),
             present_rows: Some(vec![wire_folder("fid-inbox", "0", "Email", Some(2))]),
+            recovered: false,
             next_key: "hier-1".to_owned(),
         };
         let sync = scope_sync(&bootstrap).expect("bootstrap maps");
@@ -332,6 +333,7 @@ mod tests {
             folders: vec![wire_folder("fid-arch", "fid-inbox", "Email", Some(1))],
             deletions: vec!["fid-old".to_owned(), String::new()],
             present_rows: None,
+            recovered: false,
             next_key: "hier-2".to_owned(),
         };
         let sync = scope_sync(&incremental).expect("delta maps");

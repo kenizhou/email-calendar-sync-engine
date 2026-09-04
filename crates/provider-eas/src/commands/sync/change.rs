@@ -3,7 +3,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{calendar_write::CalendarEventWrite, commands::EasItem};
+use crate::{
+    calendar_write::CalendarEventWrite, commands::EasItem, contacts::ContactsContactProps,
+};
 // ============================================================================
 // Sync Change (client-to-server upsync)
 // ============================================================================
@@ -61,6 +63,48 @@ pub enum CalendarChange {
         props: CalendarEventWrite,
     },
     /// Delete an existing event (wire: `airsync:Delete` with ServerId).
+    Remove {
+        /// Wire identifier of the item to delete.
+        server_id: String,
+    },
+}
+
+/// One client-side Contacts item mutation carried by a Sync Commands
+/// request (the upsync direction of [MS-ASSYNC] §2.2.2) — the Contacts
+/// twin of [`CalendarChange`]. OUR vocabulary maps onto the wire
+/// commands that act on an item:
+///
+/// - `Add` → wire `airsync:Add` { ClientId, ApplicationData } — the item has no ServerId yet; the
+///   server correlates the response through the ClientId.
+/// - `Replace` → wire `airsync:Change` carrying ServerId — "Replace" is OUR client-side
+///   vocabulary only.
+/// - `Remove` → wire `airsync:Delete` { ServerId }.
+///
+/// The payload is the ghost model ([`ContactsContactProps`] — see
+/// `contacts::write`): a `None` slot is omitted (the ghost — the
+/// server's value is unchanged), a `Some("")` slot emits the empty-value
+/// clear element, a `Some(value)` slot sets. Serialized via
+/// [`build_contacts_application_data`](crate::contacts::build_contacts_application_data).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ContactsChange {
+    /// Create a new card in the collection.
+    Add {
+        /// Client-generated correlation id (≤ 40 chars, [MS-ASCMD]).
+        /// Synthesize with
+        /// [`new_contacts_client_id`](crate::types::new_contacts_client_id),
+        /// which guarantees the cap.
+        client_id: String,
+        /// The ghost-model payload.
+        props: ContactsContactProps,
+    },
+    /// Update an existing card (wire: `airsync:Change` with ServerId).
+    Replace {
+        /// Wire identifier of the existing item.
+        server_id: String,
+        /// The ghost-model payload.
+        props: ContactsContactProps,
+    },
+    /// Delete an existing card (wire: `airsync:Delete` with ServerId).
     Remove {
         /// Wire identifier of the item to delete.
         server_id: String,

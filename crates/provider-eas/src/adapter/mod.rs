@@ -77,8 +77,13 @@
 //! collection and an unbound adapter cannot name one. `calendar_rsvp` is
 //! on with the binding too (`rsvp_event_from_invite` over `MeetingResponse`
 //! — the controls composed per call from the negotiated version, see
-//! [`EasAdapter::rsvp_controls`]); the contacts family stays off until its
-//! verbs land.
+//! [`EasAdapter::rsvp_controls`]). The **contacts family is on with its
+//! binding** ([`EasAdapter::with_contacts`], P2 Task 5): the read verbs
+//! (`sync_address_books` + `sync_contacts`, `adapter/contacts.rs`) and the
+//! write verbs (`create_contact`/`patch_contact`/`delete_contact` — Sync
+//! Add/Change/Delete-upsync) flip `contacts` + `contact_writes` together,
+//! exactly the calendar shape. `contact_photos` stays off — see
+//! [`EasAdapter::with_contacts`] for the honest refusal.
 //!
 //! ## The calendar binding
 //!
@@ -112,28 +117,25 @@
 mod calendar;
 mod calendar_write;
 mod connection;
+mod contacts;
+mod contacts_write;
 mod email;
 mod error;
 mod hierarchy;
+mod ledger;
 mod mailboxes;
 mod mutate;
 mod source;
 mod submit;
 mod watch;
 
-use engine_core::ids::{CalendarId, MailboxId};
-use engine_provider::{
-    Capabilities, OverrideSurvival, ProviderError, ProviderResult, RsvpControls, WriteGuard,
-};
+use engine_core::ids::{AddressBookId, CalendarId, MailboxId};
+use engine_provider::{Capabilities, OverrideSurvival, RsvpControls, WriteGuard};
 pub use watch::EasPingWatcher;
 
 use crate::client::{EasClient, EasError, pick_protocol_version};
 
-/// The bound folder's collection-SyncKey ledger: the key the server last
-/// handed this adapter for the bound collection — the write path's key
-/// source. A plain mutex, never held across an await: every toucher
-/// already holds the verb lock.
-pub(super) type CollectionKey = std::sync::Mutex<Option<String>>;
+pub(super) use ledger::{CollectionKey, current_key, record_rotation};
 
 /// The protocol versions this adapter can negotiate over OPTIONS: exactly
 /// the versions whose feature gates the crate implements — `MeetingResponse`
@@ -144,8 +146,8 @@ pub(super) type CollectionKey = std::sync::Mutex<Option<String>>;
 pub const CLIENT_KNOWN_PROTOCOL_VERSIONS: [&str; 3] = ["14.1", "16.0", "16.1"];
 
 /// An EAS read/sync provider bound to one mail folder for email and,
-/// optionally, one calendar folder for events (see the module docs' calendar
-/// binding section).
+/// optionally, one calendar folder for events and one contact folder for
+/// cards (see the module docs' binding sections).
 ///
 /// Construct with [`EasAdapter::new`] from a configured [`EasClient`] and
 /// the folder to bind, then [`EasAdapter::negotiate`] at connection time.
@@ -157,6 +159,11 @@ pub const CLIENT_KNOWN_PROTOCOL_VERSIONS: [&str; 3] = ["14.1", "16.0", "16.1"];
 /// sync under [`SyncScope::EasCalendarList`](engine_core::sync::SyncScope::EasCalendarList)
 /// and events under the bound calendar's
 /// [`SyncScope::EasCalendar`](engine_core::sync::SyncScope::EasCalendar).
+/// With a contacts binding ([`EasAdapter::with_contacts`]) the contact
+/// folders sync under
+/// [`SyncScope::EasContactList`](engine_core::sync::SyncScope::EasContactList)
+/// and cards under the bound folder's
+/// [`SyncScope::EasContact`](engine_core::sync::SyncScope::EasContact).
 pub struct EasAdapter {
     /// The protocol client this adapter drives, behind the verb lock (see
     /// the module docs): command methods rotate session state in place, so
@@ -174,6 +181,11 @@ pub struct EasAdapter {
     /// family (`None` until [`EasAdapter::with_calendar`]; its capabilities
     /// then never advertise the family).
     calendar: Option<CalendarId>,
+    /// The bound contact folder — the class-`Contacts` `CollectionId` this
+    /// adapter's card scope names, when the adapter serves the contacts
+    /// family (`None` until [`EasAdapter::with_contacts`]; its capabilities
+    /// then never advertise the family).
+    address_book: Option<AddressBookId>,
     /// The verb ladder, read by
     /// [`connection_info`](Provider::connection_info):
     /// `mail` since the read verbs (`sync_mailboxes` + `stream_email`) both
@@ -196,6 +208,11 @@ pub struct EasAdapter {
     /// consumed and rotated by each calendar write; `None` until the first
     /// pass completes (the same cold-ledger `NeedsResync` refusal).
     calendar_key: CollectionKey,
+    /// The bound contact folder's collection-SyncKey ledger — the contacts
+    /// write verbs' key source (the same discipline as `calendar_key`).
+    /// Seeded by a completed `sync_contacts` pass, consumed and rotated by
+    /// each contacts write; `None` until the first pass completes.
+    contacts_key: CollectionKey,
     /// The shared account-level hierarchy-SyncKey ledger — one server
     /// FolderSync cursor serving both container scopes (see `hierarchy`'s
     /// module docs: the key the server last handed this adapter, plus the
@@ -220,9 +237,11 @@ impl std::fmt::Debug for EasAdapter {
             .field("http", &self.http.get())
             .field("folder", &self.folder)
             .field("calendar", &self.calendar)
+            .field("address_book", &self.address_book)
             .field("capabilities", &self.capabilities)
             .field("collection_key", &self.collection_key)
             .field("calendar_key", &self.calendar_key)
+            .field("contacts_key", &self.contacts_key)
             .field("hierarchy", &self.hierarchy)
             .field("protocol_version", &self.protocol_version)
             .finish()
@@ -244,8 +263,10 @@ impl EasAdapter {
             client: tokio::sync::Mutex::new(client),
             folder,
             // The calendar binding arrives only through `with_calendar`
-            // (which flips the `calendars` bit with it — the honest ladder).
+            // (which flips the `calendars` bit with it — the honest ladder);
+            // the contacts binding only through `with_contacts`.
             calendar: None,
+            address_book: None,
             // The honest ladder: `mail` names containers AND messages —
             // both read verbs are live, so the bit is on; ditto
             // `message_source`; and the write verbs (edit_mail,
@@ -260,6 +281,7 @@ impl EasAdapter {
             // Cold by construction — the first completed pass seeds it.
             collection_key: CollectionKey::default(),
             calendar_key: CollectionKey::default(),
+            contacts_key: CollectionKey::default(),
             hierarchy: hierarchy::HierarchyLedger::default(),
             protocol_version: None,
         }
@@ -315,6 +337,57 @@ impl EasAdapter {
             unreachable!("a ServerId that keys a CalendarId keys a MailboxId too: {e}")
         });
         Self::new(client, folder).with_calendar(calendar)
+    }
+
+    /// Binds the contacts family: names the contact folder whose cards
+    /// this adapter syncs ([`contact_scope`](engine_provider::ContactsProvider::contact_scope)
+    /// → [`SyncScope::EasContact`](engine_core::sync::SyncScope::EasContact))
+    /// and turns the `contacts` capability bit on with it — the bit and
+    /// the binding land together because card sync is per collection: an
+    /// unbound adapter cannot name one, so advertising the family without
+    /// a binding would point a capability-checking caller straight at the
+    /// `InvalidState` refusal (the `with_calendar` precedent).
+    ///
+    /// The binding is the contact folder's ServerId from the container
+    /// sync (`sync_address_books` — itself per-account and callable on
+    /// any adapter).
+    ///
+    /// The **write verbs land with the binding too** (P2 Task 5:
+    /// `create_contact`/`patch_contact`/`delete_contact` over Sync
+    /// Add/Change/Delete): the `contact_writes` bit turns on with the
+    /// binding because every write verb addresses the bound collection.
+    /// The guard is honest: EAS Sync Change carries **no server revision
+    /// tokens** ([MS-ASSYNC] has no per-object precondition — the
+    /// request names the item and nothing else), so the last write
+    /// silently wins and the guard is [`WriteGuard::Absent`] (the
+    /// `with_calendar` ruling verbatim). `contact_photos` stays OFF: the
+    /// EAS `Picture` is inline payload dropped at parse time (v1 ruling,
+    /// pinned by the picture tests) and no fetchable URI survives to
+    /// address an ItemOperations round — `fetch_contact_photo` keeps its
+    /// rejecting default rather than claiming a verb it cannot honor.
+    /// `contact_groups` stays off too (distribution lists are a separate,
+    /// unmodeled container).
+    #[must_use]
+    pub fn with_contacts(mut self, address_book: AddressBookId) -> Self {
+        self.address_book = Some(address_book);
+        self.capabilities = self
+            .capabilities
+            .with_contacts()
+            .with_contact_writes(WriteGuard::Absent);
+        self
+    }
+
+    /// The contacts-role constructor: one contact folder ServerId serving
+    /// as both bindings, for a host that syncs contacts only through this
+    /// adapter (`EasAdapter::new(client, folder).with_contacts(book)`
+    /// collapsed — the folder binding holds the same ServerId under its
+    /// mail id type, unused for mail by a contacts-role host).
+    #[must_use]
+    pub fn contacts_adapter(client: EasClient, address_book: AddressBookId) -> Self {
+        let folder = MailboxId::try_from(address_book.as_str()).unwrap_or_else(|e| {
+            unreachable!("a ServerId that keys an AddressBookId keys a MailboxId too: {e}")
+        });
+        Self::new(client, folder).with_contacts(address_book)
     }
 
     /// The connection-time OPTIONS exchange ([MS-ASHTTP] §2.2.1.1): the
@@ -410,41 +483,5 @@ impl EasAdapter {
 }
 
 // ============================================================================
-// The shared collection-key ledger discipline (mutate + calendar_write)
-// ============================================================================
-
-/// The key a write rides: the ledger's, or the cold-ledger refusal (the
-/// `NeedsResync` cold path — the orchestrator re-syncs, the pass re-seeds
-/// the ledger, and the outbox retries the op; never a guessed key).
-pub(super) fn current_key(ledger: &CollectionKey) -> ProviderResult<String> {
-    ledger
-        .lock()
-        .expect("collection-key ledger")
-        .clone()
-        .ok_or_else(|| {
-            ProviderError::new(
-                engine_core::error::FailureClass::NeedsResync,
-                "the collection's sync key is unknown to this adapter — run a                  sync pass first (it seeds the key); the outbox retries the                  write after it",
-            )
-        })
-}
-
-/// Records a write's key rotation. A response that piggybacked server rows
-/// (no `GetChanges` was sent, so a conforming server sends none — a
-/// nonconforming one might) drops the ledger instead: those rows cannot
-/// ride the receipt back, and falling to the engine cursor surfaces the
-/// gap as a Reconcile on the next pass rather than skipping them forever.
-pub(super) fn record_rotation(
-    ledger: &CollectionKey,
-    outcome: &crate::commands::SyncChangeOutcome,
-) {
-    let mut slot = ledger.lock().expect("collection-key ledger");
-    if outcome.has_piggybacked() {
-        log::warn!(
-            "EAS Sync change response piggybacked server commands — dropping              the collection-key ledger; the next pass reconciles"
-        );
-        *slot = None;
-    } else {
-        *slot = Some(outcome.new_key.clone());
-    }
-}
+// The shared collection-key ledger discipline (mutate + calendar_write +
+// contacts) — lives in `ledger`, re-exported above.

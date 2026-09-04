@@ -8,6 +8,8 @@ use provider_eas::{
         CalendarEventWrite, build_calendar_application_data, build_fixed_offset_tzi_base64,
     },
     commands::{tests_common::*, *},
+    contacts::build_contacts_application_data,
+    types::new_contacts_client_id,
 };
 
 #[path = "commands_sync/build_request_body.rs"]
@@ -22,6 +24,8 @@ mod calendar_write;
 mod change_request;
 #[path = "commands_sync/change_response.rs"]
 mod change_response;
+#[path = "commands_sync/contacts_write.rs"]
+mod contacts_write;
 #[path = "commands_sync/eas_item.rs"]
 mod eas_item;
 #[path = "commands_sync/item_estimate.rs"]

@@ -26,7 +26,7 @@ pub use item_operations::{
 };
 pub use mail::{
     CLIENT_ID_MAX_LEN, SendMailRequest, SmartForwardRequest, SmartReplyRequest,
-    new_calendar_client_id, new_send_client_id,
+    new_calendar_client_id, new_contacts_client_id, new_send_client_id,
 };
 pub use ping::{PingCollection, PingRequest, PingResult};
 pub use recipients::{

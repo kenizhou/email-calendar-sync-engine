@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 //! The shared account-level hierarchy-SyncKey ledger (P2 Task 3, parked
-//! from Task 2's review): one server FolderSync cursor serving BOTH
-//! container scopes (`EasFolderList` and `EasCalendarList`).
+//! from Task 2's review; the contacts scope wired in P2 Task 5): one
+//! server FolderSync cursor serving ALL the container scopes
+//! (`EasFolderList`, `EasCalendarList`, and `EasContactList`).
 //!
 //! ## Why it exists
 //!
@@ -11,7 +12,10 @@
 //! server key, and every interleaved pass answers status 9 ("hierarchy out
 //! of date") and re-enumerates from `"0"` as a snapshot. Correct (the
 //! status-9 recovery), but wasteful: folder lists change rarely, and the
-//! interleaved fan-out paid a full re-enumeration per round.
+//! interleaved fan-out paid a full re-enumeration per round. A THIRD
+//! container scope (contacts, P2 Task 5) would have paid it twice per
+//! fan-out round — wiring `EasContactList` into the same ledger is why
+//! the container set grew here rather than beside it.
 //!
 //! ## The shape (the collection-key ledger precedent)
 //!
@@ -37,8 +41,9 @@
 //! Scope: **per adapter**. An account whose scopes are served by several
 //! adapters (each with its own ledger) keeps the old self-healing
 //! status-9 behavior across those adapters — the ledger fixes the
-//! interleaved passes of ONE adapter serving both scopes, the shape the
-//! engine's calendar+mail fan-out on a calendar-bound adapter produces.
+//! interleaved passes of ONE adapter serving several scopes, the shape the
+//! engine's calendar+mail (and now contacts) fan-out on one bound adapter
+//! produces.
 
 use std::collections::BTreeSet;
 
@@ -53,8 +58,8 @@ use crate::{
 };
 
 /// FolderSync status 9: "folder hierarchy out of date" — the stored
-/// hierarchy SyncKey is invalidated (the shared constant of both container
-/// slices' recovery).
+/// hierarchy SyncKey is invalidated (the shared constant of every
+/// container slice's recovery).
 const HIERARCHY_OUT_OF_DATE: u32 = 9;
 
 /// Which container scope one pass serves — also the class filter and the
@@ -67,23 +72,28 @@ pub(super) enum Container {
     /// The calendar container scope (`EasCalendarList`): `"Calendar"`
     /// folders.
     Calendar,
+    /// The contacts container scope (`EasContactList`): `"Contacts"`
+    /// folders (folder Type 9, [MS-ASFD]).
+    Contacts,
 }
 
 impl Container {
     /// Whether one FolderSync row belongs in this scope (the mail slice's
-    /// `is_mail_class` rule and the calendar slice's filter, restated once).
+    /// `is_mail_class` rule and the class filters, restated once).
     fn keeps(self, folder: &EasFolder) -> bool {
         match self {
             Self::Mail => folder.class == "Email" || folder.class.is_empty(),
             Self::Calendar => folder.class == "Calendar",
+            Self::Contacts => folder.class == "Contacts",
         }
     }
 
-    /// The other scope — where this round's non-serving rows pend.
-    fn other(self) -> Self {
+    /// The other scopes — where this round's non-serving rows pend.
+    fn others(self) -> [Self; 2] {
         match self {
-            Self::Mail => Self::Calendar,
-            Self::Calendar => Self::Mail,
+            Self::Mail => [Self::Calendar, Self::Contacts],
+            Self::Calendar => [Self::Mail, Self::Contacts],
+            Self::Contacts => [Self::Mail, Self::Calendar],
         }
     }
 }
@@ -115,6 +125,7 @@ struct HierarchyState {
     key: Option<String>,
     mail: Backlog,
     calendar: Backlog,
+    contacts: Backlog,
 }
 
 /// One container pass's outcome, in wire rows — each slice maps it onto its
@@ -133,6 +144,11 @@ pub(super) struct HierarchyRound {
     /// The rotated key — both the ledger's new value and the scope's
     /// `next_cursor`.
     pub next_key: String,
+    /// Whether a status-9 invalidation forced a re-bootstrapped snapshot
+    /// inside this pass (the `cursor_recovered` fact the contacts source
+    /// sync reports; the calendar slice's `ScopeSync` shape has no slot
+    /// for it, so it ignores the flag).
+    pub recovered: bool,
 }
 
 impl HierarchyLedger {
@@ -180,8 +196,8 @@ impl HierarchyLedger {
         };
         let mut client = client.lock().await;
         client.set_hierarchy_sync_key(request_key.clone());
-        let (result, snapshot_round) = match client.folder_sync(&request_key).await {
-            Ok(result) => (result, request_key == BOOTSTRAP_KEY),
+        let (result, snapshot_round, recovered) = match client.folder_sync(&request_key).await {
+            Ok(result) => (result, request_key == BOOTSTRAP_KEY, false),
             // The requested key is dead — restart from the bootstrap key,
             // exactly once; the full hierarchy that round returns IS the
             // snapshot recovery (a server answering 9 to "0" itself
@@ -199,7 +215,7 @@ impl HierarchyLedger {
                         return Err(provider_error(e));
                     }
                 };
-                (recovery, true)
+                (recovery, true, true)
             }
             Err(e) => {
                 self.restore(container, backlog);
@@ -253,9 +269,9 @@ impl HierarchyLedger {
             None
         };
 
-        // Pend the other scope's share: its rows from this round, the
-        // class-less deletions (both scopes receive them), and — for a
-        // bootstrap — the present-set that supersedes whatever it had.
+        // Pend the other scopes' share: their rows from this round, the
+        // class-less deletions (every scope receives them), and — for a
+        // bootstrap — the present-set that supersedes whatever each had.
         // The key records only when the response carried one: a key-less
         // success names no server state, and pinning the request key would
         // shadow a fresher engine cursor (the Sync empty-body invariant).
@@ -264,34 +280,36 @@ impl HierarchyLedger {
             if !result.sync_key.is_empty() {
                 state.key = Some(next_key.clone());
             }
-            let other = state.backlog_of_mut(container.other());
-            if bootstrapped {
-                let other_rows: Vec<EasFolder> = result
-                    .changes
-                    .iter()
-                    .filter(|f| container.other().keeps(f))
-                    .cloned()
-                    .collect();
-                *other = Backlog {
-                    rows: Vec::new(),
-                    deletions: Vec::new(),
-                    present: Some(other_rows),
-                };
-            } else {
-                other.rows.extend(
-                    result
+            for other_scope in container.others() {
+                let other = state.backlog_of_mut(other_scope);
+                if bootstrapped {
+                    let other_rows: Vec<EasFolder> = result
                         .changes
                         .iter()
-                        .filter(|f| container.other().keeps(f))
-                        .cloned(),
-                );
-                let response_deletions: Vec<String> = result
-                    .deletions
-                    .iter()
-                    .filter(|id| !id.is_empty() && !other.deletions.contains(id))
-                    .cloned()
-                    .collect();
-                other.deletions.extend(response_deletions);
+                        .filter(|f| other_scope.keeps(f))
+                        .cloned()
+                        .collect();
+                    *other = Backlog {
+                        rows: Vec::new(),
+                        deletions: Vec::new(),
+                        present: Some(other_rows),
+                    };
+                } else {
+                    other.rows.extend(
+                        result
+                            .changes
+                            .iter()
+                            .filter(|f| other_scope.keeps(f))
+                            .cloned(),
+                    );
+                    let response_deletions: Vec<String> = result
+                        .deletions
+                        .iter()
+                        .filter(|id| !id.is_empty() && !other.deletions.contains(id))
+                        .cloned()
+                        .collect();
+                    other.deletions.extend(response_deletions);
+                }
             }
         }
         Ok(HierarchyRound {
@@ -299,6 +317,7 @@ impl HierarchyLedger {
             deletions,
             present_rows,
             next_key,
+            recovered,
         })
     }
 
@@ -343,6 +362,7 @@ impl HierarchyState {
         match container {
             Container::Mail => &mut self.mail,
             Container::Calendar => &mut self.calendar,
+            Container::Contacts => &mut self.contacts,
         }
     }
 }
@@ -362,132 +382,5 @@ fn dedupe_folders(folders: &mut Vec<EasFolder>) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn folder(id: &str, name: &str) -> EasFolder {
-        EasFolder {
-            server_id: id.to_owned(),
-            parent_id: "0".to_owned(),
-            display_name: name.to_owned(),
-            class: "Calendar".to_owned(),
-            folder_type: Some(8),
-        }
-    }
-
-    /// No interleaved round completed between the drain and the failure:
-    /// the drained backlog returns verbatim for the next pass.
-    #[test]
-    fn restore_returns_a_drained_backlog_verbatim_when_nothing_pended() {
-        let ledger = HierarchyLedger::default();
-        let drained = Backlog {
-            rows: vec![folder("fid-cal-1", "Calendar")],
-            deletions: vec!["fid-gone".to_owned()],
-            present: Some(vec![folder("fid-cal-1", "Calendar")]),
-        };
-        ledger.restore(Container::Calendar, drained);
-        let state = ledger.state.lock().expect("hierarchy ledger");
-        let calendar = &state.calendar;
-        assert_eq!(
-            calendar
-                .rows
-                .iter()
-                .map(|f| f.server_id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["fid-cal-1"]
-        );
-        assert_eq!(calendar.deletions, vec!["fid-gone".to_owned()]);
-        assert_eq!(calendar.present.as_ref().map_or(0, Vec::len), 1);
-    }
-
-    /// Rows pended by a round that COMPLETED after this one drained are
-    /// newer: the drained rows restore first, so the consuming fold's
-    /// dedupe (last row per id wins) keeps the newer pended state.
-    #[test]
-    fn restore_puts_drained_rows_behind_newer_pended_ones() {
-        let ledger = HierarchyLedger::default();
-        // The interleave's slot side: another scope's round completed and
-        // pended a newer row for the same ServerId.
-        {
-            let mut state = ledger.state.lock().expect("hierarchy ledger");
-            state.backlog_of_mut(Container::Calendar).rows =
-                vec![folder("fid-cal-1", "Renamed Later")];
-        }
-        // The interleave's drained side: the older state this round took.
-        let drained = Backlog {
-            rows: vec![folder("fid-cal-1", "Stale Name")],
-            deletions: Vec::new(),
-            present: None,
-        };
-        ledger.restore(Container::Calendar, drained);
-        let merged = ledger
-            .state
-            .lock()
-            .expect("hierarchy ledger")
-            .calendar
-            .rows
-            .clone();
-        assert_eq!(
-            merged
-                .iter()
-                .map(|f| f.display_name.as_str())
-                .collect::<Vec<_>>(),
-            vec!["Stale Name", "Renamed Later"],
-            "the drained row restores first — behind the newer pended row"
-        );
-        let mut folded = merged;
-        dedupe_folders(&mut folded);
-        assert_eq!(
-            folded
-                .iter()
-                .map(|f| f.display_name.as_str())
-                .collect::<Vec<_>>(),
-            vec!["Renamed Later"],
-            "the consuming fold's dedupe keeps the newer row"
-        );
-    }
-
-    /// A snapshot present-set pended by a completed interleaved round is
-    /// newer than everything the failed round drained: the restore must
-    /// not clobber it with the stale drained one, and it supersedes the
-    /// drained rows wholesale (the bootstrap-supersedes rule — a drained
-    /// row whose folder since vanished must not resurrect).
-    #[test]
-    fn restore_never_clobbers_a_fresh_present_set() {
-        let ledger = HierarchyLedger::default();
-        {
-            let mut state = ledger.state.lock().expect("hierarchy ledger");
-            state.backlog_of_mut(Container::Calendar).present =
-                Some(vec![folder("fid-cal-1", "Calendar")]);
-        }
-        let drained = Backlog {
-            rows: vec![folder("fid-cal-9", "Vanished Before The Snapshot")],
-            deletions: vec!["fid-gone".to_owned()],
-            present: Some(vec![
-                folder("fid-cal-1", "Calendar"),
-                folder("fid-cal-9", "Old Calendar"),
-            ]),
-        };
-        ledger.restore(Container::Calendar, drained);
-        let state = ledger.state.lock().expect("hierarchy ledger");
-        let calendar = &state.calendar;
-        assert!(
-            calendar.rows.is_empty(),
-            "the fresh present-set supersedes the drained rows wholesale"
-        );
-        let present_ids: Vec<&str> = calendar
-            .present
-            .as_ref()
-            .map(|rows| rows.iter().map(|f| f.server_id.as_str()).collect())
-            .unwrap_or_default();
-        assert_eq!(
-            present_ids,
-            vec!["fid-cal-1"],
-            "the stale drained present-set (fid-cal-9 still present) does not win"
-        );
-        assert!(
-            calendar.deletions.contains(&"fid-gone".to_owned()),
-            "the drained tombstones still ride — a deletion is idempotent"
-        );
-    }
-}
+#[path = "hierarchy_tests.rs"]
+mod tests;

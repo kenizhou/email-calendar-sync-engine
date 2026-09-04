@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
-// Sync Change request building (email + calendar upsync).
+// Sync Change request building (email + calendar + contacts upsync).
 
 use super::change::{
-    CalendarChange, EMAIL_FLAG_STATUS, EMAIL_FLAG_TYPE, EasChange, FLAG_DUE_OFFSET_SECS,
-    PAGE_TASKS, TASK_DUE_DATE, TASK_START_DATE, TASK_UTC_DUE_DATE, TASK_UTC_START_DATE,
+    CalendarChange, ContactsChange, EMAIL_FLAG_STATUS, EMAIL_FLAG_TYPE, EasChange,
+    FLAG_DUE_OFFSET_SECS, PAGE_TASKS, TASK_DUE_DATE, TASK_START_DATE, TASK_UTC_DUE_DATE,
+    TASK_UTC_START_DATE,
 };
 use crate::{
     calendar_write::build_calendar_application_data,
@@ -12,6 +13,7 @@ use crate::{
         AS_COLLECTIONS, AS_COMMANDS, AS_DELETE, AS_SERVER_ID, AS_SYNC, AS_SYNC_KEY, PAGE_AIRSYNC,
         WbxmlElement, format_eas_datetime_utc, tags,
     },
+    contacts::build_contacts_application_data,
 };
 /// Build a Sync request carrying client-side `Commands > Change` elements
 /// (the upsync direction of [MS-ASSYNC] §2.2.2).
@@ -215,6 +217,108 @@ pub fn build_calendar_change_request(
             // ServerId is a child element ([MS-ASCMD] §2.2.3.42.2), with no
             // ApplicationData.
             CalendarChange::Remove { server_id } => WbxmlElement::container(
+                PAGE_AIRSYNC,
+                AS_DELETE,
+                vec![WbxmlElement::text(
+                    PAGE_AIRSYNC,
+                    AS_SERVER_ID,
+                    server_id.clone(),
+                )],
+            ),
+        })
+        .collect();
+
+    let collection = WbxmlElement::container(
+        PAGE_AIRSYNC,
+        AS_COLLECTION,
+        vec![
+            WbxmlElement::text(PAGE_AIRSYNC, AS_SYNC_KEY, sync_key),
+            WbxmlElement::text(PAGE_AIRSYNC, AS_COLLECTION_ID, collection_id),
+            WbxmlElement::container(PAGE_AIRSYNC, AS_COMMANDS, command_elements),
+        ],
+    );
+
+    WbxmlElement::container(
+        PAGE_AIRSYNC,
+        AS_SYNC,
+        vec![WbxmlElement::container(
+            PAGE_AIRSYNC,
+            AS_COLLECTIONS,
+            vec![collection],
+        )],
+    )
+}
+
+/// Build a Sync request carrying client-side Contacts `Commands` (the
+/// upsync direction of [MS-ASSYNC] §2.2.2) — the Contacts twin of
+/// [`build_calendar_change_request`].
+///
+/// WBXML shape (see [`ContactsChange`] for the OUR-vocabulary → wire
+/// mapping):
+/// ```xml
+/// <Sync>
+///   <Collections>
+///     <Collection>
+///       <SyncKey>{sync_key}</SyncKey>
+///       <CollectionId>{collection_id}</CollectionId>
+///       <Commands>
+///         <Add>                                    <!-- ContactsChange::Add -->
+///           <ClientId>{client_id}</ClientId>
+///           <ApplicationData>contacts:FileAs, … </ApplicationData>
+///         </Add>
+///         <Change>                                 <!-- ContactsChange::Replace -->
+///           <ServerId>{server_id}</ServerId>
+///           <ApplicationData>…</ApplicationData>
+///         </Change>
+///         <Delete>                                 <!-- ContactsChange::Remove -->
+///           <ServerId>{server_id}</ServerId>
+///         </Delete>
+///       </Commands>
+///     </Collection>
+///   </Collections>
+/// </Sync>
+/// ```
+///
+/// - `ApplicationData` is
+///   [`build_contacts_application_data`](crate::contacts::build_contacts_application_data)'s
+///   output VERBATIM — this builder adds no contacts properties.
+/// - Same element gates as the email/calendar builders: NO `airsync:Class`
+///   (14.0+ rejects it — CollectionId identifies the collection) and NO
+///   `GetChanges` (invalid in 16.1).
+/// - No protocol-version parameter: no contacts element this builder emits
+///   is version-gated (the `airsyncbase:Body` container is 12.0+, and every
+///   version [`crate::adapter::CLIENT_KNOWN_PROTOCOL_VERSIONS`] negotiates is
+///   14.1+).
+/// - Infallible like the calendar precedent: the callers run the
+///   conversion seam first (`contacts::write` refuses what it cannot
+///   represent), and supply the Add `client_id` themselves (synthesize
+///   with [`new_contacts_client_id`](crate::types::new_contacts_client_id),
+///   which guarantees the [MS-ASCMD] 40-char cap).
+pub fn build_contacts_change_request(
+    collection_id: &str,
+    sync_key: &str,
+    changes: &[ContactsChange],
+) -> WbxmlElement {
+    let command_elements: Vec<WbxmlElement> = changes
+        .iter()
+        .map(|change| match change {
+            ContactsChange::Add { client_id, props } => WbxmlElement::container(
+                PAGE_AIRSYNC,
+                AS_ADD,
+                vec![
+                    WbxmlElement::text(PAGE_AIRSYNC, AS_CLIENT_ID, client_id.clone()),
+                    build_contacts_application_data(props),
+                ],
+            ),
+            ContactsChange::Replace { server_id, props } => WbxmlElement::container(
+                PAGE_AIRSYNC,
+                AS_CHANGE,
+                vec![
+                    WbxmlElement::text(PAGE_AIRSYNC, AS_SERVER_ID, server_id.clone()),
+                    build_contacts_application_data(props),
+                ],
+            ),
+            ContactsChange::Remove { server_id } => WbxmlElement::container(
                 PAGE_AIRSYNC,
                 AS_DELETE,
                 vec![WbxmlElement::text(

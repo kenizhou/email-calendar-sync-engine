@@ -292,6 +292,48 @@ impl EasClient {
         Ok(outcome)
     }
 
+    /// Sync — client-side Contacts `Commands` upsync (Add/Change/Delete)
+    /// for a single collection: the Contacts twin of
+    /// [`Self::calendar_sync_changes`], built through
+    /// `build_contacts_change_request` (contacts-page ApplicationData, no
+    /// version-gated elements). One round, no chunking — the adapter's
+    /// write verbs send exactly one command per call (P2 Task 5).
+    ///
+    /// The response parses through the same `Responses` path: the
+    /// outcome carries the rotated key, the collection status, the
+    /// per-item Add acknowledgements, and per-item Change/Delete
+    /// statuses (sent for FAILURES only, [MS-ASCMD] §2.2.3.154 —
+    /// absence means success).
+    ///
+    /// # Errors
+    ///
+    /// Returns `EasError`: `Transport`/`HttpStatus` when the HTTP
+    /// round-trip fails, `Wbxml` when the response bytes do not decode,
+    /// and `SyncStatus` when the collection status is not 1 (a dead key
+    /// surfaces with its Sync-family classification).
+    pub async fn contacts_sync_changes(
+        &mut self,
+        collection_id: &str,
+        sync_key: &str,
+        changes: &[commands::ContactsChange],
+    ) -> Result<commands::SyncChangeOutcome, EasError> {
+        let tree = commands::build_contacts_change_request(collection_id, sync_key, changes);
+        let resp = self.send_command("Sync", &tree).await?;
+        expect_root(&resp, PAGE_AIRSYNC, AS_SYNC)?;
+        let outcome = commands::parse_sync_change_response(&resp)?;
+        if outcome.status != 1 {
+            return Err(EasError::SyncStatus {
+                status: outcome.status,
+                message: format!(
+                    "Contacts Sync upsync failed: {}",
+                    commands::common_status_message(outcome.status)
+                        .unwrap_or("collection status not success")
+                ),
+            });
+        }
+        Ok(outcome)
+    }
+
     /// FolderCreate — create a new folder under a parent.
     ///
     /// # Errors

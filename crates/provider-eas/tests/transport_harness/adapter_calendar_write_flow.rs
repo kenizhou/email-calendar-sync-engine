@@ -167,7 +167,7 @@ pub(super) fn seed_response(new_key: &str) -> WbxmlElement {
 }
 
 /// The server's Add ack ([MS-ASCMD] §2.2.3.7.2).
-fn add_ack(client_id: &str, server_id: &str, status: &str) -> WbxmlElement {
+pub(super) fn add_ack(client_id: &str, server_id: &str, status: &str) -> WbxmlElement {
     WbxmlElement::container(
         PAGE_AIRSYNC,
         AS_ADD,

@@ -47,7 +47,9 @@
 
 use provider_eas::{
     client::{EasClient, pick_protocol_version},
-    types::{EasConfig, SyncRequest},
+    commands::ContactsChange,
+    contacts::ContactsContactProps,
+    types::{EasConfig, SyncRequest, new_contacts_client_id},
 };
 
 #[path = "live_eas/calendar_folder_probes.rs"]
