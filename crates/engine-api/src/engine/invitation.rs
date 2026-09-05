@@ -262,18 +262,39 @@ fn matched_attendee<'a>(
     addresses: &[String],
     delivered_to: &[String],
 ) -> Option<&'a str> {
-    invite
+    let is_mine = |attendee: &str| {
+        addresses
+            .iter()
+            .chain(delivered_to)
+            .any(|mine| addresses_match(attendee, mine))
+    };
+    let attendee = invite
         .participants
         .iter()
-        // The organizer is never "us" on a REQUEST we are being asked: an
-        // ORGANIZER row carrying both roles merges with its ATTENDEE self on
-        // parse, so a self-organized event still offers its attendee copy.
+        // The organizer is never "us" on a REQUEST we are being asked — the
+        // attendee pass skips every owner row first.
         .filter(|p| !p.has_role(&ParticipantRole::Owner))
         .filter_map(|p| p.email.as_deref())
-        .find(|attendee| {
-            addresses
-                .iter()
-                .chain(delivered_to)
-                .any(|mine| addresses_match(attendee, mine))
-        })
+        .find(|attendee| is_mine(attendee));
+    attendee.or_else(|| {
+        // The merged self-organized shape: the parser folds an ORGANIZER that
+        // is also an ATTENDEE into ONE participant carrying both roles
+        // (engine-ical `party.rs`), so when no non-owner row exists the first
+        // participant IS the attendee copy — the same first-participant
+        // fallback `SchedulingMessage::replier` makes for the shape. Still
+        // gated on the address match, so an organizer that is not ours never
+        // becomes answerable.
+        if invite
+            .participants
+            .iter()
+            .any(|p| !p.has_role(&ParticipantRole::Owner))
+        {
+            return None;
+        }
+        invite
+            .participants
+            .first()
+            .and_then(|p| p.email.as_deref())
+            .filter(|attendee| is_mine(attendee))
+    })
 }

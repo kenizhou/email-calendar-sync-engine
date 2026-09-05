@@ -21,7 +21,6 @@ use super::write::{
     fill_addresses, fill_anniversaries, fill_emails, fill_notes, fill_organization, fill_phones,
     fill_title, fill_url, name_slots,
 };
-/// Converts a targeted patch into the wire model: each patched field's
 use crate::contacts::ContactsContactProps;
 
 /// Converts a targeted patch into the wire model: each patched field's
