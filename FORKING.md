@@ -64,3 +64,4 @@ repo-wide. Two fixture files legitimately contain CRLF bytes
 (`crates/engine-api/tests/fixtures/stalwart-invitation.eml`,
 `crates/provider-caldav/tests/fixtures/sync-initial.xml`) — do not run
 `git add --renormalize` across them.
+| SMTP AUTH mechanism negotiation — `converse` reads the EHLO response's `AUTH` mechanisms and speaks `PLAIN` where advertised, the two-step `AUTH LOGIN` exchange otherwise, refusing before any credential material moves when the server offers neither; the module docs record the Exchange shape (`AUTH GSSAPI NTLM LOGIN`, no PLAIN — a PLAIN-only client drew `504 5.7.4`) (1 commit, `df61c73`) | kylins T13 IMAP/SMTP live acceptance against the on-prem Exchange 2016 lab surfaced the PLAIN-only client as unusable there; spec: kylins-client `docs/superpowers/specs/2026-09-04-p2-calendar-contacts-cutover-design.md`, task 13 |
