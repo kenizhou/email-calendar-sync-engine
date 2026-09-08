@@ -24,6 +24,7 @@ use crate::{
     executor::Executor,
     mail::mailbox_from_json,
     request::{Request, capability},
+    source_envelope,
     submit_body::body,
     sync_ops::objects,
 };
@@ -240,116 +241,138 @@ fn set_error(result: &Value, creation_id: &str, method: &str) -> JmapError {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use engine_core::error::FailureClass;
-
-    use super::*;
-
-    fn send_response() -> Value {
-        serde_json::from_str(include_str!("../tests/fixtures/submit_send_response.json")).unwrap()
+/// Sends caller-rendered `source` bytes **verbatim** — never re-rendered (the bytes
+/// may already be signed or encrypted) — as one `Email/import` + `EmailSubmission/set`
+/// pair (RFC 8621 §4.10, §7). Where the draft path re-renders structured fields, this
+/// path ships the bytes themselves: they are uploaded as a single `message/rfc822`
+/// blob, imported DIRECTLY into Sent (the provider files its own copy, so the host
+/// must not file a second one), and submitted by creation-id reference (`#src`).
+///
+/// Everything the wire needs is read out of the bytes BEFORE the first request —
+/// the `Message-ID` (the receipt echoes it; the sent copy reconciles by it), the
+/// trailing line terminator, the envelope `MAIL FROM` (the first `From` addr-spec),
+/// and the `RCPT TO` set: `recipients` verbatim when non-empty, else derived from
+/// the bytes' own `To`/`Cc`/`Bcc` ([`crate::source_envelope`]). Bytes this seam
+/// cannot send are refused with no request ever sent.
+///
+/// # Errors
+///
+/// A permanent-classified [`JmapError`] for unsendable bytes (no `Message-ID` or
+/// `From`, no trailing line terminator, no envelope recipient);
+/// [`JmapError::Session`] for a missing Sent mailbox, identity, or `uploadUrl`; the
+/// classified failure of either method call otherwise.
+pub(crate) async fn send_source(
+    executor: &dyn Executor,
+    mail_account: &str,
+    submission_account: &str,
+    source: &[u8],
+    recipients: &[String],
+) -> Result<SubmissionReceipt, JmapError> {
+    let Some(message_id) = engine_rfc5322::parse_message_id(source) else {
+        return Err(JmapError::protocol(
+            "the submitted bytes carry no Message-ID; the caller must stamp one \
+             before submitting (the sent copy reconciles by it)",
+        ));
+    };
+    if !source.ends_with(b"\n") {
+        return Err(JmapError::protocol(
+            "the submitted bytes do not end in a line terminator",
+        ));
     }
-
-    fn results(doc: &Value) -> (Value, Value) {
-        // methodResponses: [Email/set "0", EmailSubmission/set "1", implicit Email/set "1"]
-        let responses = doc["methodResponses"].as_array().unwrap();
-        (responses[0][1].clone(), responses[1][1].clone())
-    }
-
-    fn message_id() -> MessageIdHeader {
-        MessageIdHeader::new("step4-send-probe-0002@test.local").unwrap()
-    }
-
-    #[test]
-    fn parses_the_sent_email_key_and_echoes_message_id() {
-        let doc = send_response();
-        let (email, submission) = results(&doc);
-        let receipt = parse_receipt(&email, &submission, &message_id()).unwrap();
-        // The created email id (kept across the Drafts→Sent move) is the resolved key.
-        assert_eq!(receipt.email_key.as_str(), "bmaaaaal");
-        assert_eq!(receipt.message_id, message_id());
-    }
-
-    #[test]
-    fn email_set_error_classifies_and_aborts() {
-        let email = json!({
-            "notCreated": { "draft": { "type": "invalidProperties", "properties": ["from"] } }
-        });
-        let submission = json!({ "created": { "sub": { "id": "x" } } });
-        let err = parse_receipt(&email, &submission, &message_id()).unwrap_err();
-        assert_eq!(err.failure_class(), FailureClass::Permanent);
-    }
-
-    #[test]
-    fn submission_error_classifies_after_email_created() {
-        // The observed Stalwart failure when identityId is missing.
-        let email = json!({ "created": { "draft": { "id": "e1" } } });
-        let submission = json!({
-            "notCreated": { "sub": { "type": "invalidProperties", "properties": ["identityId"] } }
-        });
-        let err = parse_receipt(&email, &submission, &message_id()).unwrap_err();
-        assert_eq!(err.failure_class(), FailureClass::Permanent);
-    }
-
-    #[test]
-    fn rate_limited_submission_is_retryable() {
-        let email = json!({ "created": { "draft": { "id": "e1" } } });
-        let submission = json!({ "notCreated": { "sub": { "type": "rateLimit" } } });
-        let err = parse_receipt(&email, &submission, &message_id()).unwrap_err();
-        assert!(err.failure_class().is_retryable());
-    }
-
-    #[test]
-    fn build_draft_targets_drafts_and_carries_message_id() {
-        let context = SubmitContext {
-            drafts: "d".to_owned(),
-            sent: "e".to_owned(),
-            identity: "b".to_owned(),
-        };
-        let draft = Draft::new(
-            message_id(),
-            EmailAddress::named("Alice", "alice@test.local"),
-            vec![EmailAddress::new("bob@test.local")],
-            "Subject",
-            "Body",
-        );
-        let create = build_draft(&context, &draft, &[]);
-        assert_eq!(create["mailboxIds"]["d"], json!(true));
-        assert_eq!(create["keywords"]["$draft"], json!(true));
-        assert_eq!(create["messageId"][0], "step4-send-probe-0002@test.local");
-        assert_eq!(create["from"][0]["email"], "alice@test.local");
-
-        let (submission, on_success) = build_submission(&context, &draft);
-        assert_eq!(submission["emailId"], "#draft");
-        assert_eq!(submission["identityId"], "b");
-        // onSuccessUpdateEmail moves Drafts→Sent and clears $draft.
-        assert_eq!(on_success["#sub"]["mailboxIds/d"], Value::Null);
-        assert_eq!(on_success["#sub"]["mailboxIds/e"], json!(true));
-        assert_eq!(on_success["#sub"]["keywords/$draft"], Value::Null);
-    }
-
-    #[test]
-    fn build_draft_carries_html_as_alternative_body() {
-        let context = SubmitContext {
-            drafts: "d".to_owned(),
-            sent: "e".to_owned(),
-            identity: "b".to_owned(),
-        };
-        let draft = Draft::new(
-            message_id(),
-            EmailAddress::new("alice@test.local"),
-            vec![EmailAddress::new("bob@test.local")],
-            "Subject",
-            "Plain",
+    let mail_from = source_envelope::mail_from(source).ok_or_else(|| {
+        JmapError::protocol(
+            "the submitted bytes carry no From address; the envelope sender cannot \
+             be derived from them",
         )
-        .with_html_body("<p>Plain</p>");
-
-        let create = build_draft(&context, &draft, &[]);
-
-        assert_eq!(create["bodyStructure"]["type"], "multipart/alternative");
-        assert_eq!(create["bodyStructure"]["subParts"][0]["partId"], "text");
-        assert_eq!(create["bodyStructure"]["subParts"][1]["partId"], "html");
-        assert_eq!(create["bodyValues"]["text"]["value"], "Plain");
-        assert_eq!(create["bodyValues"]["html"]["value"], "<p>Plain</p>");
+    })?;
+    let rcpt_to = if recipients.is_empty() {
+        source_envelope::derive_recipients(source)
+    } else {
+        recipients.to_vec()
+    };
+    if rcpt_to.is_empty() {
+        return Err(JmapError::protocol(
+            "the submission names no envelope recipient: `recipients` is empty and \
+             the bytes carry no To, Cc or Bcc address",
+        ));
     }
+
+    let context = resolve_context(executor, mail_account, submission_account).await?;
+    let blob_id = upload_source(executor, mail_account, source).await?;
+
+    let mut req = Request::new([capability::CORE, capability::MAIL, capability::SUBMISSION]);
+    let mut mailbox_ids = Map::new();
+    mailbox_ids.insert(context.sent.clone(), Value::Bool(true));
+    let mut import_create = Map::new();
+    import_create.insert(
+        "src".to_owned(),
+        json!({ "blobId": blob_id, "mailboxIds": Value::Object(mailbox_ids) }),
+    );
+    let import = req.invoke(
+        "Email/import",
+        json!({ "accountId": mail_account, "emails": import_create }),
+    );
+    let mut submission_create = Map::new();
+    submission_create.insert(
+        "sub".to_owned(),
+        json!({
+            "emailId": "#src",
+            "identityId": context.identity,
+            "envelope": {
+                "mailFrom": { "email": mail_from },
+                "rcptTo": rcpt_to.iter().map(|email| json!({ "email": email })).collect::<Vec<_>>(),
+            },
+        }),
+    );
+    let submission = req.invoke(
+        "EmailSubmission/set",
+        json!({ "accountId": submission_account, "create": submission_create }),
+    );
+
+    let resp = executor.execute(&req).await?;
+    parse_source_receipt(resp.result(&import)?, resp.result(&submission)?, message_id)
 }
+
+/// Uploads the message bytes as one blob, returning the server-assigned `blobId`
+/// (RFC 8620 §6.1) the `Email/import` then references.
+///
+/// # Errors
+///
+/// [`JmapError::Session`] if the server advertised no `uploadUrl`, or the
+/// classified failure of the upload.
+async fn upload_source(
+    executor: &dyn Executor,
+    mail_account: &str,
+    source: &[u8],
+) -> Result<String, JmapError> {
+    let url = executor
+        .session()
+        .upload_url()
+        .ok_or_else(|| JmapError::session("server advertised no uploadUrl; cannot import"))?
+        .replace("{accountId}", mail_account);
+    executor.upload(&url, "message/rfc822", source).await
+}
+
+/// Extracts the imported email's key, mapping a `SetError` on either create into a
+/// classified [`JmapError`].
+fn parse_source_receipt(
+    import_result: &Value,
+    submission_result: &Value,
+    message_id: MessageIdHeader,
+) -> Result<SubmissionReceipt, JmapError> {
+    let email_id = created_id(import_result, "src")
+        .ok_or_else(|| set_error(import_result, "src", "Email/import"))?;
+    if created_id(submission_result, "sub").is_none() {
+        return Err(set_error(submission_result, "sub", "EmailSubmission/set"));
+    }
+    let key = ProviderKey::new(email_id)
+        .map_err(|e| JmapError::protocol(format!("bad created email id: {e}")))?;
+    // The import landed the object directly in Sent, so a submission that succeeded
+    // filed the copy — the draft path's `onSuccessUpdateEmail` answer, with no
+    // implicit update to read back and no second copy for the host to file.
+    Ok(SubmissionReceipt::filed(key, message_id))
+}
+
+#[cfg(test)]
+#[path = "submit_tests.rs"]
+mod tests;

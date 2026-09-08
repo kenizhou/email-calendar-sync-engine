@@ -1,0 +1,38 @@
+{
+  "methodResponses": [
+    [
+      "Email/import",
+      {
+        "accountId": "c",
+        "oldState": "sxiaq",
+        "newState": "sxqaq",
+        "created": {
+          "src": {
+            "id": "imp-1",
+            "threadId": "t-1",
+            "blobId": "blob-src-1",
+            "size": 123
+          }
+        }
+      },
+      "0"
+    ],
+    [
+      "EmailSubmission/set",
+      {
+        "accountId": "c",
+        "oldState": "sxmaq",
+        "newState": "sxnaq",
+        "created": {
+          "sub": {
+            "id": "sub-1",
+            "sendAt": "2026-09-08T01:10:52Z",
+            "undoStatus": "final"
+          }
+        }
+      },
+      "1"
+    ]
+  ],
+  "sessionState": "5cb21bf7"
+}

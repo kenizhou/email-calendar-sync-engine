@@ -12,6 +12,9 @@ engine-core = { workspace = true }
 # `http` enables `HttpVersion::from_http`, the one place a reqwest response's version is
 # mapped onto the engine's neutral `HttpVersion` (`ConnectionInfo`).
 engine-provider = { workspace = true, features = ["http"] }
+# Reading the Message-ID and envelope headers back out of caller-rendered bytes
+# (submit_email_source) is the parse half of the assemble/parse pair.
+engine-rfc5322 = { workspace = true }
 # One shared TLS trust policy across every provider (`docs/agent-guidance/tls.md`);
 # `reqwest` enables the preconfigured-client builder this HTTP transport uses.
 # One throttling answer for every HTTP provider (docs/agent-guidance/http-throttling.md).

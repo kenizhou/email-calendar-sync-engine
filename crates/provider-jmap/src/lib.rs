@@ -52,6 +52,7 @@ mod provider;
 mod report;
 mod request;
 mod session;
+mod source_envelope;
 mod submit;
 mod submit_body;
 mod sync_ops;

@@ -420,6 +420,28 @@ impl Provider for JmapProvider {
         .await?)
     }
 
+    /// Sends caller-rendered bytes VERBATIM — the seam the draft path cannot serve
+    /// (an S/MIME-, PGP- or iMIP-shaped message survives it untouched): uploaded as one
+    /// blob, imported DIRECTLY into Sent (the provider files its own copy), and
+    /// submitted with the envelope the bytes carry (`crate::submit::send_source`).
+    async fn submit_email_source(
+        &self,
+        _account: &AccountId,
+        source: &[u8],
+        recipients: &[String],
+    ) -> ProviderResult<SubmissionReceipt> {
+        let mail_account = self.executor.session().mail_account_id()?.to_owned();
+        let submission_account = self.executor.session().submission_account_id()?.to_owned();
+        Ok(crate::submit::send_source(
+            self.executor.as_ref(),
+            &mail_account,
+            &submission_account,
+            source,
+            recipients,
+        )
+        .await?)
+    }
+
     async fn report_message(
         &self,
         _account: &AccountId,
