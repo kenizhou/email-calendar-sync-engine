@@ -37,13 +37,16 @@ impl Engine {
     /// send parks as `NeedsConfirmation` rather than being blind-retried.
     ///
     /// Returns how many ops this call drove to a recorded outcome — `Succeeded`,
-    /// `Failed` (a provider failure, or the terminal `Failed` a poison payload
-    /// that does not decode as a tagged intent is marked with — neither is ever
-    /// re-claimed), or a parked `NeedsConfirmation` (also never re-driven: a
-    /// parked op is not claimable). **Failed is terminal** and confirmation is a
-    /// host decision, so the drain's work is done when an op holds any of the
-    /// three. Not counted: an op skipped as out of scope — a contact or calendar
-    /// verb this drain claimed only because claims are scope-blind, left
+    /// `Failed` (a provider failure classified permanent — a conflict, an auth
+    /// refusal, or the terminal `Failed` a poison payload that does not decode as a
+    /// tagged intent is marked with — none of which are ever re-claimed), or a
+    /// parked `NeedsConfirmation` (also never re-driven: a parked op is not
+    /// claimable). A `Failed` classified retryable or resync-required is **not**
+    /// counted: it is released back to `Pending` for the next drain to replay —
+    /// the retry the failure classification promises (a lifted rate limit, a sync
+    /// pass that warms the adapter). Not counted either: an op skipped as out of
+    /// scope — a contact or calendar verb this drain claimed only because claims
+    /// are scope-blind, left
     /// unmarked and released straight back to `Pending` under its own lease, so
     /// the right executor can claim it immediately (no TTL of unrunnability) —
     /// and an op whose mark lost its lease to another worker (that worker owns

@@ -15,13 +15,17 @@
 //! Three transports, all through this one conversation core ([`converse`]):
 //! - **plaintext** ([`send`], no auth) — the fixture's local MX (port 25);
 //! - **implicit TLS** ([`send`] with `auth`) — the caller hands an already-secured stream (port
-//!   465), and `AUTH PLAIN` runs after `EHLO`;
+//!   465), and the negotiated AUTH runs after `EHLO`;
 //! - **STARTTLS** ([`negotiate_starttls`] then [`send_after_starttls`]) — this module negotiates
 //!   the cleartext upgrade (port 587) and the caller TLS-wraps the socket between the two calls;
-//!   `AUTH PLAIN` then runs over the established TLS.
+//!   the negotiated AUTH then runs over the established TLS.
 //!
-//! `AUTH PLAIN` is only ever sent once the stream is secured (implicit TLS, or after
-//! the STARTTLS upgrade) — never in the clear.
+//! The AUTH mechanism is negotiated from the server's EHLO advertisement:
+//! `PLAIN` where offered (the Stalwart/default shape), `AUTH LOGIN` otherwise —
+//! the mechanism Exchange receive connectors advertise instead (a PLAIN-only
+//! client draws `504 5.7.4 Unrecognized authentication type` there). Either
+//! way, credentials are only ever sent once the stream is secured (implicit
+//! TLS, or after the STARTTLS upgrade) — never in the clear.
 
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
@@ -177,18 +181,30 @@ where
         reject_control("RCPT TO address", address)?;
     }
 
-    let (esmtp, _extensions) = ehlo(smtp, ehlo_domain).await?;
+    let (esmtp, extensions) = ehlo(smtp, ehlo_domain).await?;
 
     if let Some((user, pass)) = auth {
         if !esmtp {
             return Err(ImapError::protocol("SMTP AUTH requires ESMTP (EHLO)"));
         }
-        smtp.write_line(&format!("AUTH PLAIN {}", auth_plain_token(user, pass)))
-            .await?;
-        let (code, text) = smtp.read_reply().await?;
-        if code != 235 {
-            return Err(ImapError::auth(format!(
-                "SMTP AUTH rejected: {code} {text}"
+        // The mechanism is the SERVER's choice: only one it advertises may be
+        // sent. Exchange receive connectors advertise `AUTH GSSAPI NTLM
+        // LOGIN` — no PLAIN — so a PLAIN-only client is unusable there.
+        if advertises_auth_mechanism(&extensions, "PLAIN") {
+            smtp.write_line(&format!("AUTH PLAIN {}", auth_plain_token(user, pass)))
+                .await?;
+            let (code, text) = smtp.read_reply().await?;
+            if code != 235 {
+                return Err(ImapError::auth(format!(
+                    "SMTP AUTH rejected: {code} {text}"
+                )));
+            }
+        } else if advertises_auth_mechanism(&extensions, "LOGIN") {
+            auth_login(smtp, user, pass).await?;
+        } else {
+            return Err(ImapError::protocol(format!(
+                "server advertises none of the supported AUTH mechanisms (PLAIN, LOGIN): \
+                 {extensions}"
             )));
         }
     }
@@ -397,6 +413,76 @@ fn auth_plain_token(user: &str, password: &str) -> String {
     creds.push(0);
     creds.extend_from_slice(password.as_bytes());
     crate::base64::encode(&creds)
+}
+
+/// Whether the EHLO response advertises `mechanism` after an `AUTH` keyword.
+/// `read_reply` flattens the multiline reply into one space-joined string, so
+/// the mechanisms are the tokens following `AUTH` up to the next
+/// non-mechanism capability keyword (a stop-list of the common ones; an
+/// unknown extra keyword being swallowed is harmless — the check only claims
+/// PLAIN/LOGIN when a token literally names them after `AUTH`).
+fn advertises_auth_mechanism(esmtp_text: &str, mechanism: &str) -> bool {
+    const NON_MECHANISM_KEYWORDS: [&str; 10] = [
+        "SIZE",
+        "PIPELINING",
+        "8BITMIME",
+        "BINARYMIME",
+        "CHUNKING",
+        "SMTPUTF8",
+        "ENHANCEDSTATUSCODES",
+        "DSN",
+        "STARTTLS",
+        "HELP",
+    ];
+    let mut after_auth = false;
+    esmtp_text.split_whitespace().any(|token| {
+        if after_auth {
+            if NON_MECHANISM_KEYWORDS
+                .iter()
+                .any(|kw| token.eq_ignore_ascii_case(kw))
+            {
+                after_auth = false;
+                false
+            } else {
+                token.eq_ignore_ascii_case(mechanism)
+            }
+        } else {
+            after_auth = token.eq_ignore_ascii_case("AUTH");
+            false
+        }
+    })
+}
+
+/// The two-step `AUTH LOGIN` exchange: the server prompts (334) for the
+/// username and then the password, each answered with one base64 line.
+async fn auth_login<S>(smtp: &mut SmtpStream<S>, user: &str, password: &str) -> ImapResult<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    smtp.write_line("AUTH LOGIN").await?;
+    let (code, _) = smtp.read_reply().await?;
+    if code != 334 {
+        return Err(ImapError::auth(format!(
+            "SMTP AUTH LOGIN rejected at the username prompt: {code}"
+        )));
+    }
+    smtp.write_line(&crate::base64::encode(user.as_bytes()))
+        .await?;
+    let (code, _) = smtp.read_reply().await?;
+    if code != 334 {
+        return Err(ImapError::auth(format!(
+            "SMTP AUTH LOGIN rejected at the password prompt: {code}"
+        )));
+    }
+    smtp.write_line(&crate::base64::encode(password.as_bytes()))
+        .await?;
+    let (code, text) = smtp.read_reply().await?;
+    if code != 235 {
+        return Err(ImapError::auth(format!(
+            "SMTP AUTH rejected: {code} {text}"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

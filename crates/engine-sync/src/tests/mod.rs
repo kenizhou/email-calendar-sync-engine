@@ -72,6 +72,9 @@ enum Fault {
     /// The calendar-container fetch fails — so a pass that touches the container scope
     /// cannot succeed, and one that is events-only cannot notice.
     CalendarFetch,
+    /// The calendar writes refuse with the resync-required error (an EAS adapter whose
+    /// SyncKey the server no longer knows) — retryable only after a fresh sync pass.
+    ResyncWrite,
 }
 
 /// A configurable in-memory mail provider: a snapshot on first sync, an empty
@@ -309,6 +312,9 @@ impl Provider for FakeMail {
         _account: &AccountId,
         draft: &EventDraft,
     ) -> ProviderResult<EventWriteReceipt> {
+        if self.fails(Fault::ResyncWrite) {
+            return Err(ProviderError::needs_resync("cannotCalculateChanges"));
+        }
         if self.fails(Fault::WriteGuard) {
             return Err(ProviderError::conflict("an event already exists there"));
         }

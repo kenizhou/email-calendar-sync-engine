@@ -237,15 +237,16 @@ where
 /// double-send (`providers.md`) — otherwise a classified `Failed` with its backoff
 /// hint. Shared by both submission paths so their handling cannot drift; the plain
 /// [`record_failure`](super::record_failure) serves the writes with no ambiguous
-/// case (edits, reports).
+/// case (edits, reports). Whether the outcome is recorded terminal or released
+/// for retry is [`settle_outcome`](super::settle_outcome)'s call — a rate-limited
+/// submission goes back to `Pending` for the next drain, the offline/rate-limit
+/// recovery the drainer exists for.
 async fn record_send_failure<S: Store>(
     store: &S,
     leased: &LeasedPendingOp,
     err: &ProviderError,
 ) -> Result<(), SyncError> {
-    store
-        .mark_pending_op(&leased.lease, send_failure_outcome(err))
-        .await?;
+    super::settle_outcome(store, &leased.lease, send_failure_outcome(err)).await?;
     Ok(())
 }
 

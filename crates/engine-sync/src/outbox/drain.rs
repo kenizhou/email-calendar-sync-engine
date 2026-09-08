@@ -157,18 +157,24 @@ where
     Ok(driven)
 }
 
-/// The settle half both drains share: records one claimed op's execution result
+/// The settle half all drains share: records one claimed op's execution result
 /// under its lease, discriminating on the structured
 /// [`ExecuteFailure`](super::execute::ExecuteFailure) the execute halves report
-/// — never on an error string.
+/// — never on an error string — and settling the outcome through
+/// [`settle_outcome`](super::settle_outcome), the mark-or-release decision the
+/// inline drivers run, so a replay and an inline write can never disagree (a
+/// retryable or resync-required failure goes back to `Pending` for the next
+/// drain rather than dying terminally).
 ///
-/// Returns whether this drain drove the op to an outcome (the count the loops
-/// report). The two no-count cases:
+/// Returns whether this drain drove the op to a settled outcome (the count the
+/// loops report). The no-count cases:
 ///
 /// - **Out of scope** — the op is another drain's to execute; skipped *unmarked* and **released**
 ///   back to `Pending` under the lease the claim minted (its fencing token bumped, so this drain's
 ///   lease is dead), so the right executor can claim it immediately rather than being resolved by a
 ///   loop that cannot know its semantics — or waiting out a lease TTL, the pre-release cost.
+/// - **Released for retry** — a `Failed` outcome classified retryable or resync-required goes back
+///   to `Pending` uncounted; the next drain replays it.
 /// - **Stale lease on the mark or release** — another worker re-claimed the op underneath; its
 ///   outcome is that worker's to record, so the result is dropped silently.
 ///
@@ -204,9 +210,9 @@ where
         }
         Err(ExecuteFailure::Store(err)) => return Err(SyncError::Store(err)),
     };
-    match store.mark_pending_op(&leased.lease, outcome).await {
-        Ok(()) => Ok(true),
-        Err(StoreError::StaleLease) => Ok(false),
-        Err(err) => Err(SyncError::Store(err)),
+    match super::settle_outcome(store, &leased.lease, outcome).await {
+        Ok(released) => Ok(!released),
+        Err(SyncError::Store(StoreError::StaleLease)) => Ok(false),
+        Err(err) => Err(err),
     }
 }

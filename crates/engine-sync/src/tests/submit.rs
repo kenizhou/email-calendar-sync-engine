@@ -50,8 +50,10 @@ async fn submit_mail_records_failure_without_blind_retry() {
     .unwrap_err();
     assert!(matches!(err, crate::SyncError::Provider(_)));
 
-    // Recover the op id via an idempotent re-enqueue and confirm it was recorded
-    // Failed (not retried here).
+    // Recover the op id via an idempotent re-enqueue and confirm it was
+    // RELEASED back to Pending — the rate-limit classification carries the
+    // retry promise, so the next drain (recovered provider) replays it rather
+    // than the op dying terminally.
     let op_id = store
         .enqueue_pending_op(
             account(),
@@ -65,7 +67,7 @@ async fn submit_mail_records_failure_without_blind_retry() {
         .unwrap();
     assert_eq!(
         store.pending_op_state(op_id).await.unwrap(),
-        Some(PendingOpState::Failed)
+        Some(PendingOpState::Pending)
     );
 }
 
@@ -217,8 +219,9 @@ async fn submit_mail_source_records_failure_without_blind_retry() {
     .unwrap_err();
     assert!(matches!(err, crate::SyncError::Provider(_)));
 
-    // Recover the op id via an idempotent re-enqueue and confirm it was recorded
-    // Failed (not retried here) — the classification mirrors the Draft path.
+    // Recover the op id via an idempotent re-enqueue and confirm it was
+    // RELEASED back to Pending — the classification mirrors the Draft path
+    // (the rate limit's retry promise rides the release, not a terminal mark).
     let op_id = store
         .enqueue_pending_op(
             account(),
@@ -232,7 +235,7 @@ async fn submit_mail_source_records_failure_without_blind_retry() {
         .unwrap();
     assert_eq!(
         store.pending_op_state(op_id).await.unwrap(),
-        Some(PendingOpState::Failed)
+        Some(PendingOpState::Pending)
     );
 }
 

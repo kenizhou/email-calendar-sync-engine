@@ -331,6 +331,44 @@ async fn an_empty_outbox_drains_to_zero() {
 }
 
 #[tokio::test]
+async fn a_rate_limited_submit_releases_the_op_for_a_later_drain() {
+    // The failure classification's retry promise, kept end to end: a
+    // rate-limited submission is RELEASED back to Pending — not recorded
+    // terminal — so the next drain, whose provider may have recovered,
+    // replays it to the Succeeded the send always intended.
+    let limited = FakeMail::new(vec![], vec![]).failing(Fault::Submit);
+    let store = SqliteStore::open_in_memory(clock()).unwrap();
+    let op = enqueue_op(
+        &store,
+        "drain:submit:limited",
+        "draft:send-7@test.local",
+        serde_json::to_value(OutboxIntent::SubmitMail {
+            payload: SubmitPayload::Draft(draft("send-7@test.local")),
+        })
+        .unwrap(),
+    )
+    .await;
+
+    let drained = drain_mail(&limited, &store).await.unwrap();
+
+    assert_eq!(drained, 0, "a released op is not a settled outcome");
+    assert_eq!(
+        store.pending_op_state(op).await.unwrap(),
+        Some(PendingOpState::Pending),
+        "released for the next drain, not recorded terminal"
+    );
+
+    let drained = drain_mail(&FakeMail::new(vec![], vec![]), &store)
+        .await
+        .unwrap();
+    assert_eq!(drained, 1, "the recovered provider replays the release");
+    assert_eq!(
+        store.pending_op_state(op).await.unwrap(),
+        Some(PendingOpState::Succeeded)
+    );
+}
+
+#[tokio::test]
 async fn a_stale_mark_drops_the_op_without_error_or_count() {
     // Another worker re-claimed the op underneath (the lease expired, the
     // second claim superseded the token): the first worker's mark is rejected

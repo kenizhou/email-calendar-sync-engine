@@ -39,7 +39,7 @@ pub(crate) fn current_key(ledger: &CollectionKey) -> ProviderResult<String> {
         .ok_or_else(|| {
             ProviderError::new(
                 engine_core::error::FailureClass::NeedsResync,
-                "the collection's sync key is unknown to this adapter — run a                  sync pass first (it seeds the key); the outbox retries the                  write after it",
+                "the collection's sync key is unknown to this adapter — run a sync pass first (it seeds the key); the outbox retries the write after it",
             )
         })
 }
@@ -54,7 +54,7 @@ pub(crate) fn record_rotation(ledger: &CollectionKey, outcome: &SyncChangeOutcom
     let mut slot = ledger.lock().expect("collection-key ledger");
     if outcome.has_piggybacked() {
         log::warn!(
-            "EAS Sync change response piggybacked server commands — dropping              the collection-key ledger; the next pass reconciles"
+            "EAS Sync change response piggybacked server commands — dropping the collection-key ledger; the next pass reconciles"
         );
         *slot = None;
     } else {

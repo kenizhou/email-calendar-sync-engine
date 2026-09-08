@@ -457,3 +457,107 @@ fn dot_stuffing_escapes_leading_dots() {
     assert!(text.contains("\r\nnormal\r\n"));
     assert!(text.contains("\r\n...already\r\n"));
 }
+
+#[tokio::test]
+async fn send_negotiates_auth_login_when_plain_is_not_advertised() {
+    // The Exchange receive-connector shape: `AUTH GSSAPI NTLM LOGIN`, no
+    // PLAIN — the two-step LOGIN exchange must be the negotiated mechanism,
+    // with the credentials base64 (never cleartext on the wire).
+    let server = script(&[
+        "220 mail ESMTP\r\n",
+        "250-mail\r\n250 AUTH GSSAPI NTLM LOGIN\r\n",
+        "334 VXNlcm5hbWU6\r\n",
+        "334 UGFzc3dvcmQ6\r\n",
+        "235 2.7.0 authentication successful\r\n",
+        "250 2.1.0 OK\r\n",
+        "250 2.1.5 OK\r\n",
+        "354 go ahead\r\n",
+        "250 2.0.0 queued\r\n",
+        "221 bye\r\n",
+    ]);
+    let (stream, recorded) = MockStream::new(server);
+    let message = assembled(&draft(&["bob@test.local"], "hi"));
+
+    let result = send(
+        stream,
+        "test.local",
+        "alice@test.local",
+        &recipients(&["bob@test.local"]),
+        &message,
+        Some(("alice@test.local", "s3cret")),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.disposition, Disposition::Delivered);
+    let sent = written(&recorded);
+    assert!(sent.contains("AUTH LOGIN\r\n"), "{sent}");
+    assert!(
+        !sent.contains("AUTH PLAIN"),
+        "PLAIN must not be sent when the server does not advertise it: {sent}"
+    );
+    // The username rides the second line, base64; the password never appears.
+    assert!(
+        !sent.contains("s3cret"),
+        "credentials leaked in the clear: {sent}"
+    );
+}
+
+#[tokio::test]
+async fn an_auth_login_rejection_is_an_authentication_error() {
+    let server = script(&[
+        "220 mail ESMTP\r\n",
+        "250 AUTH LOGIN\r\n",
+        "334 VXNlcm5hbWU6\r\n",
+        "334 UGFzc3dvcmQ6\r\n",
+        "535 5.7.8 bad credentials\r\n",
+    ]);
+    let (stream, _) = MockStream::new(server);
+    let message = assembled(&draft(&["bob@test.local"], "hi"));
+
+    let err = send(
+        stream,
+        "test.local",
+        "alice@test.local",
+        &recipients(&["bob@test.local"]),
+        &message,
+        Some(("alice@test.local", "s3cret")),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        err.to_string().to_lowercase().contains("auth"),
+        "a 535 at the final prompt is an auth failure: {err}"
+    );
+}
+
+#[tokio::test]
+async fn send_refuses_when_no_supported_auth_mechanism_is_advertised() {
+    // GSSAPI/NTLM only: nothing the client can speak — refuse before any
+    // credential material moves.
+    let server = script(&["220 mail ESMTP\r\n", "250-AUTH GSSAPI NTLM\r\n250 OK\r\n"]);
+    let (stream, recorded) = MockStream::new(server);
+    let message = assembled(&draft(&["bob@test.local"], "hi"));
+
+    let err = send(
+        stream,
+        "test.local",
+        "alice@test.local",
+        &recipients(&["bob@test.local"]),
+        &message,
+        Some(("alice@test.local", "s3cret")),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        err.to_string().contains("none of the supported AUTH"),
+        "{err}"
+    );
+    let sent = written(&recorded);
+    assert!(
+        !sent.contains("AUTH"),
+        "no AUTH command may precede the refusal: {sent}"
+    );
+}

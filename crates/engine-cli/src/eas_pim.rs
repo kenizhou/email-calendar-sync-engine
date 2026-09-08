@@ -148,8 +148,7 @@ pub(crate) async fn eas_sync_calendar(
     }
 
     if roundtrip {
-        let cal = &selected[0];
-        let adapter = &adapters[0];
+        let (cal, adapter) = probe_target(&selected, &adapters)?;
         let draft = probe_draft(account, cal, &horizon)?;
         let outcome = create_calendar_event(
             adapter,
@@ -332,6 +331,22 @@ async fn occurrence_summary(
     Ok(())
 }
 
+/// The `--create` probe's target: the first synced collection and its
+/// adapter (the two vectors `eas_sync_calendar` builds in parallel). A
+/// calendar-less account syncs none — a usage error naming the flag, never
+/// an indexed panic on the empty set.
+fn probe_target<'a>(
+    selected: &'a [CalendarId],
+    adapters: &'a [EasAdapter],
+) -> Result<(&'a CalendarId, &'a EasAdapter), CliError> {
+    selected.iter().zip(adapters).next().ok_or_else(|| {
+        CliError::Usage(
+            "--create has no calendar to probe — the server reports none for this account"
+                .to_owned(),
+        )
+    })
+}
+
 /// The `--create` probe event: a one-hour UTC meeting one hour inside the
 /// horizon's start, deterministic in the account so a repeated run
 /// against the same store resolves as a duplicate create instead of
@@ -386,5 +401,52 @@ fn pim_error(err: SyncError) -> CliError {
         SyncError::Provider(e) => CliError::Provider(e),
         SyncError::Store(e) => CliError::Store(e),
         other => CliError::Eas(other.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use provider_eas::{client::EasClient, types::EasConfig};
+
+    use super::*;
+
+    /// The adapters `eas_sync_calendar` builds in parallel over its
+    /// discovered set — offline clients, no server contacted.
+    fn adapters_for(calendars: &[CalendarId]) -> Vec<EasAdapter> {
+        let client = EasClient::new(
+            EasConfig::default(),
+            &engine_tls::TlsClientConfig::bundled(),
+        )
+        .expect("an offline client builds");
+        calendars
+            .iter()
+            .map(|cal| EasAdapter::calendar_adapter(client.clone(), cal.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn create_on_a_calendar_less_account_is_a_usage_error_not_a_panic() {
+        // The account syncs no calendar at all (an empty discovery set), so
+        // the probe has no first collection to target. The indexed
+        // `selected[0]` this replaces panicked here; the guard turns the
+        // empty set into the usage error naming the flag.
+        let selected: Vec<CalendarId> = Vec::new();
+        let adapters = adapters_for(&selected);
+        let err = probe_target(&selected, &adapters).expect_err("nothing to probe into");
+        assert!(
+            err.to_string().contains("--create"),
+            "the error names the flag: {err}"
+        );
+    }
+
+    #[test]
+    fn the_probe_targets_the_first_synced_collection() {
+        let selected: Vec<CalendarId> = ["cal-a", "cal-b"]
+            .iter()
+            .map(|id| CalendarId::try_from(*id).expect("a calendar id"))
+            .collect();
+        let adapters = adapters_for(&selected);
+        let (cal, _adapter) = probe_target(&selected, &adapters).expect("a target exists");
+        assert_eq!(cal.as_str(), "cal-a", "the probe targets the first");
     }
 }

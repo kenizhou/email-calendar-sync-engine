@@ -65,6 +65,31 @@ fn invitation_of_method(method: &str) -> Vec<u8> {
         .into_bytes()
 }
 
+/// A self-organized `METHOD:REQUEST`: the organizer and the SOLE attendee are
+/// the same address — the account's own — so the parser merges the two rows
+/// into one participant carrying both roles and no non-owner attendee row
+/// exists to match.
+fn self_organized_invite() -> Vec<u8> {
+    format!(
+        "From: {SELF_ADDRESS}\r\n\
+         To: {SELF_ADDRESS}\r\n\
+         Delivered-To: {SELF_ADDRESS}\r\n\
+         Subject: Focus block\r\n\
+         Content-Type: multipart/alternative; boundary=\"a\"\r\n\r\n\
+         --a\r\nContent-Type: text/plain\r\n\r\nWhen: 1 March\r\n\
+         --a\r\nContent-Type: text/calendar; charset=\"utf-8\"; method=REQUEST\r\n\r\n\
+         BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\n\
+         UID:evt-1@test.local\r\nDTSTAMP:20260201T080000Z\r\n\
+         DTSTART:20260301T080000Z\r\nDTEND:20260301T083000Z\r\n\
+         SUMMARY:Focus block\r\nSEQUENCE:0\r\n\
+         ORGANIZER;CN=Me:mailto:{SELF_ADDRESS}\r\n\
+         ATTENDEE;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:{SELF_ADDRESS}\r\n\
+         END:VEVENT\r\nEND:VCALENDAR\r\n\
+         --a--\r\n"
+    )
+    .into_bytes()
+}
+
 /// The invitation `Message` a host holds after a mail sync.
 fn invite_message() -> Message {
     Message::new(
@@ -477,6 +502,59 @@ async fn an_answer_with_no_stored_event_goes_through_the_invite_referencing_verb
             RsvpResponse::Declined
         ),
         "the verb received the invite, no base, and the matched alias"
+    );
+    assert!(
+        server.refused_event_verb.lock().unwrap().is_empty(),
+        "the event-addressed verb was never consulted"
+    );
+}
+
+#[tokio::test]
+async fn a_self_organized_request_matches_its_merged_attendee() {
+    // An ORGANIZER that is also an ATTENDEE merges into ONE participant
+    // carrying both roles (engine-ical `party.rs`), so the owner-filtered
+    // attendee pass finds no row at all — the facade used to refuse
+    // "no ATTENDEE matches" on exactly the shape its comment claimed still
+    // offered an attendee copy. The replier-shaped fallback matches the
+    // merged row when it is OUR address, and the answer names it.
+    let server = FromInviteServer {
+        invite: self_organized_invite(),
+        answered: Mutex::default(),
+        refused_event_verb: Mutex::default(),
+    };
+    let engine = Engine::open_in_memory().unwrap();
+    engine
+        .sync_calendar(&server, &account(), horizon(), &host_zone())
+        .await
+        .unwrap();
+    assert!(
+        engine.events(&account()).await.unwrap().is_empty(),
+        "the premise: no stored event at all"
+    );
+
+    let write = engine
+        .rsvp_invitation(
+            &server,
+            &account(),
+            &own_addresses(),
+            &invite_message(),
+            RsvpResponse::Accepted,
+            None,
+            true,
+        )
+        .await
+        .expect("a self-organized request still offers its attendee copy");
+    assert_eq!(write.write.uid.as_str(), "evt-1@test.local");
+    let answered = server.answered.lock().unwrap();
+    assert_eq!(
+        answered[0],
+        (
+            INVITE_MESSAGE_ID.to_owned(),
+            false,
+            SELF_ADDRESS.to_owned(),
+            RsvpResponse::Accepted
+        ),
+        "the verb received the merged organizer-attendee as the attendee"
     );
     assert!(
         server.refused_event_verb.lock().unwrap().is_empty(),

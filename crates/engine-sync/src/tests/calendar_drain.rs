@@ -359,3 +359,43 @@ async fn a_crash_orphaned_invite_rsvp_replays_without_a_stored_event() {
         "the replay reconstructed the invite's addressing half and passed no base"
     );
 }
+
+#[tokio::test]
+async fn a_resync_required_write_failure_releases_the_op_for_a_warm_drain() {
+    // The one-shot write flow's recovery contract: a cold adapter's
+    // NeedsResync refusal (its hierarchy ledger never saw the collection's
+    // SyncKey) RELEASES the durable op — Pending, not terminal — and the next
+    // drain, running an adapter that has since synced, replays it to
+    // Succeeded. The error hint's "the outbox retries the write after it" is
+    // this test.
+    let cold = FakeMail::new(vec![], vec![]).failing(Fault::ResyncWrite);
+    let store = SqliteStore::open_in_memory(clock()).unwrap();
+    let op = enqueue_op(
+        &store,
+        "drain:calendar:resync",
+        "event:evt-8@test.local",
+        serde_json::to_value(OutboxIntent::CreateEvent {
+            draft: event_draft("evt-8@test.local"),
+        })
+        .unwrap(),
+    )
+    .await;
+
+    let drained = drain_calendar(&cold, &store).await.unwrap();
+
+    assert_eq!(drained, 0, "a released op is not a settled outcome");
+    assert_eq!(
+        store.pending_op_state(op).await.unwrap(),
+        Some(PendingOpState::Pending),
+        "released for the warm drain, not recorded terminal"
+    );
+
+    let drained = drain_calendar(&FakeMail::new(vec![], vec![]), &store)
+        .await
+        .unwrap();
+    assert_eq!(drained, 1, "the warm drain replays the released create");
+    assert_eq!(
+        store.pending_op_state(op).await.unwrap(),
+        Some(PendingOpState::Succeeded)
+    );
+}
