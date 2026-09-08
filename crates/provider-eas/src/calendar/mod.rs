@@ -18,6 +18,12 @@
 //! swallow silently; tokens this task does not model → `log::debug!` skip.
 
 mod attendees;
+mod convert;
+mod convert_recurrence;
+mod convert_time;
+pub(crate) mod convert_write;
+mod convert_write_exceptions;
+mod convert_write_recurrence;
 mod datetime;
 mod exceptions;
 mod fields;
@@ -27,6 +33,7 @@ mod parse;
 mod recurrence;
 mod timezone;
 
+pub(crate) use convert::calendar_event_from_props;
 pub(crate) use datetime::is_valid_eas_datetime;
 pub(crate) use location::parse_location_16x;
 pub use model::{
@@ -39,6 +46,22 @@ pub(crate) use timezone::parse_tzi_blob;
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+#[cfg(test)]
+#[path = "convert_tests.rs"]
+mod convert_tests;
+
+#[cfg(test)]
+#[path = "convert_recurrence_tests.rs"]
+mod convert_recurrence_tests;
+
+#[cfg(test)]
+#[path = "convert_write_exceptions_tests.rs"]
+mod convert_write_exceptions_tests;
+
+#[cfg(test)]
+#[path = "convert_write_tests.rs"]
+mod convert_write_tests;
 
 use crate::wbxml::tags::base;
 
@@ -133,6 +156,12 @@ pub const CAL_RECURRENCE_WEEK_OF_MONTH: u8 = 0x22;
 /// `MonthOfYear` = 0x23 (all versions). Child of `Recurrence`: 1-12
 /// ([MS-ASCAL] §2.2.2.29).
 pub const CAL_RECURRENCE_MONTH_OF_YEAR: u8 = 0x23;
+/// `FirstDayOfWeek` = 0x39 (14.0+). Child of `Recurrence`: the calendar
+/// week's first day, unsignedByte 0=Sunday..6=Saturday — the RFC 5545 `WKST`
+/// counterpart that disambiguates INTERVAL>1 weekly recurrences across
+/// localities ([MS-ASCAL] §2.2.2.24; §3.2.5: the server MUST return it when
+/// `Type` is 1).
+pub const CAL_RECURRENCE_FIRST_DAY_OF_WEEK: u8 = 0x39;
 /// `Reminder` = 0x24 (all versions). unsignedInt minutes, or an EmptyTag in
 /// 16.x meaning "no reminder" ([MS-ASCAL] §2.2.2.38).
 pub const CAL_REMINDER: u8 = 0x24;

@@ -41,6 +41,7 @@ fn calendar_token_constants_match_spec() {
     assert_eq!(CAL_RECURRENCE_DAY_OF_MONTH, 0x21);
     assert_eq!(CAL_RECURRENCE_WEEK_OF_MONTH, 0x22);
     assert_eq!(CAL_RECURRENCE_MONTH_OF_YEAR, 0x23);
+    assert_eq!(CAL_RECURRENCE_FIRST_DAY_OF_WEEK, 0x39);
     assert_eq!(CAL_REMINDER, 0x24);
     assert_eq!(CAL_SENSITIVITY, 0x25);
     assert_eq!(CAL_SUBJECT, 0x26);
@@ -82,6 +83,11 @@ fn calendar_token_constants_match_spec() {
         (PAGE_CALENDAR, CAL_RECURRENCE_DAY_OF_MONTH, "DayOfMonth"),
         (PAGE_CALENDAR, CAL_RECURRENCE_WEEK_OF_MONTH, "WeekOfMonth"),
         (PAGE_CALENDAR, CAL_RECURRENCE_MONTH_OF_YEAR, "MonthOfYear"),
+        (
+            PAGE_CALENDAR,
+            CAL_RECURRENCE_FIRST_DAY_OF_WEEK,
+            "FirstDayOfWeek",
+        ),
         (PAGE_CALENDAR, CAL_REMINDER, "Reminder"),
         (PAGE_CALENDAR, CAL_SENSITIVITY, "Sensitivity"),
         (PAGE_CALENDAR, CAL_SUBJECT, "Subject"),
@@ -121,6 +127,13 @@ fn calendar_token_constants_match_spec() {
 /// seam tests in `commands/sync/tests.rs` reuse the SAME golden blob — no
 /// transcription copy.
 pub(crate) const TZI_FLAT_UTC8: &str = "IP7//wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
+
+/// (b) DST zone UTC+1/UTC+2 (CET/CEST shape, the `timezone.rs` pinned golden):
+/// Bias = -60; StandardDate = last Sunday of October at 03:00 with
+/// StandardBias 0; DaylightDate = last Sunday of March at 02:00 with
+/// DaylightBias = -60 (UTC+2 while DST is in effect). `pub(crate)` so the
+/// Task-2 conversion tests reuse the SAME golden blob.
+pub(crate) const TZI_DST_CET: &str = "xP///wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAoAAAAFAAMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMAAAAFAAIAAAAAAAAAxP///w==";
 
 /// Fixture: a fully-populated Calendar ApplicationData covering every
 /// core field plus the Task-3 containers. Token layout (page, token):

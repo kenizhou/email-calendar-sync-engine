@@ -30,6 +30,11 @@ thiserror = { workspace = true }
 # `OffsetDateTime::now_utc` needs time's `std` feature; require it explicitly so the
 # crate keeps compiling even if the workspace dep ever turns default features off.
 time = { workspace = true, features = ["std"] }
+# Mints the per-intent idempotency key of `Engine::rsvp_invitation` — the one
+# calendar write whose facade signature carries no caller key (the invitation
+# message names the target, the answer names the intent, and neither is unique
+# across a change of mind).
+uuid = { workspace = true }
 
 [dev-dependencies]
 # `sync` adds tokio::sync::oneshot, used to deterministically interleave two syncs

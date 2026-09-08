@@ -74,7 +74,7 @@ impl Provider for FakeJmap {
     }
 }
 
-fn account() -> AccountId {
+pub(super) fn account() -> AccountId {
     AccountId::try_from("acct-1").unwrap()
 }
 
@@ -298,7 +298,7 @@ async fn box_dyn_provider_delegates_overrides_and_defaults() {
 }
 
 /// A stored event as a sync hands it back — the base every edit and delete is built from.
-fn stored_event() -> engine_core::calendar::Event {
+pub(super) fn stored_event() -> engine_core::calendar::Event {
     use engine_core::{
         ids::{CalendarId, EventId, ProviderKey, Uid},
         time::{CalendarDateTime, LocalDateTime, TimeZoneId},

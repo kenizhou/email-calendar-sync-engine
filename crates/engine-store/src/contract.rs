@@ -181,6 +181,10 @@ where
     outbox_cases::unknown_op_is_rejected_and_stateless(&store, &clock).await;
     let (store, clock) = make();
     outbox_cases::claim_respects_limit(&store, &clock).await;
+    let (store, clock) = make();
+    outbox_cases::release_returns_a_claimed_op_to_runnable(&store, &clock).await;
+    let (store, clock) = make();
+    outbox_cases::release_requires_the_current_lease(&store, &clock).await;
 }
 
 /// Runs contact-generation, people-CAS, and recipient-history contracts.

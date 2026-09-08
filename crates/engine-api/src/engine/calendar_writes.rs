@@ -328,7 +328,10 @@ impl Engine {
     }
 
     /// Pairs a landed write with the reconcile that follows it.
-    async fn reconciling<P: Provider>(
+    ///
+    /// Shared crate-internally with the invitation write (`invitation.rs`) —
+    /// every calendar write reconciles the same way, so the rule lives once.
+    pub(crate) async fn reconciling<P: Provider>(
         &self,
         provider: &P,
         account: &AccountId,

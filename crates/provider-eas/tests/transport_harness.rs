@@ -32,8 +32,21 @@ mod harness;
 #[path = "transport_harness/server.rs"]
 mod server;
 
+#[path = "transport_harness/adapter_calendar_delete_flow.rs"]
+mod adapter_calendar_delete_flow;
+#[path = "transport_harness/adapter_calendar_flow.rs"]
+mod adapter_calendar_flow;
+#[path = "transport_harness/adapter_calendar_write_flow.rs"]
+mod adapter_calendar_write_flow;
+#[path = "transport_harness/adapter_contacts_flow.rs"]
+mod adapter_contacts_flow;
+#[path = "transport_harness/adapter_contacts_write_flow.rs"]
+mod adapter_contacts_write_flow;
 #[path = "transport_harness/adapter_edit_flow.rs"]
 mod adapter_edit_flow;
+#[path = "transport_harness/adapter_events_flow.rs"]
+mod adapter_events_flow;
+
 #[path = "transport_harness/adapter_email_flow.rs"]
 mod adapter_email_flow;
 #[path = "transport_harness/adapter_email_wire.rs"]
@@ -42,6 +55,10 @@ mod adapter_email_wire;
 mod adapter_flow;
 #[path = "transport_harness/adapter_folders_flow.rs"]
 mod adapter_folders_flow;
+#[path = "transport_harness/adapter_hierarchy_flow.rs"]
+mod adapter_hierarchy_flow;
+#[path = "transport_harness/adapter_meeting_flow.rs"]
+mod adapter_meeting_flow;
 #[path = "transport_harness/adapter_source_flow.rs"]
 mod adapter_source_flow;
 #[path = "transport_harness/adapter_source_wire.rs"]
@@ -58,6 +75,8 @@ mod codec_and_parse;
 mod compose_flow;
 #[path = "transport_harness/engine_cli_flow.rs"]
 mod engine_cli_flow;
+#[path = "transport_harness/engine_cli_pim_flow.rs"]
+mod engine_cli_pim_flow;
 #[path = "transport_harness/folders_flow.rs"]
 mod folders_flow;
 #[path = "transport_harness/http_errors.rs"]

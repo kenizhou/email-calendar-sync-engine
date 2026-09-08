@@ -55,6 +55,15 @@
 //! {"send_result":{"account":"acct-1","message_id":"m-1","success":true}}
 //! {"send_result":{"account":"acct-1","message_id":"m-2","success":false,"detail":"554 rejected"}}
 //! ```
+//!
+//! The PIM scopes (P2) speak the same one-fact shape — a calendar or contacts
+//! sync changed the account's data, nothing more granular, because the host's
+//! answer to either is one re-read of the surface it renders:
+//!
+//! ```json
+//! {"calendar_changed":{"account":"acct-1"}}
+//! {"contacts_changed":{"account":"acct-1"}}
+//! ```
 
 use std::sync::Mutex;
 
@@ -137,6 +146,19 @@ pub enum EngineEvent {
         /// The failure's reason. Omitted on the wire when `None`.
         #[serde(skip_serializing_if = "Option::is_none")]
         detail: Option<String>,
+    },
+    /// The account's calendar data changed: a calendar sync applied objects,
+    /// or a horizon advance materialized occurrences. The host's one answer is
+    /// to re-read whatever calendar surface it renders.
+    CalendarChanged {
+        /// The account, as text.
+        account: String,
+    },
+    /// The account's contacts changed: a contacts sync applied address books
+    /// or cards. The host's one answer is to re-read its people surface.
+    ContactsChanged {
+        /// The account, as text.
+        account: String,
     },
 }
 

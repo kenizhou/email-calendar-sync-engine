@@ -17,7 +17,9 @@
 //! races in a single process.
 
 mod cli;
+mod eas_pim;
 mod eas_sync;
+mod flags;
 mod ingest;
 
 use std::{collections::BTreeSet, path::Path};
@@ -221,10 +223,16 @@ pub async fn search_mail<C: Clock>(
     Ok(store.search_mail(&scopes, &parsed, limit).await?)
 }
 
-/// Searches calendar events in `account`'s calendar scope with a DSL query.
+/// Searches calendar events in `account`'s calendar scopes with a DSL query.
 ///
 /// Time-range (`before:`/`after:`) filters match materialized occurrences, so a
 /// range answer reflects the current expansion horizon.
+///
+/// The scopes are the account's ACTUAL event scopes — a provider-synced store
+/// holds its rows under provider scopes (EAS calendars, CalDAV collections, …)
+/// and a fixture store under the JMAP scope — the same `account_scopes` rule
+/// `search_mail` states. An account with no claimed scopes yet falls back to
+/// the JMAP scope, the fixture shape.
 ///
 /// # Errors
 ///
@@ -237,8 +245,14 @@ pub async fn search_calendar<C: Clock>(
     limit: usize,
 ) -> Result<SearchResults, CliError> {
     let parsed = CalendarQuery::parse(query)?;
-    let scope = calendar_scope(account);
-    Ok(store
-        .search_calendar(std::slice::from_ref(&scope), &parsed, limit)
-        .await?)
+    let mut scopes: Vec<SyncScope> = store
+        .account_scopes(account.clone())
+        .await?
+        .into_iter()
+        .filter(|scope| scope.object_kind() == Some(engine_core::sync::ObjectKind::Event))
+        .collect();
+    if scopes.is_empty() {
+        scopes.push(calendar_scope(account));
+    }
+    Ok(store.search_calendar(&scopes, &parsed, limit).await?)
 }

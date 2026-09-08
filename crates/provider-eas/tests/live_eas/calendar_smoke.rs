@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 //! Live Sync first page against the calendar folder.
 
+use engine_provider::Provider as _;
+
 use super::*;
 
 /// Smoke: find a Calendar folder (folder_type 8) in the FolderSync bootstrap
@@ -34,7 +36,7 @@ async fn calendar_first_page_smoke() {
         pick_protocol_version(&server.protocol_versions.join(","), CLIENT_KNOWN_VERSIONS)
             .expect("no common EAS protocol version with the server");
     config.protocol_version = negotiated;
-    let mut client = live_client(config);
+    let mut client = live_client(config.clone());
     client
         .provision()
         .await
@@ -139,4 +141,36 @@ async fn calendar_first_page_smoke() {
     };
     let page2 = client.sync(&req2).await.expect("Sync round 2 failed");
     assert_eq!(page2.status, 1, "Sync round-2 status must be 1 (success)");
+
+    // Adapter-level read path (P2 Task 2): the same calendar through
+    // `EasAdapter::sync_events` — the neutral-`Event` seam against live wire
+    // data. A fresh bootstrap enumerates everything, so the result is a
+    // snapshot; every item must key and carry the folder membership.
+    let adapter = provider_eas::adapter::EasAdapter::calendar_adapter(
+        live_client(config),
+        engine_core::ids::CalendarId::try_from(calendar.server_id.as_str())
+            .expect("the calendar ServerId keys a CalendarId"),
+    );
+    let account = engine_core::ids::AccountId::try_from("acct-eas-live").unwrap();
+    let sync = adapter
+        .sync_events(&account, None)
+        .await
+        .expect("adapter event sync failed");
+    assert!(
+        sync.is_snapshot(),
+        "a cursor-less pass enumerates everything — a snapshot"
+    );
+    let events = sync.update.changed();
+    eprintln!(
+        "adapter event snapshot: {} event(s), cursor {:?}",
+        events.len(),
+        sync.next_cursor.as_str()
+    );
+    for event in events {
+        assert_eq!(
+            event.calendars.as_set().len(),
+            1,
+            "membership is exactly the bound calendar folder"
+        );
+    }
 }

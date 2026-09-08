@@ -26,8 +26,9 @@ use engine_core::{
     calendar::{Calendar, Event, Participant, ParticipationStatus},
     error::FailureClass,
     ids::{CalendarId, EventId, ProviderKey, Uid},
+    mail::Message,
     membership::Memberships,
-    raw::RawIcal,
+    raw::{RawIcal, RawMime},
     sync::{JmapDataType, SyncScope, SyncState, SyncUpdate},
     time::{CalendarDateTime, LocalDateTime},
     version::{ETag, RevisionTokens},
@@ -67,6 +68,9 @@ mod scenarios;
 #[path = "calendar_writes/rsvp.rs"]
 mod rsvp;
 
+#[path = "calendar_writes/rsvp_invitation.rs"]
+mod rsvp_invitation;
+
 #[path = "calendar_writes/failing.rs"]
 mod failing;
 use failing::{BlockingSync, UnreadableEvents};
@@ -97,6 +101,11 @@ struct ServerState {
     version: u64,
     events: BTreeMap<String, Stored>,
     destroyed: Vec<(u64, ProviderKey)>,
+    /// Raw RFC 5322 sources served by `fetch_message_source`, by message id —
+    /// the invitation emails the RSVP facade reads its iTIP payload from.
+    sources: BTreeMap<String, Vec<u8>>,
+    /// Every `EventRsvp` the event-addressed verb received, newest last.
+    answered: Vec<EventRsvp>,
 }
 
 /// A calendar server that keeps state: it enforces the guard, stamps its own revisions,
@@ -121,6 +130,23 @@ impl CalendarServer {
             },
         );
         Self(Arc::new(Mutex::new(state)))
+    }
+
+    /// Teaches the server one message source — the invitation email a facade
+    /// test reads through `message_scheduling`.
+    fn serving(mut self, message_id: &str, raw: &[u8]) -> Self {
+        Arc::get_mut(&mut self.0)
+            .expect("serving() must run before the server is shared")
+            .get_mut()
+            .expect("server state")
+            .sources
+            .insert(message_id.to_owned(), raw.to_vec());
+        self
+    }
+
+    /// The `EventRsvp`s the event-addressed answer verb received, in order.
+    fn answers(&self) -> Vec<EventRsvp> {
+        self.0.lock().unwrap().answered.clone()
     }
 
     /// Refuses a write whose guard is not the revision the server currently holds — a
@@ -348,6 +374,7 @@ impl Provider for CalendarServer {
         SERVER_SCHEDULED.accept(rsvp)?;
         let mut state = self.0.lock().unwrap();
         CalendarServer::check_guard(&state, &rsvp.event, rsvp.guard.as_ref())?;
+        state.answered.push(rsvp.clone());
         let mut event = state.events[rsvp.event.as_str()].event.clone();
         let me = event
             .participants
@@ -378,6 +405,23 @@ impl Provider for CalendarServer {
             .destroyed
             .push((version, deletion.event.key().clone()));
         Ok(())
+    }
+
+    /// Serves the raw invitation sources `serving` taught the server — the read
+    /// `message_scheduling` (and therefore `rsvp_invitation`) runs first.
+    async fn fetch_message_source(
+        &self,
+        _account: &AccountId,
+        message: &Message,
+    ) -> ProviderResult<RawMime> {
+        self.0
+            .lock()
+            .unwrap()
+            .sources
+            .get(message.id.as_str())
+            .cloned()
+            .map(RawMime::new)
+            .ok_or_else(|| ProviderError::invalid_state("no such message source"))
     }
 }
 

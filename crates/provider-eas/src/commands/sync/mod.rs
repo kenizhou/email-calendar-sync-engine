@@ -13,12 +13,13 @@ mod request;
 mod tests;
 
 pub use change::{
-    CalendarAddAck, CalendarChange, CalendarItemStatus, EasChange, ResponseItemKind,
-    SyncChangeOutcome,
+    CalendarAddAck, CalendarChange, CalendarItemStatus, ContactsChange, EasChange,
+    ResponseItemKind, SyncChangeOutcome,
 };
 pub use change_parse::parse_sync_change_response;
 pub use change_request::{
-    build_calendar_change_request, build_sync_change_request, build_sync_change_request_at,
+    build_calendar_change_request, build_contacts_change_request, build_sync_change_request,
+    build_sync_change_request_at,
 };
 pub use estimate::{build_get_item_estimate_request, parse_get_item_estimate_response};
 pub use parse::{parse_sync_response, parse_sync_response_for_class};

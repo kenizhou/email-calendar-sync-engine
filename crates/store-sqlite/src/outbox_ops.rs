@@ -1,5 +1,6 @@
 //! The outbox half of the store: enqueue (idempotent), claim (dependency,
-//! resource, and lease-expiry filtering), mark, and op-state read.
+//! resource, and lease-expiry filtering), mark, release (back to `Pending`
+//! under the holder's lease), and op-state read.
 //!
 //! Claim replays the reference store's algorithm over the account's ops loaded in
 //! id order, so the runnable set is identical: skip ops with unmet dependencies,
@@ -172,6 +173,48 @@ pub(crate) fn mark(
     tx.execute(
         "UPDATE pending_op SET state = ?1, lease_expiry = NULL WHERE id = ?2",
         (convert::state_to_text(state), id),
+    )
+    .map_err(convert::backend)?;
+    tx.commit().map_err(convert::backend)?;
+    Ok(())
+}
+
+/// Hands a claimed op back to `Pending` under its lease: the op-release
+/// counterpart of the scope release, for a holder that cannot execute what it
+/// claimed. The fencing token is bumped, so the released lease can neither
+/// mark nor release again; the op is claimable again immediately.
+///
+/// # Errors
+///
+/// Returns [`StoreError::StaleLease`] if `token` is no longer current or the
+/// op is no longer `InFlight` (already marked or re-claimed), or
+/// [`StoreError::Backend`] on a backend failure.
+pub(crate) fn release(conn: &mut Connection, op_id: PendingOpId, token: u64) -> Result<()> {
+    let tx = conn.transaction().map_err(convert::backend)?;
+    let id = convert::op_id_to_i64(op_id)?;
+    // The `InFlight` filter is load-bearing: `mark` does not bump the token,
+    // so the token alone would let a lease whose op already recorded an
+    // outcome walk it back to runnable.
+    let current: Option<i64> = tx
+        .query_row(
+            "SELECT token FROM pending_op WHERE id = ?1 AND state = 'InFlight'",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(convert::backend)?;
+    let current_matches = match current {
+        Some(stored) => convert::generation_from_i64(stored)? == token,
+        None => false,
+    };
+    if !current_matches {
+        return Err(StoreError::StaleLease);
+    }
+
+    let bumped = FenceToken::from_generation(token).bump();
+    tx.execute(
+        "UPDATE pending_op SET token = ?1, state = 'Pending', lease_expiry = NULL WHERE id = ?2",
+        (convert::generation_to_i64(bumped.get())?, id),
     )
     .map_err(convert::backend)?;
     tx.commit().map_err(convert::backend)?;

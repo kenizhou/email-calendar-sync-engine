@@ -79,3 +79,8 @@ pub(crate) const DEFAULT_DRAIN_PAGE: usize = 500;
 
 #[cfg(test)]
 mod tests;
+
+/// The invitation-RSVP verb default(s), split from `tests.rs` (the 500-line ceiling).
+#[cfg(test)]
+#[path = "tests_rsvp_invite.rs"]
+mod tests_rsvp_invite;

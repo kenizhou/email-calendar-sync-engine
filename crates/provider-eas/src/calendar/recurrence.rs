@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use super::{
-    CAL_RECURRENCE_DAY_OF_MONTH, CAL_RECURRENCE_DAY_OF_WEEK, CAL_RECURRENCE_INTERVAL,
-    CAL_RECURRENCE_MONTH_OF_YEAR, CAL_RECURRENCE_OCCURRENCES, CAL_RECURRENCE_TYPE,
-    CAL_RECURRENCE_UNTIL, CAL_RECURRENCE_WEEK_OF_MONTH, PAGE_CALENDAR,
+    CAL_RECURRENCE_DAY_OF_MONTH, CAL_RECURRENCE_DAY_OF_WEEK, CAL_RECURRENCE_FIRST_DAY_OF_WEEK,
+    CAL_RECURRENCE_INTERVAL, CAL_RECURRENCE_MONTH_OF_YEAR, CAL_RECURRENCE_OCCURRENCES,
+    CAL_RECURRENCE_TYPE, CAL_RECURRENCE_UNTIL, CAL_RECURRENCE_WEEK_OF_MONTH, PAGE_CALENDAR,
     fields::{parse_datetime_field, tag_label, text_value_opt},
     model::CalendarRecurrence,
 };
@@ -86,9 +86,15 @@ pub(super) fn parse_recurrence(elem: &WbxmlElement) -> CalendarRecurrence {
                 rec.month_of_year =
                     parse_rec_number("MonthOfYear", child, |n| (1..=12).contains(&n), "1-12");
             }
+            // §2.2.2.24 (14.0+): 0=Sunday..6=Saturday — the WKST counterpart;
+            // out-of-enum values warn but stay raw (the converter decides).
+            (PAGE_CALENDAR, CAL_RECURRENCE_FIRST_DAY_OF_WEEK) => {
+                rec.first_day_of_week =
+                    parse_rec_number("FirstDayOfWeek", child, |n| n <= 6, "0-6");
+            }
             _ => {
-                // Covers CalendarType (0x37), IsLeapMonth (0x38),
-                // FirstDayOfWeek (0x39) — not modeled by the v1 struct.
+                // Covers CalendarType (0x37) and IsLeapMonth (0x38) — not
+                // modeled by the v1 struct.
                 log::debug!(
                     "calendar Recurrence: skipping unmodeled child {} (page {} token \
                      0x{:02X})",
@@ -378,5 +384,48 @@ mod tests {
         assert_eq!(rec.until.as_deref(), Some("20261231T235959Z"));
         assert_eq!(rec.occurrences, Some(5));
         assert!(!rec.no_end);
+    }
+
+    /// FirstDayOfWeek ([MS-ASCAL] §2.2.2.24): unsignedByte 0=Sunday..6=
+    /// Saturday, disambiguating biweekly (INTERVAL=2) recurrences across
+    /// localities. In-range parses; out-of-range warns but is kept raw (the
+    /// layer's fidelity rule — the converter decides); malformed → None.
+    /// Absent stays `None` (the converter's default week start).
+    #[test]
+    fn parse_recurrence_first_day_of_week() {
+        let rec = parse_recurrence(vec![
+            WbxmlElement::text(PAGE_CALENDAR, CAL_RECURRENCE_TYPE, "1"),
+            WbxmlElement::text(PAGE_CALENDAR, CAL_RECURRENCE_INTERVAL, "2"),
+            WbxmlElement::text(PAGE_CALENDAR, CAL_RECURRENCE_DAY_OF_WEEK, "5"),
+            WbxmlElement::text(PAGE_CALENDAR, CAL_RECURRENCE_FIRST_DAY_OF_WEEK, "0"),
+        ]);
+        assert_eq!(rec.first_day_of_week, Some(0), "0 = Sunday");
+
+        let rec = parse_recurrence(vec![
+            WbxmlElement::text(PAGE_CALENDAR, CAL_RECURRENCE_TYPE, "1"),
+            WbxmlElement::text(PAGE_CALENDAR, CAL_RECURRENCE_FIRST_DAY_OF_WEEK, "6"),
+        ]);
+        assert_eq!(rec.first_day_of_week, Some(6), "6 = Saturday");
+
+        // Out of the §2.2.2.24 enum: warn, keep raw (converter's decision).
+        let rec = parse_recurrence(vec![
+            WbxmlElement::text(PAGE_CALENDAR, CAL_RECURRENCE_TYPE, "1"),
+            WbxmlElement::text(PAGE_CALENDAR, CAL_RECURRENCE_FIRST_DAY_OF_WEEK, "7"),
+        ]);
+        assert_eq!(rec.first_day_of_week, Some(7));
+
+        // Malformed and absent shapes.
+        let rec = parse_recurrence(vec![
+            WbxmlElement::text(PAGE_CALENDAR, CAL_RECURRENCE_TYPE, "1"),
+            WbxmlElement::text(PAGE_CALENDAR, CAL_RECURRENCE_FIRST_DAY_OF_WEEK, "monday"),
+        ]);
+        assert_eq!(rec.first_day_of_week, None);
+
+        let rec = parse_recurrence(vec![WbxmlElement::text(
+            PAGE_CALENDAR,
+            CAL_RECURRENCE_TYPE,
+            "1",
+        )]);
+        assert_eq!(rec.first_day_of_week, None, "absent stays None");
     }
 }

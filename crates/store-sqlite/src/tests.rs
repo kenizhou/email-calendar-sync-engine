@@ -28,13 +28,13 @@ fn a_normalizer_version_change_clears_sync_cursors() {
     crate::migrations::migrate(&mut conn, FtsTokenizer::PorterUnicode61).unwrap();
 
     // A synced scope carries a cursor; reconciling at the same version keeps it.
-    super::reconcile_normalizer_version(&conn, 1).unwrap();
+    crate::migrations::reconcile_normalizer_version(&conn, 1).unwrap();
     conn.execute(
         "INSERT INTO sync_scope (scope_key, account, token, cursor) VALUES ('s', 'a', 1, 'c1')",
         [],
     )
     .unwrap();
-    super::reconcile_normalizer_version(&conn, 1).unwrap();
+    crate::migrations::reconcile_normalizer_version(&conn, 1).unwrap();
     let cursor: Option<String> = conn
         .query_row(
             "SELECT cursor FROM sync_scope WHERE scope_key = 's'",
@@ -49,7 +49,7 @@ fn a_normalizer_version_change_clears_sync_cursors() {
     );
 
     // A bump clears the cursor, so the next sync re-snapshots + re-normalizes.
-    super::reconcile_normalizer_version(&conn, 2).unwrap();
+    crate::migrations::reconcile_normalizer_version(&conn, 2).unwrap();
     let cursor: Option<String> = conn
         .query_row(
             "SELECT cursor FROM sync_scope WHERE scope_key = 's'",

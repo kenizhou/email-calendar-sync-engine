@@ -15,7 +15,8 @@
 
 use engine_core::{
     contact::{ContactDraft, ContactPatch},
-    ids::ContactId,
+    ids::{ContactId, MailboxId, MessageId},
+    membership::Memberships,
     write::SubmitPayload,
 };
 use engine_provider::{
@@ -98,11 +99,41 @@ pub enum OutboxIntent {
         /// The answer to record.
         rsvp: EventRsvp,
     },
+    /// Answer one invitation by referencing the invitation **message** — the
+    /// transports whose protocol answers from the email (EAS `MeetingResponse`),
+    /// where the store may hold no event at all.
+    RsvpEventFromInvite {
+        /// The answer to record.
+        rsvp: EventRsvp,
+        /// The invitation email's addressing half — what a replay re-identifies
+        /// the message by ([`InviteRef`]).
+        invite: InviteRef,
+    },
     /// Delete one event (or one of its occurrences).
     DeleteEvent {
         /// The event (or occurrence) to delete.
         deletion: EventDeletion,
     },
+}
+
+/// The durable reference to an invitation message: its [`MessageId`] and mailbox
+/// membership — the addressing half a message-referencing transport needs to
+/// re-identify the email, and nothing more.
+///
+/// A [`Message`](engine_core::mail::Message) is serialize-only by design (it is
+/// never what storage holds), so the intent cannot carry one whole; a replay
+/// reconstructs `Message::new(id, mailboxes)` from these, which is exactly the
+/// shape every message-referencing adapter addresses its protocol by. The
+/// scheduling facts of the answer travel in the [`EventRsvp`] beside it, so no
+/// body is ever re-read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InviteRef {
+    /// The invitation email's provider id (the EAS `ServerId`, an IMAP
+    /// `(mailbox, UIDVALIDITY, UID)` key, …).
+    pub message: MessageId,
+    /// The invitation email's mailbox memberships — the first of which names the
+    /// collection the message sits in.
+    pub mailboxes: Memberships<MailboxId>,
 }
 
 #[cfg(test)]
@@ -111,8 +142,8 @@ mod tests {
         calendar::Event,
         contact::{ContactCard, ContactDraft, ContactKind, ContactPatch, FieldPatch},
         ids::{
-            AddressBookId, CalendarId, ContactId, EventId, MailboxId, MessageIdHeader, ProviderKey,
-            Uid,
+            AddressBookId, CalendarId, ContactId, EventId, MailboxId, MessageId, MessageIdHeader,
+            ProviderKey, Uid,
         },
         mail::EmailAddress,
         membership::Memberships,
@@ -127,7 +158,7 @@ mod tests {
     };
     use serde_json::json;
 
-    use super::OutboxIntent;
+    use super::{InviteRef, OutboxIntent};
 
     /// Every verb's intent, one row each — the two submission paths share
     /// `submit_mail`, so it has two rows. Each round-trips through a durable
@@ -147,6 +178,7 @@ mod tests {
             (patch_event(), "patch_event"),
             (put_event_doc(), "put_event_doc"),
             (rsvp_event(), "rsvp_event"),
+            (rsvp_event_from_invite(), "rsvp_event_from_invite"),
             (delete_event(), "delete_event"),
         ];
         for (intent, verb) in table {
@@ -268,6 +300,20 @@ mod tests {
                 "alice@test.local",
                 RsvpResponse::Accepted,
             ),
+        }
+    }
+
+    fn rsvp_event_from_invite() -> OutboxIntent {
+        OutboxIntent::RsvpEventFromInvite {
+            rsvp: EventRsvp::to(
+                &stored_event("/cal/default/evt-6.ics", "evt-6@test.local"),
+                "alice@test.local",
+                RsvpResponse::Tentative,
+            ),
+            invite: InviteRef {
+                message: MessageId::try_from("imap:v1:u42@INBOX").unwrap(),
+                mailboxes: Memberships::of_one(MailboxId::try_from("INBOX").unwrap()),
+            },
         }
     }
 

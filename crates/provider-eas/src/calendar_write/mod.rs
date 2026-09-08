@@ -13,10 +13,10 @@
 //! ```text
 //! Timezone, AllDayEvent, StartTime, EndTime (always emitted),
 //! Subject?, Location?, Body?, Sensitivity?, BusyStatus?, Reminder?,
-//! Attendees?, Recurrence?
+//! Attendees?, Recurrence?, Exceptions?
 //! ```
-//! `Option` fields are emitted only when `Some`; the `Attendees` container
-//! is omitted when the list is empty.
+//! `Option` fields are emitted only when `Some`; the `Attendees` and
+//! `Exceptions` containers are omitted when their lists are empty.
 //!
 //! Server-managed on write — NEVER emitted ([MS-ASCAL] §2.2.2): `UID`
 //! (§2.2.2.46), `DtStamp` (§2.2.2.18), `MeetingStatus` (§2.2.2.28),
@@ -29,11 +29,17 @@
 //! ignores them.
 //!
 //! Recurrence: `Recurrence { Type, Interval?, DayOfWeek?, DayOfMonth?,
-//! WeekOfMonth?, MonthOfYear?, Until? XOR Occurrences? }` reusing the
-//! parse-model [`CalendarRecurrence`](crate::calendar::CalendarRecurrence).
+//! WeekOfMonth?, MonthOfYear?, FirstDayOfWeek?, Until? XOR Occurrences? }`
+//! reusing the parse-model [`CalendarRecurrence`](crate::calendar::CalendarRecurrence).
 //! `no_end` is DERIVED, not a wire
 //! token ([MS-ASCAL] §2.2.2.37.1) — never emitted; `Until` wins when both
 //! end conditions are (invalidly) set, with a warning.
+//!
+//! Exceptions: `Exceptions > Exception` reusing the parse-model
+//! [`CalendarException`](crate::calendar::CalendarException) — deleted
+//! markers carry `ExceptionStartTime` + `Deleted` only; modified
+//! occurrences carry `ExceptionStartTime` then their changed subset (the
+//! write twin of `calendar::parse_exceptions`).
 //!
 //! Timezone: fixed-offset TZI blob only (design D6 — no DST rules on
 //! write); see

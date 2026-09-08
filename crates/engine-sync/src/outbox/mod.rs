@@ -16,11 +16,13 @@
 //!
 //! These are the thin per-op drivers — one op, claimed and resolved inline as
 //! enqueue-and-claim, the verb's execution half, and a mark. That middle half
-//! is shared: the dispatchers ([`execute_claimed_mail`](execute::execute_claimed_mail)
-//! and [`execute_claimed_contact`](execute::execute_claimed_contact)) dispatch
+//! is shared: the dispatchers ([`execute_claimed_mail`](execute::execute_claimed_mail),
+//! [`execute_claimed_contact`](execute::execute_claimed_contact), and
+//! [`execute_claimed_calendar`](execute::execute_claimed_calendar)) dispatch
 //! on the claimed op's tagged intent alone, which is what lets the outbox
 //! drainer ([`drain_mail_ops`](drain::drain_mail_ops) /
-//! [`drain_contact_ops`](drain::drain_contact_ops)) replay ops the inline
+//! [`drain_contact_ops`](drain::drain_contact_ops) /
+//! [`drain_calendar_ops`](drain::drain_calendar_ops)) replay ops the inline
 //! driver never finished.
 
 mod calendar;
@@ -28,6 +30,7 @@ mod contact;
 pub(crate) mod drain;
 pub(crate) mod execute;
 mod intent;
+mod invite;
 mod mail;
 
 use core::time::Duration;
@@ -37,13 +40,14 @@ pub use calendar::{
     put_calendar_document, rsvp_calendar_event,
 };
 pub use contact::{ContactWriteOutcome, create_contact, delete_contact, patch_contact};
-pub use drain::{drain_contact_ops, drain_mail_ops};
+pub use drain::{drain_calendar_ops, drain_contact_ops, drain_mail_ops};
 use engine_core::{
     ids::AccountId,
     write::{PendingOp, PendingOutcome},
 };
 use engine_store::{LeaseRequest, LeasedPendingOp, Store, WorkerId};
-pub use intent::OutboxIntent;
+pub use intent::{InviteRef, OutboxIntent};
+pub use invite::rsvp_event_from_invite;
 pub use mail::{
     MailEditOutcome, ReportOutcome, SubmitOutcome, edit_mail, report_message, submit_mail,
     submit_mail_source,

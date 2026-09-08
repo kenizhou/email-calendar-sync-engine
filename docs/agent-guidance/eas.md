@@ -3,7 +3,11 @@
 > **Protocol client landed; adapter standing up verb by verb — connection
 > facts + scopes + FolderSync (`sync_mailboxes`) + Sync class Email
 > (`stream_email`) are in; the mail read domain is complete and the `mail`
-> capability bit is on.** The per-verb verdicts below come from the trait-shape spike
+> capability bit is on; the calendar read domain (`sync_calendars` +
+> `sync_events`, class-Calendar Sync) and the calendar write verbs
+> (`create_event`/`patch_event`/`delete_event` over Sync Commands upsync)
+> are in on calendar-bound adapters (`put_event` refused — EAS's update is
+> a field-level Change, not a document PUT).** The per-verb verdicts below come from the trait-shape spike
 > (Plan B Task 3, 2026-08-24) and are stable. The relocation series has since
 > brought the crate to engine quality — edition 2024, workspace lints, module
 > split under the 500-line cap, the engine-tls transport, normalized live gating —
@@ -89,7 +93,7 @@ table behind every verdict here.
 | `SendMail` / `SmartForward` / `SmartReply` | `client/compose.rs`, `commands/send.rs` | submission (`submit_email`); SmartForward degrades to SendMail on rejection |
 | `MoveItems` | `client/items.rs::move_items` | per-message move (`MailEdit::MoveTo`) |
 | `ItemOperations` (Fetch / EmptyFolderContents / Move-conversation) | `client/items.rs`, `commands/item_operations/` | body/MIME/attachment fetch (`fetch_message_source`), destructive extras (no engine verbs) |
-| `MeetingResponse` | `client/items.rs`, `commands/meeting.rs` | invitation answer (`rsvp_event`) |
+| `MeetingResponse` | `client/items.rs`, `commands/meeting.rs` | invitation answer (`rsvp_event_from_invite`) |
 | `Ping` | `client/items.rs`, `commands/ping.rs` | push (`Watch`) |
 | `GetItemEstimate` / `Search` / `ResolveRecipients` / `ValidateCert` | `client/items.rs` / `client/settings.rs` | counts, GAL/mailbox search, cert validation (no engine verbs yet) |
 
@@ -161,7 +165,19 @@ table behind every verdict here.
   of guessing: the orchestrator re-syncs, the pass re-seeds the ledger, and
   the outbox retries the edit. A dead key (crash between edit and next pass,
   or a partially-applied chunked batch) surfaces as Sync status 3 and takes
-  the stream's standing in-pass Reconcile recovery.
+  the stream's standing in-pass Reconcile recovery. The **hierarchy** key
+  has its own shared ledger (`adapter/hierarchy.rs`): one server FolderSync
+  cursor serves BOTH container scopes (`EasFolderList`/`EasCalendarList`),
+  so the adapter tracks the freshest key plus a per-scope backlog of rows a
+  riding scope missed (its class's folders, the class-less deletions, and
+  the present-set after another scope's bootstrap — the riding pass then
+  reads as a snapshot). Interleaved container passes share one cursor
+  instead of invalidating each other into status-9 re-enumerations; a
+  behind-ledger (another adapter advanced the server) still self-heals
+  through the status-9 recovery. Per adapter — cross-adapter interleaves
+  keep the old self-healing shape. The calendar write verbs ride the same
+  collection-key ledger discipline against the bound calendar folder
+  (seeded by a completed `sync_events` pass, rotated by each write).
 
 ## TLS decision record (landed — P0-b Task 8)
 
@@ -254,6 +270,18 @@ the counterpart of 110's "do not retry") as transient — the server answers it
 under fan-out load and recovers, and classifying it permanent reported a hard
 failure for every folder that followed.
 
+The P2 arms extend the same command over the PIM families (offline twins in
+`tests/transport_harness/engine_cli_pim_flow.rs`, live twins in
+`tests/live_eas/engine_cli_pim.rs`): `--kind calendar` drives the engine's own
+`sync_calendar` fan-out over the discovered class-`Calendar` collections
+(per-collection adapters, the container pass riding the shared store cursor)
+and ends with the occurrence materialization summary;
+`--kind calendar --create` adds the create→re-sync round-trip that proves the
+Sync Add ack's ServerId backfill (the probe's uid is deterministic in the
+account, so a repeat run against the same store resolves as a duplicate);
+`--kind contacts` drives `sync_contacts` over the discovered type-9 address
+books and ends with the people count.
+
 **Fixtures**: anything learned from a live run (a wire shape, a status quirk, a
 version-specific behaviour) must be captured as a **scrubbed fixture** wired into
 the offline suite — observed bytes with every identifier moved to a reserved
@@ -284,11 +312,11 @@ document; this is the summary.
 | `file_sent_copy` | rejecting default — the server files the copy (`SaveInSentItems`), `Unfiled` never occurs | no gap |
 | `edit_mail` | **landed** (`adapter/mutate.rs`): `SetKeywords` → Sync `Change` upsync (`$seen`→`Read`, `$flagged`→`Flag` incl. the empty `<Flag/>` clear form; any other keyword refused permanently pre-wire — the IMAP `PERMANENTFLAGS` spirit); `MoveTo` → `MoveItems` with the bound folder as source collection, receipt records the SOURCE key (the moved copy is a new ServerId that reconciles next sync); `Delete` → **refused `InvalidState`** (decided): EAS has no per-item hard delete and the trait's Delete means permanent — the documented policy is `MoveTo` the deleted-items folder (what Kylins' own source does); the upsync's collection SyncKey comes from the adapter's **key ledger** (see the quirk notes) | no gap (quirk decisions recorded here) |
 | `Watch` (Ping) | **landed** (`adapter/watch.rs`, handed out by `EasAdapter::watcher`): one session watches the bound folder; status 2 → `Changed` (and a non-empty changed-folder list is a change signal whatever the status label — the mislabel defense), status 1 → `KeepAlive`; status 5 is absorbed (the client's retry carries the server interval on the wire; the watcher adopts it clamped into the 300–900 s band, ported from Kylins with its live evidence); a transport drop tunes DOWN before surfacing retryable (proxy/NAT idle kills); error statuses classify through the Ping table (7 → `NeedsResync`, else permanent; an HTTP 429 stays `RateLimited`); the tuning survives restarts via `heartbeat_secs`/`set_heartbeat_secs` — no trait seam needed | no gap; two *optional* fork records below |
-| `calendar_scope`/`event_scope`, `sync_calendars`, `sync_events` | FolderSync class-discovered calendar folders; Sync class `Calendar` (`calendar_added`/`updated` + shared deletes) | rides the same fork patch for scopes; otherwise no gap |
-| `create_event` / `patch_event` | Sync `Add` with ClientId (server returns ServerId — the only id-reveal point) / Sync `Change` with `Supported`-element ghosting; `WriteGuard::Absent`, empty `RevisionTokens` | no gap (expressible; P2 implements) |
-| `put_event` | rejecting default — EAS's update verb is a field-level Change, not a document PUT (trait explicitly allows this) | no gap |
-| `rsvp_event` | `MeetingResponse` (collection + request id of the *invite email*, `user_response`, `instance_id` for one occurrence, `send_response` ↔ notify); `RsvpControls { comment: false, suppress_notification: true }`; the invite-email reference travels in `Event`'s extended properties | no gap (expressible; P2) |
-| `delete_event` | Sync `Delete`; occurrence = exception insertion via Change; already-gone = success | no gap (expressible; P2) |
+| `calendar_scope`/`event_scope`, `sync_calendars`, `sync_events` | **landed** (P2 Task 2, `adapter/calendar.rs`): the scope overrides return `EasCalendarList`/`EasCalendar`; `sync_calendars` is the FolderSync container verb filtered to the Calendar class (folder Type 8), driven through the **shared hierarchy ledger** (`adapter/hierarchy.rs` — both container scopes ride one server cursor; see the quirk notes) with the status-9 in-call snapshot recovery (the mail slice's shape); `sync_events` is Sync class `Calendar` over the adapter's **calendar binding** (`EasAdapter::with_calendar` / `calendar_adapter` — the Graph placeholder-discovery pattern; the `calendars` capability bit flips with the binding, per the verb ladder), with the collection SyncKey as cursor, in-call `MoreAvailable` paging, the Exchange-15.2 empty-bootstrap follow, and status-3/12 invalidation recovered in-call by re-bootstrapping once as a snapshot (atomic whole-scope apply makes the restart clean). Items convert via `calendar::calendar_event_from_props` (id = ServerId, uid = the EAS UID, fixed-offset `Etc/GMT±H` TZI fold — see `calendar/convert_time.rs` — structural recurrence incl. exceptions as overrides); a malformed item is skipped, never failing the pass. The binding also flips `calendar_writes` (its verbs landed — see the write rows) and `calendar_rsvp` (the invitation answer landed with it — see the RSVP row) | no gap |
+| `create_event` / `patch_event` | **landed** (P2 Task 3, `adapter/calendar_write.rs`): `create` → Sync `Add` with a synthesized ≤40-char ClientId — the ack under `Responses` ([MS-ASCMD] §2.2.3.7.2) is the only id-reveal point, and an ack-less success keys the ClientId placeholder (reconciled by `uid` next pass). `patch` → Sync `Change`: a **complete** `ApplicationData` rebuilt from `base` + patch (safe under both ghosting and whole-replacement server semantics), through `calendar/convert_write*.rs` — times fold back through the **fixed-offset** TZI only (a named-DST zone refuses: no adapter carries tzdata to resolve it, never a guessed offset); `PatchTarget::Series` rebuilds the master, `Instance` re-emits the master's `Exceptions` container with the target occurrence updated (start AND end when either moves); clears write explicit empty elements (never a ghosted old value); attendees ride as Email+Name (AttendeeStatus server-owned), the organizer NEVER (Status 6 evidence); EAS-native busy/sensitivity ride back from `extended["eas/*"]`; recurrence: engine rule → EAS Type/parts (the inverse of the read mapping), `Until` from the resolved instant or derived through the fixed offset; everything unrepresentable (sub-daily, BYSETPOS, daily+BYDAY, rule unions, exotic alerts/override fields) **refuses** rather than silently flattens. `WriteGuard::Absent` (Sync Change carries no revision tokens — last-write-wins) + `OverrideSurvival::kept()` by construction (a series Replace re-emits every override from the base — the CalDAV structural-patcher argument). The write rides the calendar collection-key ledger (cold → `NeedsResync`) | no gap (expressible; landed) |
+| `put_event` | **landed as the rejecting default** — EAS's update verb is a field-level Change, not a document PUT, and there is no iCalendar document on an EAS server to PUT; the refusal names `patch_event` (the trait explicitly allows an adapter advertising `calendar_writes` to leave this refused) | no gap |
+| `rsvp_event` / `rsvp_event_from_invite` | **landed** (P2 Task 4, `adapter/calendar_write.rs`): `rsvp_event` is **refused `InvalidState`** pointing at the message path (MeetingResponse addresses the invite EMAIL — a stored event names nothing the protocol can answer from), and `rsvp_event_from_invite` **is** `MeetingResponse`: `CollectionId` = the invite email's own mailbox membership (never the bound calendar), `RequestId` = the message id verbatim (the T4 identity mapping), `user_response` 1/2/3 (accept/tentative/decline), `InstanceId` never sent today (the neutral `EventRsvp` carries no occurrence target — the per-occurrence form maps there when one lands), `SendResponse` emitted iff notify ∧ negotiated version carries the token (16.0/16.1); `base` ignored by design — an EAS account can answer an invitation whose event the store has never held (the reason the fork verb exists; the engine facade is `Engine::rsvp_invitation`). `RsvpControls { comment: false (nowhere in the page-8 schema), suppress_notification: negotiated 16.0/16.1 (pre-negotiate: false), guard: WriteGuard::Absent }`, composed per call from the negotiated version so the wire never disagrees with the advertisement. No ledger ride — MeetingResponse carries no SyncKey | no gap (landed) |
+| `delete_event` | **landed** (P2 Task 3): `DeleteTarget::Series` → wire `Delete` { ServerId }; `Occurrence` → a `Change` of the master carrying the deleted-marker exception ([MS-ASCAL] §2.2.2.16, the EXDATE form — the base event is REQUIRED for this form, it rewrites the series document); already-gone = success (a per-item 8, or no item status at all per §2.2.3.154); a failed item status surfaces with its code | no gap (landed) |
 | `ContactsProvider` (`sync_address_books`…`delete_contact`) | FolderSync contacts folders + Sync class Contacts; `Add`/`Change`/`Delete` with ghosting; `WriteGuard::Absent` | rides the scope fork patch; otherwise no gap (P2) |
 | `fetch_contact_photo` | EAS pictures are **in-band** (`Picture` inside ApplicationData; currently dropped at parse, presence-only) — retain the bytes (P2) and serve them; `ContactPhoto` fits (fingerprint = sync-key revision) | EAS-local TODO; no engine gap |
 

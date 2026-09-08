@@ -240,6 +240,19 @@ impl UtcDateTime {
             .checked_add(time::Duration::new(secs, nanos))
             .map(Self)
     }
+
+    /// Returns this instant rewound by `span`, or `None` on underflow — the
+    /// rewind twin of [`checked_add`](Self::checked_add), for the windows that
+    /// reach **before** an anchor (a lookup around an event's start spans both
+    /// directions).
+    #[must_use]
+    pub fn checked_sub(self, span: core::time::Duration) -> Option<Self> {
+        let secs = i64::try_from(span.as_secs()).ok()?;
+        let nanos = i32::try_from(span.subsec_nanos()).ok()?;
+        self.0
+            .checked_sub(time::Duration::new(secs, nanos))
+            .map(Self)
+    }
 }
 
 impl fmt::Display for UtcDateTime {
@@ -411,6 +424,33 @@ mod tests {
         // A span too large to represent returns None rather than wrapping.
         assert!(
             t.checked_add(core::time::Duration::from_secs(u64::MAX))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn checked_sub_rewinds_round_trips_and_saturates_on_underflow() {
+        let t: UtcDateTime = "2021-01-01T00:00:00Z".parse().unwrap();
+        let span = core::time::Duration::from_mins(1);
+        assert_eq!(
+            t.checked_sub(span).unwrap().to_string(),
+            "2020-12-31T23:59:00Z",
+            "the rewind crosses the year boundary"
+        );
+        // An odd span (not a clean multiple of a larger unit — the
+        // `checked_add` test's own convention) so the round-trip below cannot
+        // accidentally pass through a unit boundary coincidence.
+        let odd = core::time::Duration::from_secs(3661);
+        assert_eq!(
+            Some(t),
+            t.checked_sub(odd)
+                .and_then(|earlier| earlier.checked_add(odd)),
+            "sub then add of one span round-trips"
+        );
+        // A span past the representable beginning returns None rather than
+        // wrapping.
+        assert!(
+            t.checked_sub(core::time::Duration::from_secs(u64::MAX))
                 .is_none()
         );
     }

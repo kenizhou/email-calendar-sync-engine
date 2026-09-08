@@ -1,4 +1,26 @@
 //! Outbound mail submission shapes.
+//!
+//! # The rendered-source seam
+//!
+//! [`Provider::submit_email_source`](crate::Provider::submit_email_source) sends
+//! the caller's **own final MIME bytes** — e.g. a rendered message the host then
+//! signed or encrypted — **verbatim**, never re-rendered (contrast
+//! [`Provider::submit_email`](crate::Provider::submit_email), which renders a
+//! [`Draft`]), and files the Sent copy with **the same bytes** where the
+//! transport files it. The receipt's `message_id` is the bytes' own
+//! `Message-ID` header — the Write Contract: **stamp the id before submitting**.
+//!
+//! `recipients` is the envelope. Non-empty, it is the **exact** `RCPT TO` set —
+//! where Bcc lives: delivered with no `Bcc` header ever entering the bytes.
+//! Empty, the envelope is derived from the bytes' own `To`/`Cc` headers (a
+//! `Bcc` header left in the bytes is honored and travels it, visibly); a
+//! stripped `Bcc` header omitted from `recipients` is **not** delivered — an
+//! explicit choice, never a silent one. `MAIL FROM` is the bytes' `From`.
+//!
+//! A byte-capable transport (IMAP/SMTP) overrides the verb; one that re-renders
+//! from structured fields (JMAP) keeps the rejecting default *even though it
+//! advertises [`Capabilities::submission`](crate::Capabilities::submission)* —
+//! the capability covers `submit_email`, not the source form (`providers.md`).
 
 use core::fmt;
 

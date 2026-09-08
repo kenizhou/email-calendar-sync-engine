@@ -25,7 +25,7 @@
 use std::borrow::Cow;
 
 use engine_store::{Result, SchemaStatus, StoreError};
-use rusqlite::{Connection, Transaction};
+use rusqlite::{Connection, OptionalExtension, Transaction};
 
 use crate::{backfill, convert::backend, options::FtsTokenizer, schema};
 
@@ -127,6 +127,40 @@ fn run(conn: &mut Connection, migrations: &[Migration]) -> Result<SchemaStatus> 
         migrated_from: (applied > 0 && applied < migrations.len())
             .then(|| u32::try_from(applied).unwrap_or(u32::MAX)),
     })
+}
+
+/// On open, compares the stored `normalizer_version` to the build's `current`; on a
+/// mismatch (including a pre-V4 database with no row) it clears the sync cursors so the
+/// next sync re-normalizes everything, then records `current`. See
+/// [`engine_store::NORMALIZER_VERSION`].
+///
+/// Lives here because it is the post-migration half of opening the schema: the
+/// version is meta a migration step could not record, so the reconcile runs
+/// after `migrate` itself, before readers open.
+///
+/// # Errors
+///
+/// Returns [`StoreError::Backend`] on a backend failure.
+pub(crate) fn reconcile_normalizer_version(conn: &Connection, current: u32) -> Result<()> {
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'normalizer_version'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(backend)?;
+    if stored.as_deref() == Some(current.to_string().as_str()) {
+        return Ok(());
+    }
+    crate::scope_ops::clear_sync_cursors(conn)?;
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES ('normalizer_version', ?1)
+         ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        [current.to_string()],
+    )
+    .map_err(backend)?;
+    Ok(())
 }
 
 #[cfg(test)]

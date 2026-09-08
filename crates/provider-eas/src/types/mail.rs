@@ -63,6 +63,14 @@ pub fn new_calendar_client_id() -> String {
     new_send_client_id("CalAdd-")
 }
 
+/// Synthesize a Contacts Sync-Add ClientId (`"ConAdd-"` + simple uuid = 39
+/// chars, under the [MS-ASCMD] 40-char cap with no clamping needed) — the
+/// sibling of [`new_calendar_client_id`] for the contacts upsync Add
+/// command (P2 Task 5).
+pub fn new_contacts_client_id() -> String {
+    new_send_client_id("ConAdd-")
+}
+
 /// SmartForward request ([MS-ASCMD] §2.2.1.18): forward the message named
 /// by `source_server_id`, sending the forwarded MIME built by the caller.
 #[derive(Debug, Clone, Serialize, Deserialize)]

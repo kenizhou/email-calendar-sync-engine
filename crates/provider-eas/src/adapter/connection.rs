@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: MPL-2.0
 //! The trait half of the adapter: what [`EasAdapter`] reports, which scopes
-//! it names, and the verbs that have landed (FolderSync, Sync class Email,
+//! it names, and the verbs that have landed (FolderSync containers for mail
+//! and calendars, Sync class Email messages and class Calendar events,
 //! ItemOperations message-source fetch). The un-overridden defaults remain
 //! the honest behavior for every verb still to come (the module docs in
 //! `super` carry the ladder).
 
 use engine_core::{
+    calendar::{Calendar, Event},
     ids::AccountId,
     mail::{Mailbox, Message},
     raw::RawMime,
-    sync::{SyncScope, SyncState, SyncWindow},
+    sync::{JmapDataType, SyncScope, SyncState, SyncWindow},
 };
 use engine_provider::{ConnectionInfo, EmailStream, Provider, ProviderResult, ScopeSync};
 
@@ -35,9 +37,16 @@ impl Provider for EasAdapter {
     ///   per-server EAS ceiling exists to justify a wider one — the Graph precedent set its 4 from
     ///   live throttling evidence.
     fn connection_info(&self) -> ConnectionInfo {
+        // The RSVP controls are version-negotiated facts, so they compose per
+        // call with the calendar binding — never into the stored ladder (which
+        // must stay pre-negotiate-safe).
+        let capabilities = match self.calendar {
+            Some(_) => self.capabilities.with_calendar_rsvp(self.rsvp_controls()),
+            None => self.capabilities,
+        };
         ConnectionInfo {
             http_version: self.http.get(),
-            ..ConnectionInfo::new(self.capabilities)
+            ..ConnectionInfo::new(capabilities)
         }
     }
 
@@ -73,7 +82,7 @@ impl Provider for EasAdapter {
         _account: &AccountId,
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Mailbox>> {
-        super::mailboxes::sync(&self.client, cursor).await
+        super::mailboxes::sync(&self.client, &self.hierarchy, cursor).await
     }
 
     /// Sync class "Email" over the bound folder ([MS-ASSYNC]): the
@@ -171,5 +180,200 @@ impl Provider for EasAdapter {
         edit: &engine_provider::MailEdit,
     ) -> ProviderResult<engine_provider::MailEditReceipt> {
         super::mutate::edit(&self.client, &self.folder, &self.collection_key, edit).await
+    }
+
+    /// The same FolderSync hierarchy as the mail container scope, split into
+    /// its own per-account container scope — the calendar folders (class
+    /// `Calendar` / folder Type 8) are claimed and applied before the
+    /// per-calendar event scopes they parent.
+    fn calendar_scope(&self, account: &AccountId) -> SyncScope {
+        SyncScope::EasCalendarList {
+            account: account.clone(),
+        }
+    }
+
+    /// EAS item `Sync` is per collection, so event sync is per calendar
+    /// folder — [`SyncScope::EasCalendar`] keyed by the bound calendar's
+    /// ServerId, the Graph `GraphCalendar` / CalDAV `DavCollection` binding
+    /// precedent. Without a binding ([`EasAdapter::with_calendar`]) the
+    /// default JMAP shape stands — never consulted, since an unbound
+    /// adapter's capabilities do not advertise the calendar family.
+    fn event_scope(&self, account: &AccountId) -> SyncScope {
+        match &self.calendar {
+            Some(calendar) => SyncScope::EasCalendar {
+                account: account.clone(),
+                calendar: calendar.clone(),
+            },
+            None => SyncScope::JmapType {
+                account: account.clone(),
+                data_type: JmapDataType::CalendarEvent,
+            },
+        }
+    }
+
+    /// FolderSync filtered to the Calendar class ([MS-ASFD] folder Type 8):
+    /// the hierarchy SyncKey is the cursor (`None` bootstraps from `"0"` as
+    /// a snapshot, `Some(key)` returns the wire's Add/Update/Delete delta),
+    /// and a status-9 invalidation recovers inside the call as a
+    /// re-bootstrapped snapshot — the `sync_mailboxes` recovery shape.
+    /// `super::calendar` owns the mapping and its contract.
+    async fn sync_calendars(
+        &self,
+        _account: &AccountId,
+        cursor: Option<&SyncState>,
+    ) -> ProviderResult<ScopeSync<Calendar>> {
+        super::calendar::sync_calendars(&self.client, &self.hierarchy, cursor).await
+    }
+
+    /// Sync class "Calendar" over the bound calendar folder ([MS-ASSYNC]):
+    /// the collection SyncKey is the cursor (`None`/empty → bootstrap `"0"`
+    /// → snapshot), `MoreAvailable` pages the pass inside the call, and a
+    /// SyncKey invalidation (collection status 3/12) recovers inside the
+    /// call by re-bootstrapping once as a snapshot — the mail stream's
+    /// recovery adapted to the whole-scope verb. Items convert through the
+    /// read-side seam (`calendar::calendar_event_from_props`); a malformed
+    /// item is skipped, never failing the pass. Requires the calendar
+    /// binding ([`EasAdapter::with_calendar`]) — an unbound adapter refuses
+    /// `InvalidState`, and its capabilities never advertise the family.
+    async fn sync_events(
+        &self,
+        _account: &AccountId,
+        cursor: Option<&SyncState>,
+    ) -> ProviderResult<ScopeSync<Event>> {
+        match &self.calendar {
+            Some(calendar) => {
+                super::calendar::sync_events(&self.client, calendar, &self.calendar_key, cursor)
+                    .await
+            }
+            None => Err(super::calendar::unbound_calendar()),
+        }
+    }
+
+    /// Sync `Add` with a synthesized `ClientId` — the only id-reveal point:
+    /// the receipt keys the `ServerId` the server's `Responses` ack assigns
+    /// ([MS-ASCMD] §2.2.3.7.2; an ack-less success keys the ClientId
+    /// placeholder, reconciled away by `uid` on the next events pass). The
+    /// draft converts through `calendar::convert_write::write_from_draft`
+    /// (fixed-offset TZI fold; a named-DST zone refuses). The Add rides the
+    /// adapter's calendar collection-key ledger. Requires the calendar
+    /// binding. `super::calendar_write` owns the mapping.
+    async fn create_event(
+        &self,
+        _account: &AccountId,
+        draft: &engine_provider::EventDraft,
+    ) -> ProviderResult<engine_provider::EventWriteReceipt> {
+        match &self.calendar {
+            Some(calendar) => {
+                super::calendar_write::create(&self.client, calendar, &self.calendar_key, draft)
+                    .await
+            }
+            None => Err(super::calendar::unbound_calendar()),
+        }
+    }
+
+    /// Sync `Change` (Replace) of the master: a `Series` target rebuilds the
+    /// complete document from the base + patch; an `Instance` target
+    /// rebuilds the master carrying that occurrence as a modified exception
+    /// (the master's other overrides ride untouched — the
+    /// `OverrideSurvival::kept()` construction). An empty patch is a no-op
+    /// receipt. Requires the calendar binding. `super::calendar_write`.
+    async fn patch_event(
+        &self,
+        _account: &AccountId,
+        base: &Event,
+        edit: &engine_provider::EventEdit,
+    ) -> ProviderResult<engine_provider::EventWriteReceipt> {
+        match &self.calendar {
+            Some(calendar) => {
+                super::calendar_write::patch(&self.client, calendar, &self.calendar_key, base, edit)
+                    .await
+            }
+            None => Err(super::calendar::unbound_calendar()),
+        }
+    }
+
+    /// The documented rejecting default: EAS's update verb is a field-level
+    /// Sync `Change`, not a document PUT, and there is no iCalendar document
+    /// on an EAS server — [`Provider::patch_event`](Provider::patch_event)
+    /// is the supported path. The trait explicitly allows an adapter
+    /// advertising `calendar_writes` to leave this at the refusal.
+    async fn put_event(
+        &self,
+        _account: &AccountId,
+        write: &engine_provider::EventWrite,
+    ) -> ProviderResult<engine_provider::EventWriteReceipt> {
+        let _ = write;
+        Err(super::calendar_write::put_refusal())
+    }
+
+    /// The documented rejecting default made explicit: EAS answers an
+    /// invitation by referencing the invitation **email** (`MeetingResponse`,
+    /// the `rsvp_event_from_invite` override below) — a stored event names
+    /// nothing the protocol can address. `super::calendar_write` owns the
+    /// refusal text.
+    async fn rsvp_event(
+        &self,
+        _account: &AccountId,
+        _base: &Event,
+        _rsvp: &engine_provider::EventRsvp,
+    ) -> ProviderResult<engine_provider::EventWriteReceipt> {
+        Err(super::calendar_write::rsvp_refusal())
+    }
+
+    /// `MeetingResponse` ([MS-ASCMD] §2.2.1.11): the answer addresses the
+    /// invitation **email** — the `CollectionId` is the message's own mailbox
+    /// membership, the `RequestId` its `ServerId` (the message id, verbatim),
+    /// the `UserResponse` the answer's wire code, and `SendResponse` rides
+    /// only a 16.0/16.1 server asked to notify. `base` is ignored by design:
+    /// the store's copy of the event names nothing the protocol can address,
+    /// which is exactly why this verb exists — an EAS account can answer an
+    /// invitation whose event the store has never held. Requires the calendar
+    /// binding (the RSVP capability lands with it, like every calendar bit).
+    /// `super::calendar_write` owns the mapping and the control refusals.
+    async fn rsvp_event_from_invite(
+        &self,
+        _account: &AccountId,
+        invite: &Message,
+        _base: Option<&Event>,
+        rsvp: &engine_provider::EventRsvp,
+    ) -> ProviderResult<engine_provider::EventWriteReceipt> {
+        if self.calendar.is_none() {
+            return Err(super::calendar::unbound_calendar());
+        }
+        let controls = self.rsvp_controls();
+        // Emit SendResponse iff the answer asks the organizer be told AND the
+        // negotiated version carries the token — the same fact the controls
+        // advertise, so the wire can never disagree with them.
+        let send_response = rsvp.notify_organizer
+            && matches!(self.protocol_version.as_deref(), Some("16.0" | "16.1"));
+        super::calendar_write::rsvp_from_invite(&self.client, controls, send_response, invite, rsvp)
+            .await
+    }
+
+    /// Sync `Delete` of the ServerId for the series; an occurrence delete
+    /// is a `Change` of the master carrying the deleted-marker exception
+    /// (the EAS EXDATE form, [MS-ASCAL] §2.2.2.16) — which is why an
+    /// occurrence delete needs `base`. Already-gone is success (a per-item
+    /// 8, or no item status at all — [MS-ASCMD] §2.2.3.154). Requires the
+    /// calendar binding. `super::calendar_write`.
+    async fn delete_event(
+        &self,
+        _account: &AccountId,
+        base: Option<&Event>,
+        deletion: &engine_provider::EventDeletion,
+    ) -> ProviderResult<()> {
+        match &self.calendar {
+            Some(calendar) => {
+                super::calendar_write::delete(
+                    &self.client,
+                    calendar,
+                    &self.calendar_key,
+                    base,
+                    deletion,
+                )
+                .await
+            }
+            None => Err(super::calendar::unbound_calendar()),
+        }
     }
 }
