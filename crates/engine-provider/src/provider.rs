@@ -175,10 +175,11 @@ pub trait Provider: Send + Sync {
     ///
     /// `recipients` is the envelope. Non-empty, it is the **exact** `RCPT TO` set —
     /// where Bcc lives: delivered with no `Bcc` header ever entering the bytes.
-    /// Empty, the envelope is derived from the bytes' own `To`/`Cc` headers (a
-    /// `Bcc` header left in the bytes is honored and travels it, visibly); a
-    /// stripped `Bcc` header omitted from `recipients` is **not** delivered — an
-    /// explicit choice, never a silent one. `MAIL FROM` is the bytes' `From`.
+    /// Empty, the envelope is derived from the bytes' own `To`/`Cc`/`Bcc`
+    /// addr-specs, de-duplicated case-insensitively (a `Bcc` header left in the
+    /// bytes is honored and travels it, visibly); a stripped `Bcc` header omitted
+    /// from `recipients` is **not** delivered — an explicit choice, never a
+    /// silent one. `MAIL FROM` is the bytes' `From`.
     ///
     /// A byte-capable transport (IMAP/SMTP) overrides this; one that re-renders
     /// from structured fields (JMAP) keeps the rejecting default *even though it
