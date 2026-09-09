@@ -4,3 +4,7 @@
 .DS_Store
 .claude/worktrees
 .env
+
+# Local docker-compose overrides (restart policies etc.) — machine-specific,
+# never part of the deterministic harness CI starts from a clean slate with.
+docker-compose.override.yml
