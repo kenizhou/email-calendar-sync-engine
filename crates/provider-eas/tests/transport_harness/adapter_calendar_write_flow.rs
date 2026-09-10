@@ -16,7 +16,9 @@ use engine_core::{
     membership::Memberships,
     time::{CalendarDateTime, Duration, TimeZoneId, UtcDateTime},
 };
-use engine_provider::{EventDraft, EventEdit, EventPatch, Occurrence, PatchTarget, Provider as _};
+use engine_provider::{
+    CalendarWrites as _, EventDraft, EventEdit, EventPatch, Occurrence, PatchTarget, Provider as _,
+};
 use provider_eas::{
     calendar::{CAL_EXCEPTION, CAL_EXCEPTIONS, CAL_SUBJECT, PAGE_CALENDAR},
     commands::{

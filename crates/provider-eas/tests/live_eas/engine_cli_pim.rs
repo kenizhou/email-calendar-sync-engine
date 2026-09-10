@@ -130,7 +130,7 @@ async fn engine_cli_contacts_full_live() {
 /// ledger (a cold ledger refuses writes), then the series delete.
 async fn remove_probe(server_id: &str, uid: &str) {
     use engine_core::ids::{AccountId, CalendarId, EventId, Uid};
-    use engine_provider::{DeleteTarget, EventDeletion, Provider as _};
+    use engine_provider::{CalendarWrites as _, DeleteTarget, EventDeletion, Provider as _};
 
     let Some(mut config) = live_config() else {
         return;

@@ -16,7 +16,7 @@ use engine_core::{
     membership::Memberships,
     version::RevisionTokens,
 };
-use engine_provider::{EventRsvp, Provider as _, RsvpResponse};
+use engine_provider::{CalendarWrites as _, EventRsvp, Provider as _, RsvpResponse};
 use provider_eas::adapter::EasAdapter;
 // The MeetingResponse page-8 tokens the assertions decode (`commands/meeting`).
 use provider_eas::commands::{

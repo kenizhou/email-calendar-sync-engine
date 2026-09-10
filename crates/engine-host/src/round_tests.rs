@@ -16,8 +16,8 @@ use engine_core::{
     write::{IdempotencyKey, PendingOp, ResourceKey, SubmitPayload},
 };
 use engine_provider::{
-    Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, Provider, ProviderError,
-    ProviderResult, ScopeSync, SubmissionReceipt,
+    CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, Provider,
+    ProviderError, ProviderResult, ScopeSync, SubmissionReceipt,
 };
 use engine_store::Store as _;
 use engine_sync::OutboxIntent;
@@ -111,6 +111,8 @@ impl RoundMail {
         }
     }
 }
+
+impl CalendarWrites for RoundMail {}
 
 #[async_trait::async_trait]
 impl Provider for RoundMail {

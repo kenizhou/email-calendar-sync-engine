@@ -13,7 +13,9 @@ use engine_core::{
     raw::RawMime,
     sync::{JmapDataType, SyncScope, SyncState, SyncWindow},
 };
-use engine_provider::{ConnectionInfo, EmailStream, Provider, ProviderResult, ScopeSync};
+use engine_provider::{
+    CalendarWrites, ConnectionInfo, EmailStream, Provider, ProviderResult, ScopeSync,
+};
 
 use super::EasAdapter;
 
@@ -248,7 +250,13 @@ impl Provider for EasAdapter {
             None => Err(super::calendar::unbound_calendar()),
         }
     }
+}
 
+/// The calendar-write half of the seam — upstream's `CalendarWrites` split:
+/// the six verbs sit beside the `calendar_write` mapping they delegate to,
+/// under the same calendar-binding requirement as the sync verbs above.
+#[async_trait::async_trait]
+impl CalendarWrites for EasAdapter {
     /// Sync `Add` with a synthesized `ClientId` — the only id-reveal point:
     /// the receipt keys the `ServerId` the server's `Responses` ack assigns
     /// ([MS-ASCMD] §2.2.3.7.2; an ack-less success keys the ClientId
@@ -294,7 +302,7 @@ impl Provider for EasAdapter {
 
     /// The documented rejecting default: EAS's update verb is a field-level
     /// Sync `Change`, not a document PUT, and there is no iCalendar document
-    /// on an EAS server — [`Provider::patch_event`](Provider::patch_event)
+    /// on an EAS server — [`CalendarWrites::patch_event`](CalendarWrites::patch_event)
     /// is the supported path. The trait explicitly allows an adapter
     /// advertising `calendar_writes` to leave this at the refusal.
     async fn put_event(

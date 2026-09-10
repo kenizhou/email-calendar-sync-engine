@@ -16,7 +16,9 @@ use engine_core::{
     sync::{SyncState, SyncUpdate},
     time::{CalendarDate, CalendarDateTime, LocalDateTime, TimeZoneId},
 };
-use engine_provider::{Capabilities, ConnectionInfo, Provider, ProviderResult, ScopeSync};
+use engine_provider::{
+    CalendarWrites, Capabilities, ConnectionInfo, Provider, ProviderResult, ScopeSync,
+};
 use engine_store::OccurrenceRow;
 
 use crate::grid::{CalendarGridPage, CalendarGridRead as _, GridOccurrence};
@@ -117,6 +119,8 @@ struct GridPim {
     calendars: Vec<Calendar>,
     events: Vec<Event>,
 }
+
+impl CalendarWrites for GridPim {}
 
 #[async_trait::async_trait]
 impl Provider for GridPim {

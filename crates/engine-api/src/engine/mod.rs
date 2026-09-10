@@ -29,6 +29,7 @@ mod contact_reads;
 mod contacts;
 mod drain;
 mod host_access;
+mod identities;
 mod invitation;
 mod reads;
 mod sync;

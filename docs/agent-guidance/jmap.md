@@ -65,7 +65,7 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   redirect handled), then capabilities, account ids (per `primaryAccounts`, *not*
   assumed), and the core limits are read. `JmapClient::connect` reports the phase to
   the config's `ConnectObserver` (`providers.md`): one `ConnectStep::Redirected` per
-  hop it resolves itself (both sides already rebased, so a host sees the hop it could
+  hop it resolves itself (both sides fully resolved, so a host sees the hop it could
   replay), `ConnectStep::Authenticated` when the session responds `2xx` with the
   account's credentials attached, and `ConnectStep::Discovered` naming the resolved
   `apiUrl` that will serve every method call. No `TlsEstablished` — reqwest never
@@ -76,7 +76,33 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   a different origin (the loopback fixture, a reverse proxy); `SessionUrlPolicy`
   resolves this — `RebaseToConnection` (default) keeps the advertised path but
   forces the connection origin, `TrustAdvertised` is RFC-literal for genuinely
-  cross-origin providers. **The rebase is scoped to the session's own advertised
+  cross-origin providers. **A redirect is never rebased, and the chain's endpoint
+  becomes the base.** `SessionUrlPolicy` governs what a server *advertises about
+  itself* in a document it generated, where a public hostname it is not reached at is
+  a known misconfiguration. A `Location` is not that: it is the server saying where the
+  resource is, resolved against the URL that issued it (RFC 9110 §10.2.2, via
+  `engine_provider::redirect_target`). Rebasing one discards the move and re-requests
+  the URL it came from, which presents as `too many session redirects` — the live
+  failure on a provider whose apex redirects to its mail host. `fetch_session`
+  therefore returns the URL that served the document, and the session's advertised URLs
+  resolve against **that**, not against the domain discovery started from: after an
+  origin change the advertised `apiUrl` belongs to the new host, and rebasing it onto
+  the old one aims every method call at a server that never had the session. The same
+  helper refuses a hop that leaves TLS, since every discovery request carries the
+  account's credentials.
+
+  ⚠️ **Know what that trust buys and what it costs.** The JMAP transport authenticates
+  every request unconditionally, with no `same_origin` gate (CalDAV has one, for URLs
+  named by card *content*), so whoever controls the web server at the user's own domain
+  can point `/.well-known/jmap` at any `https` origin and be handed the account's
+  password or bearer token on the first request. That is inherent to RFC 8620 §2.2
+  discovery rather than something this adapter chose: the apex is the authority for its
+  own domain's mail, and a client that would not follow it cannot connect a hosted
+  provider at all. It is written down because it used to be bounded by accident. While
+  redirects were rebased onto the connection origin a credential structurally could not
+  leave it, and removing that (a bug: it made such providers unconnectable) removed the
+  bound with it. TLS is now the only floor, so a change that would let a chain leave it,
+  or that widens what a `Location` may name, is a decision and not a detail. **The rebase is scoped to the session's own advertised
   origin.** A session may legitimately span two: Fastmail serves `apiUrl` from
   `api.fastmail.com` and `downloadUrl` from `www.fastmailusercontent.com`, a separate
   cookie-less origin for untrusted user content. A public-hostname mismatch applies
@@ -162,6 +188,24 @@ body-download concurrency. Reach for it to capture a fixture from observed bytes
   taxonomy. Sending is outbox-mediated by `engine-sync::submit_mail`: a durable
   `PendingOp` (carrying the serialized draft, idempotent by `Message-ID`) precedes
   the provider call; the result is recorded under the op lease.
+- **Sender identities.** `Identity/get` and `Identity/set` (RFC 8621 §6) back the
+  neutral `sender_identities`/`set_sender_name` verbs (`providers.md`). They belong to
+  the **submission** capability, not to mail, so every request names
+  `urn:ietf:params:jmap:submission` and is addressed to the *submission* account id —
+  a different `primaryAccounts` entry from the mail one, which happens to coincide on
+  the harness and is not required to. The capability therefore rides the submission URN
+  and is `IdentityControls::Writable`.
+
+  A rename patches `name` **only**: naming `email` would ask the server to change which
+  address the account sends as, which is a different act. Captured from the harness:
+  `Identity/get` returns `{id, name, email, replyTo, bcc, textSignature, htmlSignature,
+  mayDelete}` and an acknowledged `Identity/set` answers `updated: {"<id>": null}`,
+  which the shared `check_set_result_for` already reads as applied. **Nothing in the
+  session, and nothing on the object, says whether `Identity/set` is permitted** —
+  `mayDelete` is the only "may" property there is — so the write is claimed and a
+  refusal arrives as a classified error. An empty `name` is the server holding nothing,
+  and reaches a host as `None` rather than as an empty string: that is the difference
+  between "we already know it" and "ask the user".
 - **Draft attachments.** A draft's attachment bytes are uploaded first (RFC 8620
   §6.1 blob upload — a `POST` of the raw bytes with the part's `Content-Type` to the
   session `uploadUrl` with `{accountId}` substituted), then referenced from the

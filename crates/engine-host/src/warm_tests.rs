@@ -14,7 +14,8 @@ use engine_core::{
     sync::{JmapDataType, SyncScope, SyncState, SyncUpdate, SyncWindow},
 };
 use engine_provider::{
-    Capabilities, ConnectionInfo, EmailChunk, EmailStream, Provider, ProviderResult,
+    CalendarWrites, Capabilities, ConnectionInfo, EmailChunk, EmailStream, Provider,
+    ProviderResult,
 };
 use engine_store::{MessageBodyStore, MessageSourceCache};
 
@@ -65,6 +66,8 @@ impl CountingProvider {
         self.calls.lock().unwrap().clone()
     }
 }
+
+impl CalendarWrites for CountingProvider {}
 
 #[async_trait::async_trait]
 impl Provider for CountingProvider {
@@ -208,6 +211,8 @@ impl SeededMail {
         }
     }
 }
+
+impl CalendarWrites for SeededMail {}
 
 #[async_trait::async_trait]
 impl Provider for SeededMail {

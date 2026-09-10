@@ -12,7 +12,8 @@ use engine_core::{
     sync::{JmapDataType, SyncScope, SyncState, SyncUpdate, SyncWindow},
 };
 use engine_provider::{
-    Capabilities, ConnectionInfo, EmailChunk, EmailStream, Provider, ProviderResult, ScopeSync,
+    CalendarWrites, Capabilities, ConnectionInfo, EmailChunk, EmailStream, Provider,
+    ProviderResult, ScopeSync,
 };
 
 use super::*;
@@ -136,6 +137,8 @@ impl FakeMail {
         }
     }
 }
+
+impl CalendarWrites for FakeMail {}
 
 #[async_trait::async_trait]
 impl Provider for FakeMail {

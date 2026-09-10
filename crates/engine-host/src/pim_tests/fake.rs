@@ -21,8 +21,9 @@ use engine_core::{
     write::{IdempotencyKey, PendingOp, PendingOpId, ResourceKey},
 };
 use engine_provider::{
-    Capabilities, ConnectionInfo, ContactSourceSync, ContactWriteReceipt, ContactsProvider,
-    EventDraft, EventWriteReceipt, Provider, ProviderError, ProviderResult, ScopeSync,
+    CalendarWrites, Capabilities, ConnectionInfo, ContactSourceSync, ContactWriteReceipt,
+    ContactsProvider, EventDraft, EventWriteReceipt, Provider, ProviderError, ProviderResult,
+    ScopeSync,
 };
 use engine_store::Store as _;
 use engine_sync::OutboxIntent;
@@ -204,7 +205,10 @@ impl Provider for RoundPim {
             "events-2",
         ))
     }
+}
 
+#[async_trait::async_trait]
+impl CalendarWrites for RoundPim {
     async fn create_event(
         &self,
         _account: &AccountId,

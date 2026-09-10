@@ -179,8 +179,8 @@ mod tests {
         write::{IdempotencyKey, PendingOp, PendingOpId, ResourceKey, SubmitPayload},
     };
     use engine_provider::{
-        Capabilities, ConnectionInfo, ContactWriteReceipt, ContactsProvider, Draft, EventDraft,
-        EventWriteReceipt, Provider, ProviderResult, SubmissionReceipt,
+        CalendarWrites, Capabilities, ConnectionInfo, ContactWriteReceipt, ContactsProvider, Draft,
+        EventDraft, EventWriteReceipt, Provider, ProviderResult, SubmissionReceipt,
     };
     use engine_store::{PendingOpState, Store};
     use engine_sync::OutboxIntent;
@@ -259,6 +259,8 @@ mod tests {
         }
     }
 
+    impl CalendarWrites for FakeMail {}
+
     /// The contacts counterpart: a provider that can create a card.
     struct FakeContacts;
 
@@ -268,6 +270,8 @@ mod tests {
             ConnectionInfo::new(Capabilities::none().with_contacts())
         }
     }
+
+    impl CalendarWrites for FakeContacts {}
 
     #[async_trait::async_trait]
     impl ContactsProvider for FakeContacts {
@@ -289,7 +293,10 @@ mod tests {
         fn connection_info(&self) -> ConnectionInfo {
             ConnectionInfo::new(Capabilities::none().with_calendars())
         }
+    }
 
+    #[async_trait::async_trait]
+    impl CalendarWrites for FakeCalendar {
         async fn create_event(
             &self,
             _account: &AccountId,

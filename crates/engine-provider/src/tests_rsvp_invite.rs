@@ -26,7 +26,10 @@ impl Provider for EventAnsweringProvider {
     fn connection_info(&self) -> ConnectionInfo {
         ConnectionInfo::new(Capabilities::none().with_calendars())
     }
+}
 
+#[async_trait]
+impl CalendarWrites for EventAnsweringProvider {
     async fn rsvp_event(
         &self,
         _account: &AccountId,

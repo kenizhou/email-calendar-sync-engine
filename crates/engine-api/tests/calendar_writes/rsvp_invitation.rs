@@ -19,8 +19,8 @@ use engine_core::{
     sync::{SyncState, SyncUpdate},
 };
 use engine_provider::{
-    Capabilities, ConnectionInfo, EventWriteReceipt, Provider, ProviderError, ProviderResult,
-    RsvpControls, RsvpResponse, ScopeSync, WriteGuard,
+    CalendarWrites, Capabilities, ConnectionInfo, EventWriteReceipt, Provider, ProviderError,
+    ProviderResult, RsvpControls, RsvpResponse, ScopeSync, WriteGuard,
 };
 
 use super::*;
@@ -418,7 +418,10 @@ impl Provider for FromInviteServer {
             Err(ProviderError::invalid_state("no such message source"))
         }
     }
+}
 
+#[async_trait::async_trait]
+impl CalendarWrites for FromInviteServer {
     async fn rsvp_event_from_invite(
         &self,
         _account: &AccountId,

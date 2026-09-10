@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use engine_core::ids::{EventId, MailboxId, Uid};
 use engine_provider::{
-    Capabilities, DeleteTarget, EventDeletion, EventEdit, EventPatch, Occurrence, OverrideSurvival,
-    PatchTarget, Provider as _, WriteGuard,
+    CalendarWrites as _, Capabilities, DeleteTarget, EventDeletion, EventEdit, EventPatch,
+    Occurrence, OverrideSurvival, PatchTarget, Provider as _, WriteGuard,
 };
 use provider_eas::{
     calendar::{CAL_DELETED, CAL_EXCEPTION_START_TIME, PAGE_CALENDAR},

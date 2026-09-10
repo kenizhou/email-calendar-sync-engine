@@ -17,7 +17,9 @@ use engine_core::{
     membership::Memberships,
     raw::RawMime,
 };
-use engine_provider::{Capabilities, ConnectionInfo, Provider, ProviderError, ProviderResult};
+use engine_provider::{
+    CalendarWrites, Capabilities, ConnectionInfo, Provider, ProviderError, ProviderResult,
+};
 use engine_store::MessageSourceCache;
 use tempfile::TempDir;
 
@@ -69,6 +71,8 @@ impl CountingSource {
         self.calls.lock().unwrap().len()
     }
 }
+
+impl CalendarWrites for CountingSource {}
 
 #[async_trait::async_trait]
 impl Provider for CountingSource {

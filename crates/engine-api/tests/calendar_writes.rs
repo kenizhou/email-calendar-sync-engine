@@ -34,9 +34,9 @@ use engine_core::{
     version::{ETag, RevisionTokens},
 };
 use engine_provider::{
-    Capabilities, ConnectionInfo, EventEdit, EventRsvp, EventWrite, EventWriteReceipt,
-    OverrideSurvival, Provider, ProviderError, ProviderResult, RsvpControls, ScopeSync, WriteGuard,
-    WritePrecondition,
+    CalendarWrites, Capabilities, ConnectionInfo, EventEdit, EventRsvp, EventWrite,
+    EventWriteReceipt, OverrideSurvival, Provider, ProviderError, ProviderResult, RsvpControls,
+    ScopeSync, WriteGuard, WritePrecondition,
 };
 
 /// The account's own address — and deliberately **not** the one the invitation was sent to,
@@ -296,6 +296,26 @@ impl Provider for CalendarServer {
         Ok(ScopeSync::new(SyncUpdate::delta(changed, removed), next))
     }
 
+    /// Serves the raw invitation sources `serving` taught the server — the read
+    /// `message_scheduling` (and therefore `rsvp_invitation`) runs first.
+    async fn fetch_message_source(
+        &self,
+        _account: &AccountId,
+        message: &Message,
+    ) -> ProviderResult<RawMime> {
+        self.0
+            .lock()
+            .unwrap()
+            .sources
+            .get(message.id.as_str())
+            .cloned()
+            .map(RawMime::new)
+            .ok_or_else(|| ProviderError::invalid_state("no such message source"))
+    }
+}
+
+#[async_trait::async_trait]
+impl CalendarWrites for CalendarServer {
     async fn create_event(
         &self,
         _account: &AccountId,
@@ -405,23 +425,6 @@ impl Provider for CalendarServer {
             .destroyed
             .push((version, deletion.event.key().clone()));
         Ok(())
-    }
-
-    /// Serves the raw invitation sources `serving` taught the server — the read
-    /// `message_scheduling` (and therefore `rsvp_invitation`) runs first.
-    async fn fetch_message_source(
-        &self,
-        _account: &AccountId,
-        message: &Message,
-    ) -> ProviderResult<RawMime> {
-        self.0
-            .lock()
-            .unwrap()
-            .sources
-            .get(message.id.as_str())
-            .cloned()
-            .map(RawMime::new)
-            .ok_or_else(|| ProviderError::invalid_state("no such message source"))
     }
 }
 
