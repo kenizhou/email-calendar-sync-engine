@@ -15,6 +15,13 @@ engine-provider = { workspace = true, features = ["http"] }
 # Reading the Message-ID and envelope headers back out of caller-rendered bytes
 # (submit_email_source) is the parse half of the assemble/parse pair.
 engine-rfc5322 = { workspace = true }
+# The per-part attachment fetch's whole-source fallback extracts the requested
+# part with the same shared MIME parser the facade's attachment read uses (the
+# provider-imap precedent), so both surfaces agree on what a part is.
+engine-mime = { workspace = true }
+# Fallback reasons on the per-part attachment path are debug-logged, never
+# silently swallowed (the provider-eas logging convention).
+log = { workspace = true }
 # One shared TLS trust policy across every provider (`docs/agent-guidance/tls.md`);
 # `reqwest` enables the preconfigured-client builder this HTTP transport uses.
 # One throttling answer for every HTTP provider (docs/agent-guidance/http-throttling.md).

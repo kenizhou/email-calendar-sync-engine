@@ -26,6 +26,10 @@ engine-mime = { workspace = true }
 # so the adapters stay free of host concepts.
 provider-eas = { workspace = true }
 provider-imap = { workspace = true }
+# The JMAP per-part attachment fetch (`AttachmentFetch for JmapProvider`) is the
+# same kind of host-side impl; the matching/download machinery lives in
+# provider-jmap itself so its FakeExecutor harness can drive it offline.
+provider-jmap = { workspace = true }
 # Only the stream trait bounds on the `ImapProvider` batch impl (`AsyncRead +
 # AsyncWrite`); no extra features — the host crate itself spawns nothing.
 tokio = { workspace = true }

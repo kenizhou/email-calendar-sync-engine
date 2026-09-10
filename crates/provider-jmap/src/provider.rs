@@ -462,6 +462,10 @@ impl Provider for JmapProvider {
 mod provider_test_support;
 
 #[cfg(test)]
+#[path = "attachment_parts_tests.rs"]
+mod attachment_parts_tests;
+
+#[cfg(test)]
 #[path = "provider_tests.rs"]
 mod tests;
 

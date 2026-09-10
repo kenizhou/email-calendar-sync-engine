@@ -59,6 +59,7 @@ use engine_provider::ProviderError;
 use engine_store::MessageSourceCache;
 use provider_eas::EasAdapter;
 use provider_imap::ImapProvider;
+use provider_jmap::JmapProvider;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 pub use self::vault::AttachmentVault;
@@ -233,16 +234,18 @@ mod vault {
 /// Fetches one attachment part's decoded bytes — the seam a provider that can
 /// do better than "fetch the whole message" overrides.
 ///
-/// The default ([`default_fetch_attachment`], what every impl delegates to
-/// today) costs one whole-source fetch per part. The two protocol-aware
-/// overrides the plan names are later work, and both need provider-crate
-/// seams this crate must not improvise: EAS's `ItemOperations` attachment
-/// fetch is addressed by the `FileReference` Sync metadata carries but the
-/// adapter does not yet translate onto `Message`, and IMAP's `BODY.PEEK[
-/// <section>]` needs a section-path derivation provider-imap does not yet
-/// expose (its BODYSTRUCTURE pass only answers whether a downloadable part
-/// exists). Until those land, the trait exists so the override is one local
-/// impl away, not a rewrite of [`attachment_bytes`].
+/// The default ([`default_fetch_attachment`], what the EAS and IMAP impls
+/// delegate to) costs one whole-source fetch per part. JMAP has the one
+/// protocol-aware override so far ([`JmapProvider`]'s impl below, over the
+/// provider-jmap `fetch_attachment_part` seam); the other overrides the plan
+/// names are later work, and both need provider-crate seams this crate must
+/// not improvise: EAS's `ItemOperations` attachment fetch is addressed by
+/// the `FileReference` Sync metadata carries but the adapter does not yet
+/// translate onto `Message`, and IMAP's `BODY.PEEK[<section>]` needs a
+/// section-path derivation provider-imap does not yet expose (its
+/// BODYSTRUCTURE pass only answers whether a downloadable part exists).
+/// Until those land, the trait exists so the override is one local impl
+/// away, not a rewrite of [`attachment_bytes`].
 #[async_trait]
 pub trait AttachmentFetch {
     /// Fetches the bytes of `part` of `message`, decoded.
@@ -309,6 +312,26 @@ where
         part: AttachmentPartId,
     ) -> Result<Vec<u8>, ProviderError> {
         default_fetch_attachment(self, account, message, part).await
+    }
+}
+
+#[async_trait]
+impl AttachmentFetch for JmapProvider {
+    /// The per-part override: provider-jmap's `fetch_attachment_part` matches
+    /// the requested part to one `bodyStructure` blob by its
+    /// (contentType, name, size) tuple and downloads just that blob; every
+    /// ambiguous or unverifiable mapping falls back inside the provider to
+    /// the whole-source fetch + `engine-mime` extract — the same answer
+    /// [`default_fetch_attachment`] computes — with the reason debug-logged
+    /// there (see provider-jmap's `attachment_parts` module docs for the
+    /// mapping decision).
+    async fn fetch_message_attachment(
+        &self,
+        account: &AccountId,
+        message: &Message,
+        part: AttachmentPartId,
+    ) -> Result<Vec<u8>, ProviderError> {
+        Ok(self.fetch_attachment_part(account, message, part).await?)
     }
 }
 

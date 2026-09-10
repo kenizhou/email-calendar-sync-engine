@@ -31,6 +31,7 @@
 //!   blob sub-step. Calendar raw (`RawJsCalendar`) *is* preserved on the object
 //!   (`docs/agent-guidance/jmap.md`).
 
+mod attachment_parts;
 mod auth;
 mod blob;
 mod calendar;
@@ -62,6 +63,7 @@ mod watch;
 use core::fmt;
 use std::sync::Arc;
 
+pub use attachment_parts::BodyPartMeta;
 use engine_provider::{ConnectObserver, ConnectStep, IgnoreConnectSteps};
 use engine_tls::TlsClientConfig;
 pub use error::JmapError;
