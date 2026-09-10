@@ -250,3 +250,28 @@ async fn attachment_fetch_without_stored_metadata_falls_back() {
     assert_eq!(downloads.len(), 1, "{downloads:?}");
     assert!(downloads[0].contains("/bMsg/"), "{}", downloads[0]);
 }
+
+#[tokio::test]
+async fn email_body_structure_null_is_an_error_not_a_phantom_part() {
+    // An explicit `"bodyStructure": null` must take the documented Protocol
+    // error path — flattening Value::Null would otherwise invent a phantom
+    // zero-valued part.
+    let response = json!({
+        "methodResponses": [["Email/get", {
+            "accountId": "c",
+            "state": "s1",
+            "list": [{ "id": "m1", "bodyStructure": Value::Null }],
+            "notFound": []
+        }, "0"]],
+        "sessionState": "s1"
+    });
+    let (provider, _exec) = recording_with_download(vec![response], b"");
+    let err = provider
+        .email_body_structure(&account(), "m1")
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, JmapError::Protocol(_)),
+        "null bodyStructure is a protocol error: {err:?}"
+    );
+}

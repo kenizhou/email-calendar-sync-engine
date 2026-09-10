@@ -97,11 +97,15 @@ impl JmapProvider {
     /// `properties: ["bodyStructure"]`, RFC 8621 §4.1.4) flattened to the
     /// part list in document order.
     ///
+    /// The `account` parameter is interface symmetry with the `Provider`
+    /// verbs: the session-bound mail account serves every request, so it is
+    /// not consulted.
+    ///
     /// # Errors
     ///
     /// Returns [`JmapError::Protocol`] when the email is absent from the
-    /// result (`notFound`) or carries no `bodyStructure`, or a transport /
-    /// method error from the `Email/get`.
+    /// result (`notFound`) or carries no `bodyStructure` (absent or null),
+    /// or a transport / method error from the `Email/get`.
     pub async fn email_body_structure(
         &self,
         _account: &AccountId,
@@ -130,7 +134,11 @@ impl JmapProvider {
             .get("list")
             .and_then(Value::as_array)
             .and_then(|list| list.first())
+            // `get` alone is not enough: an explicit `"bodyStructure": null`
+            // is `Some(Value::Null)`, which would flatten into a phantom
+            // zero-valued part instead of the documented error.
             .and_then(|email| email.get("bodyStructure"))
+            .filter(|structure| !structure.is_null())
             .ok_or_else(|| {
                 JmapError::protocol(format!("email {email_id:?} carried no bodyStructure"))
             })?;
@@ -142,6 +150,10 @@ impl JmapProvider {
     /// Downloads one blob by id through the session's `downloadUrl` template
     /// (RFC 8620 §6.2), the same substitution [`crate::blob`] applies to the
     /// whole-source fetch.
+    ///
+    /// The `account` parameter is interface symmetry with the `Provider`
+    /// verbs: the session-bound mail account serves every download, so it is
+    /// not consulted.
     ///
     /// # Errors
     ///
