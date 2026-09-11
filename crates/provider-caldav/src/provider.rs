@@ -68,7 +68,16 @@ pub struct CalDavConfig {
     pub discovery_path: String,
     /// The calendar collection to bind events to — a name under the calendar home
     /// (e.g. `default`) or an absolute collection path.
+    ///
+    /// Whether this is a HOST ASSERTION or the unasserted [`CalDavConfig::new`]
+    /// default is tracked by the private `calendar_asserted` flag and decides the
+    /// container listing's honesty — see [`CalDavProvider::sync_calendars`].
     pub calendar: String,
+    /// Whether `calendar` was ASSERTED by the host (`with_calendar`) or is the
+    /// `new()` default (`"default"`, a binding of convenience that says nothing
+    /// about the server). Private like `connect_observer`: it is derived from
+    /// which constructor path set `calendar`, never assigned directly.
+    calendar_asserted: bool,
     /// The TLS trust policy for this account, shared with every other provider
     /// (`docs/agent-guidance/tls.md`). Defaults to the hermetic bundled roots;
     /// override with [`CalDavConfig::with_tls`].
@@ -93,6 +102,7 @@ impl core::fmt::Debug for CalDavConfig {
             .field("credentials", &self.credentials)
             .field("discovery_path", &self.discovery_path)
             .field("calendar", &self.calendar)
+            .field("calendar_asserted", &self.calendar_asserted)
             .field("tls", &self.tls)
             .field("retry", &self.retry)
             .field("connect_observer", &self.connect_observer.is_some())
@@ -103,6 +113,13 @@ impl core::fmt::Debug for CalDavConfig {
 impl CalDavConfig {
     /// Settings with the RFC 6764 well-known discovery path and the `default`
     /// calendar.
+    ///
+    /// The `default` binding is UNASSERTED: nothing about this config says the
+    /// server has such a collection (Stalwart happens to name its primary calendar
+    /// `default`; Nextcloud's is `personal`, Fastmail's is whatever the user made),
+    /// so the provider's container listing does NOT inject it when the home omits
+    /// it — see [`CalDavProvider::sync_calendars`]. A host that means a specific
+    /// collection asserts it with [`CalDavConfig::with_calendar`].
     #[must_use]
     pub fn new(base_url: impl Into<String>, credentials: Credentials) -> Self {
         Self {
@@ -110,6 +127,7 @@ impl CalDavConfig {
             credentials,
             discovery_path: "/.well-known/caldav".to_owned(),
             calendar: "default".to_owned(),
+            calendar_asserted: false,
             tls: TlsClientConfig::default(),
             retry: engine_http::RetryConfig::default(),
             connect_observer: None,
@@ -117,10 +135,14 @@ impl CalDavConfig {
     }
 
     /// Binds events to a different calendar collection (a home-relative name or an
-    /// absolute path).
+    /// absolute path). The binding is a host ASSERTION: the provider trusts it
+    /// exists and its container listing will represent it even when the home
+    /// listing omits it (an absolute out-of-home binding, or a collection deleted
+    /// server-side whose events still target it).
     #[must_use]
     pub fn with_calendar(mut self, calendar: impl Into<String>) -> Self {
         self.calendar = calendar.into();
+        self.calendar_asserted = true;
         self
     }
 
@@ -182,6 +204,9 @@ pub struct CalDavProvider {
     capabilities: Capabilities,
     home_href: String,
     collection: DavCollectionId,
+    /// Whether `collection` is a HOST ASSERTION (`with_calendar`/`rebind`) or the
+    /// unasserted `new()` default — see [`CalDavProvider::sync_calendars`].
+    calendar_asserted: bool,
 }
 
 impl core::fmt::Debug for CalDavProvider {
@@ -189,6 +214,7 @@ impl core::fmt::Debug for CalDavProvider {
         f.debug_struct("CalDavProvider")
             .field("home_href", &self.home_href)
             .field("collection", &self.collection.as_str())
+            .field("calendar_asserted", &self.calendar_asserted)
             .finish_non_exhaustive()
     }
 }
@@ -220,6 +246,7 @@ impl CalDavProvider {
             Box::new(client),
             &config.discovery_path,
             &config.calendar,
+            config.calendar_asserted,
             observer,
         )
         .await
@@ -231,6 +258,7 @@ impl CalDavProvider {
         executor: Box<dyn DavExecutor>,
         discovery_path: &str,
         calendar: &str,
+        calendar_asserted: bool,
         observer: &dyn ConnectObserver,
     ) -> Result<Self, CalDavError> {
         let home_href =
@@ -260,6 +288,7 @@ impl CalDavProvider {
             },
             home_href,
             collection,
+            calendar_asserted,
         })
     }
 
@@ -268,12 +297,19 @@ impl CalDavProvider {
     /// Consumes `self` to reuse the existing executor (a host that lists calendars,
     /// then picks one, avoids a second discovery round trip).
     ///
+    /// The rebind is a host ASSERTION: the new binding is represented in the
+    /// container listing even when the home omits it (see [`Self::sync_calendars`]).
+    ///
     /// # Errors
     ///
     /// Returns [`CalDavError`] if `calendar` does not form a valid collection href.
     pub fn rebind(self, calendar: &str) -> Result<Self, CalDavError> {
         let collection = bind_collection(&self.home_href, calendar)?;
-        Ok(Self { collection, ..self })
+        Ok(Self {
+            collection,
+            calendar_asserted: true,
+            ..self
+        })
     }
 
     /// The href of the calendar collection events are bound to.
@@ -356,10 +392,21 @@ impl Provider for CalDavProvider {
         // cursor), so the store tombstones any calendar that has disappeared.
         let mut calendars =
             discovery::list_calendars(self.executor.as_ref(), &self.home_href).await?;
-        // Guarantee the bound collection is represented, so events synced under it
-        // never reference a calendar the container snapshot omits (a collection
-        // bound outside the home would otherwise be absent here).
-        ensure_bound_present(&mut calendars, &self.calendar_id());
+        // Represent the bound collection ONLY when the host ASSERTED it: an
+        // asserted binding (`with_calendar`/`rebind`) may name a collection the
+        // home listing omits (an absolute out-of-home href; a collection the
+        // server deleted while events still target it), and events synced under
+        // it must never reference a calendar the container snapshot omits.
+        // The `new()` DEFAULT binding asserts nothing about the server — Stalwart
+        // happens to name its primary calendar `default`, but Nextcloud's is
+        // `personal` and Fastmail's is the user's own — so injecting it would
+        // PHANTOM a calendar the server does not serve into every listing (and
+        // with it into a host's store), with a faulting collection pass to
+        // match. The default-bound host against a default-less server already
+        // learns the truth the honest way: its event REPORT 404s.
+        if self.calendar_asserted {
+            ensure_bound_present(&mut calendars, &self.calendar_id());
+        }
         let present = calendars.iter().map(|c| c.id.key().clone()).collect();
         Ok(ScopeSync::new(
             SyncUpdate::snapshot(calendars, present),

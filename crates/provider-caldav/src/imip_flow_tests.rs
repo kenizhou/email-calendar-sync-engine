@@ -87,6 +87,7 @@ async fn an_accepted_invite_rsvps_via_a_conditional_put_through_the_outbox() {
         Box::new(exec.clone()),
         "/.well-known/caldav",
         "default",
+        true,
         &IgnoreConnectSteps,
     )
     .await
@@ -206,6 +207,7 @@ async fn caldav_refuses_the_two_controls_it_cannot_honour_rather_than_dropping_t
         Box::new(exec.clone()),
         "/.well-known/caldav",
         "default",
+        true,
         &IgnoreConnectSteps,
     )
     .await
@@ -265,6 +267,7 @@ async fn answering_an_invitation_you_are_not_on_is_refused() {
         Box::new(exec.clone()),
         "/.well-known/caldav",
         "default",
+        true,
         &IgnoreConnectSteps,
     )
     .await
@@ -327,6 +330,7 @@ async fn a_reported_delivery_failure_reaches_the_caller_on_the_receipt() {
         Box::new(exec.clone()),
         "/.well-known/caldav",
         "default",
+        true,
         &IgnoreConnectSteps,
     )
     .await
@@ -396,6 +400,7 @@ async fn a_server_that_does_not_schedule_is_not_asked_about_delivery() {
         Box::new(exec.clone()),
         "/.well-known/caldav",
         "default",
+        true,
         &IgnoreConnectSteps,
     )
     .await

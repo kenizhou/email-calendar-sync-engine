@@ -49,6 +49,7 @@ async fn connect(exec: Replay) -> CalDavProvider {
         Box::new(exec),
         "/.well-known/caldav",
         "default",
+        true,
         &IgnoreConnectSteps,
     )
     .await
@@ -251,15 +252,17 @@ async fn calendar_sync_loop_normalizes_folds_and_expands_the_seed() {
 
 #[tokio::test]
 async fn calendar_list_includes_a_bound_collection_outside_the_home() {
-    // A provider bound to an absolute collection NOT under the discovered home:
-    // sync_calendars must still represent it, so events synced under it never
-    // reference a calendar the container snapshot omits.
+    // An ASSERTED binding (with_calendar / rebind) to an absolute collection NOT
+    // under the discovered home: sync_calendars must still represent it, so
+    // events synced under it never reference a calendar the container snapshot
+    // omits.
     // PRINCIPAL drives discovery; HOME is the calendar-list response (it lists only
     // the default collection, NOT /shared/team-calendar/).
     let provider = CalDavProvider::with_executor(
         Box::new(replay(&[PRINCIPAL, HOME])),
         "/.well-known/caldav",
         "/shared/team-calendar/",
+        true,
         &IgnoreConnectSteps,
     )
     .await
@@ -282,6 +285,58 @@ async fn calendar_list_includes_a_bound_collection_outside_the_home() {
     );
     // The list cursor is the named sentinel, never the empty string.
     assert_eq!(listed.next_cursor.as_str(), "caldav-calendar-list");
+}
+
+#[tokio::test]
+async fn an_unasserted_default_binding_does_not_phantom_itself_into_the_listing() {
+    // `CalDavConfig::new`'s `default` binding is a convenience that asserts
+    // nothing about the server: on a home with no literal `default` collection
+    // (Nextcloud's `personal`, Fastmail's user-made names), injecting it would
+    // list a calendar the server does not serve — a host fanning out over the
+    // listing would bind a ghost collection whose every event REPORT faults.
+    // The listing must be the server's truth, exactly.
+    const HOME_NO_DEFAULT: &str = "<D:multistatus xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\">\
+        <D:response><D:href>/dav/cal/alice%40test.local/</D:href><D:propstat><D:prop>\
+        <D:resourcetype><D:collection/></D:resourcetype></D:prop>\
+        <D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>\
+        <D:response><D:href>/dav/cal/alice%40test.local/personal/</D:href><D:propstat><D:prop>\
+        <D:resourcetype><D:collection/><C:calendar/></D:resourcetype>\
+        <D:displayname>Personal</D:displayname></D:prop>\
+        <D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>";
+    let provider = CalDavProvider::with_executor(
+        Box::new(replay(&[PRINCIPAL, HOME_NO_DEFAULT])),
+        "/.well-known/caldav",
+        "default",
+        false,
+        &IgnoreConnectSteps,
+    )
+    .await
+    .expect("discovery");
+    let account = AccountId::try_from("acct").unwrap();
+
+    let listed = provider
+        .sync_calendars(&account, None)
+        .await
+        .expect("sync_calendars");
+    let objects = match &listed.update {
+        SyncUpdate::Snapshot { objects, .. } => objects,
+        SyncUpdate::Delta { .. } => panic!("calendar list is a snapshot"),
+    };
+    assert_eq!(
+        objects.len(),
+        1,
+        "only the server's own collection: {objects:?}"
+    );
+    assert_eq!(
+        objects[0].id.as_str(),
+        "/dav/cal/alice%40test.local/personal/"
+    );
+    assert!(
+        objects
+            .iter()
+            .all(|c| !c.id.as_str().ends_with("/default/")),
+        "the unasserted default binding phantoms into no listing"
+    );
 }
 
 #[tokio::test]
@@ -369,6 +424,7 @@ async fn a_patch_round_trips_raw_ical_preserving_non_jscalendar_properties() {
         Box::new(exec.clone()),
         "/.well-known/caldav",
         "default",
+        true,
         &IgnoreConnectSteps,
     )
     .await

@@ -16,20 +16,17 @@
 //! The mapping is therefore a **tuple match**, and the expected tuple comes
 //! from the only engine-side source available on this path:
 //!
-//! - The raw source is **unavailable by definition here** — a cached source
-//!   already served the part through `engine-mime` upstream (engine-host's
-//!   tiered read, the facade's `message_attachment`); reaching this fetch
-//!   means nothing local holds it.
+//! - The raw source is **unavailable by definition here** — a cached source already served the part
+//!   through `engine-mime` upstream (engine-host's tiered read, the facade's `message_attachment`);
+//!   reaching this fetch means nothing local holds it.
 //! - The tuple source is the `Message` row's **stored attachment metadata**
-//!   ([`Message::attachments`], the provider-synced normalized list), read
-//!   **positionally**: `attachments[part]` is expected to be the part the
-//!   extractor numbers `part`. That assumption holds when a sync stored the
-//!   list in MIME document order over exactly the parser-classified
-//!   attachment set; JMAP's Tier-1 sync stores **no** list at all, so for a
-//!   JMAP-synced row today this lookup yields nothing and every fetch takes
-//!   the whole-source fallback — behavior unchanged from before this seam.
-//!   `mime_structure` is deliberately NOT a source: indexing the tree by
-//!   `AttachmentPartId` would need the same irreproducible classification.
+//!   ([`Message::attachments`], the provider-synced normalized list), read **positionally**:
+//!   `attachments[part]` is expected to be the part the extractor numbers `part`. That assumption
+//!   holds when a sync stored the list in MIME document order over exactly the parser-classified
+//!   attachment set; JMAP's Tier-1 sync stores **no** list at all, so for a JMAP-synced row today
+//!   this lookup yields nothing and every fetch takes the whole-source fallback — behavior
+//!   unchanged from before this seam. `mime_structure` is deliberately NOT a source: indexing the
+//!   tree by `AttachmentPartId` would need the same irreproducible classification.
 //!
 //! The tuple match + duplicate detection contain a violated positional
 //! assumption to *same-message* wrong-part bytes at worst (both sides of the

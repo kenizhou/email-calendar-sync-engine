@@ -14,8 +14,7 @@ use engine_core::{
     sync::{JmapDataType, SyncScope, SyncState, SyncUpdate, SyncWindow},
 };
 use engine_provider::{
-    CalendarWrites, Capabilities, ConnectionInfo, EmailChunk, EmailStream, Provider,
-    ProviderResult,
+    CalendarWrites, Capabilities, ConnectionInfo, EmailChunk, EmailStream, Provider, ProviderResult,
 };
 use engine_store::{MessageBodyStore, MessageSourceCache};
 

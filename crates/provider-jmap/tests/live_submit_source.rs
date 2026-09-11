@@ -14,11 +14,10 @@
 
 mod common;
 
+use common::*;
 use engine_core::ids::ProviderKey;
 use engine_provider::{MailEdit, Provider};
 use provider_jmap::JmapProvider;
-
-use common::*;
 
 /// An iMIP-shaped message: the `text/calendar; method=REPLY` part the draft
 /// path provably cannot encode (`live_imip.rs`). CRLF-terminated throughout,
