@@ -33,7 +33,9 @@ pub use attachment::{
 };
 pub use events::{AccountState, CollectingSink, EngineEvent, EventSink};
 pub use grid::{CalendarGridPage, CalendarGridRead, GridOccurrence};
-pub use pim::{PimRoundReport, run_pim_round};
+pub use pim::{
+    ContactCardsReport, PimRoundReport, PimSetRoundReport, run_pim_round, run_pim_round_many,
+};
 pub use round::{RoundReport, run_account_round};
 pub use threads::{ThreadCursor, ThreadSummary, ThreadsOptions, ThreadsPage, ThreadsRead};
 pub use warm::{BatchSourceFetch, WarmReport, sequential_sources, warm_mail_bodies};

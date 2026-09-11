@@ -4,7 +4,11 @@
 //! fixtures built over one work calendar, and the unstarted-outbox-op seeds
 //! the drain scenarios reconstruct a crash with.
 
-use core::num::NonZeroU32;
+use core::{
+    num::NonZeroU32,
+    sync::atomic::{AtomicUsize, Ordering},
+};
+use std::sync::Arc;
 
 use engine_api::{AccountId, Engine};
 use engine_core::{
@@ -13,9 +17,9 @@ use engine_core::{
         AddressBook, ContactCard, ContactDraft, ContactEmail, ContactProperty, ContactSourceClass,
         PropertyId,
     },
-    ids::{AddressBookId, CalendarId, ContactId, EventId, Uid},
+    ids::{AddressBookId, CalendarId, ContactId, DavCollectionId, EventId, Uid},
     membership::Memberships,
-    sync::{SyncObject, SyncState, SyncUpdate},
+    sync::{JmapDataType, SyncObject, SyncScope, SyncState, SyncUpdate},
     time::{CalendarDateTime, LocalDateTime},
     version::{ETag, RevisionTokens},
     write::{IdempotencyKey, PendingOp, PendingOpId, ResourceKey},
@@ -89,7 +93,7 @@ fn book() -> AddressBook {
     book
 }
 
-fn card(id: &str) -> ContactCard {
+pub(super) fn card(id: &str) -> ContactCard {
     let mut card = ContactCard::new(
         ContactId::try_from(id).expect("valid id"),
         Memberships::of_one(AddressBookId::try_from("personal").expect("valid id")),
@@ -108,13 +112,21 @@ fn card(id: &str) -> ContactCard {
 /// scope, one address-book/card pair) — that snapshots its data on the first
 /// sync of each scope and answers every later one with an empty delta, so a
 /// second round is quiet by construction. `fail_calendars` fails the
-/// calendar-container fetch, the failure path's stand-in.
+/// calendar-container fetch, the failure path's stand-in. `collection` rebinds
+/// it to the DAV shape a collection-bound adapter answers: the member scopes
+/// (events, cards) become per-collection while the container scopes (the
+/// calendar and address-book lists) stay account-wide, and every instance
+/// answers those shared lists identically — which is what makes a
+/// collection-bound fake's container sync an empty delta after the first one
+/// landed, exactly like the real adapters' re-`PROPFIND` of the same home.
 pub(super) struct RoundPim {
     calendars: Vec<Calendar>,
     events: Vec<Event>,
     books: Vec<AddressBook>,
     cards: Vec<ContactCard>,
     fail_calendars: bool,
+    collection: Option<String>,
+    discovery_calls: Arc<AtomicUsize>,
 }
 
 impl RoundPim {
@@ -141,6 +153,8 @@ impl RoundPim {
             books: vec![book()],
             cards: vec![card("one"), card("two")],
             fail_calendars: false,
+            collection: None,
+            discovery_calls: Arc::default(),
         }
     }
 
@@ -149,6 +163,33 @@ impl RoundPim {
             fail_calendars: true,
             ..Self::with_events(Vec::new())
         }
+    }
+
+    /// One collection-bound provider: the shared account-wide container lists
+    /// every bound adapter answers identically, with only `events` and `cards`
+    /// belonging to this collection's own member scope.
+    pub(super) fn collection(name: &str, events: Vec<Event>, cards: Vec<ContactCard>) -> Self {
+        Self {
+            events,
+            cards,
+            collection: Some(name.to_owned()),
+            ..Self::with_events(Vec::new())
+        }
+    }
+
+    /// The collection-bound shape with the calendar-container fetch faulting —
+    /// the per-collection failure probe.
+    pub(super) fn failing_collection(name: &str) -> Self {
+        Self {
+            fail_calendars: true,
+            ..Self::collection(name, Vec::new(), Vec::new())
+        }
+    }
+
+    /// How many times this provider answered address-book discovery — the
+    /// discovery-once pin.
+    pub(super) fn discovery_calls(&self) -> usize {
+        self.discovery_calls.load(Ordering::SeqCst)
     }
 }
 
@@ -180,6 +221,33 @@ fn snapshot_or_delta<T: SyncObject + Clone>(
 impl Provider for RoundPim {
     fn connection_info(&self) -> ConnectionInfo {
         ConnectionInfo::new(Capabilities::none().with_calendars().with_contacts())
+    }
+
+    fn calendar_scope(&self, account: &AccountId) -> SyncScope {
+        match self.collection.as_deref() {
+            // The account-wide collection list — shared by every bound
+            // adapter of the account, whatever collection it serves.
+            Some(_) => SyncScope::DavCollectionList {
+                account: account.clone(),
+            },
+            None => SyncScope::JmapType {
+                account: account.clone(),
+                data_type: JmapDataType::Calendar,
+            },
+        }
+    }
+
+    fn event_scope(&self, account: &AccountId) -> SyncScope {
+        match self.collection.as_deref() {
+            Some(name) => SyncScope::DavCollection {
+                account: account.clone(),
+                collection: DavCollectionId::try_from(name).expect("valid collection href"),
+            },
+            None => SyncScope::JmapType {
+                account: account.clone(),
+                data_type: JmapDataType::CalendarEvent,
+            },
+        }
     }
 
     async fn sync_calendars(
@@ -226,11 +294,40 @@ impl CalendarWrites for RoundPim {
 
 #[async_trait::async_trait]
 impl ContactsProvider for RoundPim {
+    fn address_book_scope(&self, account: &AccountId) -> SyncScope {
+        match self.collection.as_deref() {
+            // The account-wide address-book discovery list — one scope shared
+            // by every bound adapter, which is why the multi-collection round
+            // asks it of exactly one.
+            Some(_) => SyncScope::CardDavAddressBookList {
+                account: account.clone(),
+            },
+            None => SyncScope::JmapType {
+                account: account.clone(),
+                data_type: JmapDataType::AddressBook,
+            },
+        }
+    }
+
+    fn contact_scope(&self, account: &AccountId) -> SyncScope {
+        match self.collection.as_deref() {
+            Some(name) => SyncScope::CardDavAddressBook {
+                account: account.clone(),
+                address_book: AddressBookId::try_from(name).expect("valid address-book id"),
+            },
+            None => SyncScope::JmapType {
+                account: account.clone(),
+                data_type: JmapDataType::ContactCard,
+            },
+        }
+    }
+
     async fn sync_address_books(
         &self,
         _account: &AccountId,
         cursor: Option<&SyncState>,
     ) -> ProviderResult<ContactSourceSync<AddressBook>> {
+        self.discovery_calls.fetch_add(1, Ordering::SeqCst);
         Ok(ContactSourceSync::Available {
             sync: snapshot_or_delta(cursor, &self.books, "books-1", "books-2"),
             cursor_recovered: false,

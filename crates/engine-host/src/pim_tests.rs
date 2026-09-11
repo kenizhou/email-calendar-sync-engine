@@ -1,13 +1,15 @@
 //! The PIM round driven end to end over a real in-memory `Engine`: the fake
-//! JMAP-shaped provider and fixtures live beside this file (`fake.rs`), and
-//! every assertion reads the event stream a `CollectingSink` heard — by
-//! content, not by count.
+//! JMAP-shaped provider and fixtures live beside this file (`fake.rs`), the
+//! multi-collection round's tests in `many.rs`, and every assertion reads the
+//! event stream a `CollectingSink` heard — by content, not by count.
 
-// The sibling file this includes sits under `pim_tests/`, beside this file —
-// an explicit path because a plain `mod fake;` inside a `#[path]`-included
+// The sibling files this includes sit under `pim_tests/`, beside this file —
+// explicit paths because a plain `mod fake;` inside a `#[path]`-included
 // module resolves against the parent directory instead.
 #[path = "pim_tests/fake.rs"]
 mod fake;
+#[path = "pim_tests/many.rs"]
+mod many;
 
 use engine_api::{ApiError, Engine, Horizon, TimeZoneId};
 use engine_core::sync::ObjectKind;

@@ -11,6 +11,21 @@
 //! **not** do is everything a scheduler owns: no timing, no loop, no backoff —
 //! when to run again is the caller's.
 //!
+//! [`run_pim_round_many`] is the same round over many collection-bound
+//! providers — one per calendar, one per address book — the shape CalDAV (and
+//! Google/Graph after it) presents when a host binds one adapter per
+//! collection. It keeps the identical posture and steps, with one difference
+//! the multi-collection shape forces: failure isolation. The single-provider
+//! round stops at the first fault because its scopes are account-wide — one
+//! fault means the account's PIM as a whole is unreachable. A per-collection
+//! round holds N independent collections, and one dead calendar must not
+//! starve the others or the contacts pass: a faulting collection lands in the
+//! report's `failures` under its slice index and the round moves on. The
+//! contacts half also runs address-book discovery exactly once, over the first
+//! book's provider — the book list is one account-wide scope every bound
+//! adapter answers identically, so per-book discovery would be N-1 duplicate
+//! fetches of the same list (the mail-calendar split-scope lesson).
+//!
 //! # The change-emission discipline
 //!
 //! `CalendarChanged`/`ContactsChanged` fire only when a scope's rows actually
@@ -66,8 +81,8 @@
 //! `a_contact_op_the_calendar_drain_released_is_driven_in_the_same_round`.
 
 use engine_api::{
-    AccountId, ApiError, CalendarSyncReport, ContactSyncReport, Engine, Horizon, HorizonExpansion,
-    SyncApplied,
+    AccountId, ApiError, CalendarSyncReport, ContactSourceReport, ContactSyncReport, Engine,
+    Horizon, HorizonExpansion, PeopleRebuildReport, SyncApplied,
 };
 use engine_core::time::TimeZoneId;
 use engine_provider::{ContactsProvider, Provider};
@@ -154,6 +169,203 @@ pub async fn run_pim_round<P: ContactsProvider>(
         drained_cal,
         drained_contacts,
     })
+}
+
+/// One address book's card pass: the report pair `Engine::sync_contact_cards`
+/// answers — this book's card apply over its own scope, plus the people
+/// rebuild the apply triggered.
+///
+/// Not [`ContactSyncReport`]: that type folds in the discovery half, and in a
+/// multi-collection round discovery runs once over the first book's provider,
+/// not once per book — so the per-book entry is exactly the card-sync half,
+/// and the shell maps it beside the round's other facts.
+#[derive(Debug)]
+pub struct ContactCardsReport {
+    /// This book's card apply: counts, availability, cursor recovery.
+    pub cards: ContactSourceReport,
+    /// The people rebuild this book's card apply triggered.
+    pub people: PeopleRebuildReport,
+}
+
+/// What one multi-collection PIM round did: every collection whose sync
+/// landed, the drains' totals, and every collection whose pass faulted.
+#[derive(Debug)]
+pub struct PimSetRoundReport {
+    /// Per calendar, in slice order, whose sync landed. A calendar whose sync
+    /// landed but whose window check or drain later faulted keeps its entry —
+    /// the data is in the store — beside the `failures` record of the fault.
+    pub calendars: Vec<CalendarSyncReport>,
+    /// Per address book, in slice order, whose card sync landed — the same
+    /// keep-the-sync rule as `calendars`.
+    pub contacts: Vec<ContactCardsReport>,
+    /// How many calendar ops this round's per-calendar drains drove to a
+    /// recorded outcome, summed over the round.
+    pub drained_cal: usize,
+    /// How many contact ops this round's per-book drains drove to a recorded
+    /// outcome, summed over the round.
+    pub drained_contacts: usize,
+    /// `(slice index, error)` for every collection whose pass faulted — the
+    /// index is into the `calendars` slice on the calendar pass, into the
+    /// `contacts` slice on the contacts pass, and `0` for the discovery step
+    /// (which runs over `contacts[0]`'s provider). One entry per faulted
+    /// collection at most, and a faulting collection never stopped a later
+    /// one.
+    pub failures: Vec<(usize, ApiError)>,
+}
+
+/// Drives one multi-collection PIM round: per calendar, sync + window
+/// maintenance + drain; once, address-book discovery; per address book, card
+/// sync + drain — with per-collection failure isolation.
+///
+/// The multi-collection sibling of [`run_pim_round`], for the hosts whose
+/// providers are bound one per collection (CalDAV today; Google and Graph
+/// present the same shape next). Each calendar runs the single round's own
+/// four steps — `Engine::sync_calendar` over `(horizon, host_zone)`, the
+/// window check, one `CalendarChanged` when that calendar's rows moved (the
+/// `carries_changes` rule, per collection now), `Engine::drain_calendar_ops`
+/// with its own depth event — and each address book the contacts pair:
+/// `Engine::sync_contact_cards`, one `ContactsChanged` on change,
+/// `Engine::drain_contact_ops`.
+///
+/// Address-book discovery runs **once**, through the first book's provider:
+/// the book list is one account-wide scope every bound adapter answers
+/// identically, so per-book discovery would be N-1 duplicate fetches of the
+/// same list. Its apply counts as a contacts change like any other rows that
+/// moved, so a book list that moved emits its own `ContactsChanged` before
+/// the per-book passes speak.
+///
+/// # Failure isolation
+///
+/// A fault at any step of a collection's pass lands in the report's
+/// `failures` under that collection's slice index and the round continues
+/// with the next collection — no drain for a provider whose sync did not land
+/// (the single round's rule, now per-collection), and no collection's fault
+/// touches another's. The round never returns an error: one dead calendar
+/// must not starve the rest, and partial progress is the honest answer; the
+/// store keeps whatever committed before a fault, and the next round is a
+/// plain retry of whichever collections faulted.
+///
+/// Empty slices are legal: nothing is asked, nothing is emitted, and the
+/// report reads all-zero.
+pub async fn run_pim_round_many<P: Provider, K: ContactsProvider>(
+    engine: &Engine,
+    calendars: &[P],
+    contacts: &[K],
+    account: &AccountId,
+    horizon: Horizon,
+    host_zone: &TimeZoneId,
+    sink: &dyn EventSink,
+) -> PimSetRoundReport {
+    let name = account.as_str().to_owned();
+    let mut report = PimSetRoundReport {
+        calendars: Vec::new(),
+        contacts: Vec::new(),
+        drained_cal: 0,
+        drained_contacts: 0,
+        failures: Vec::new(),
+    };
+
+    // Calendar pass: per collection, the single round's own four steps — the
+    // sync in the loop (so a landed sync keeps its entry whatever a later
+    // step does), the maintenance tail in the helper.
+    for (index, provider) in calendars.iter().enumerate() {
+        let calendar = match engine
+            .sync_calendar(provider, account, horizon, host_zone)
+            .await
+        {
+            Ok(calendar) => calendar,
+            Err(err) => {
+                report.failures.push((index, err));
+                continue;
+            }
+        };
+        match calendar_pass(
+            engine, provider, account, horizon, host_zone, &calendar, &name, sink,
+        )
+        .await
+        {
+            Ok(drained) => report.drained_cal += drained,
+            Err(err) => report.failures.push((index, err)),
+        }
+        report.calendars.push(calendar);
+    }
+
+    // Discovery once, through the first book's provider — the account-wide
+    // book list is one scope every bound adapter answers identically.
+    if let Some(first) = contacts.first() {
+        match engine.sync_address_books(first, account).await {
+            Ok(books) => {
+                if carries_changes(&books.applied) {
+                    sink.emit(EngineEvent::ContactsChanged {
+                        account: name.clone(),
+                    });
+                }
+            }
+            // Index 0: discovery ran over `contacts[0]`'s provider. The
+            // per-book passes still run — a card scope is independent of the
+            // list fetch, and a later collection still ran.
+            Err(err) => report.failures.push((0, err)),
+        }
+    }
+
+    // Contacts pass: per book, card sync, emit, drain — isolated like the
+    // calendars.
+    for (index, provider) in contacts.iter().enumerate() {
+        let (cards, people) = match engine.sync_contact_cards(provider, account).await {
+            Ok(pass) => pass,
+            Err(err) => {
+                report.failures.push((index, err));
+                continue;
+            }
+        };
+        let cards_moved = carries_changes(&cards.applied);
+        report.contacts.push(ContactCardsReport { cards, people });
+        if cards_moved {
+            sink.emit(EngineEvent::ContactsChanged {
+                account: name.clone(),
+            });
+        }
+        match engine.drain_contact_ops(provider, account).await {
+            Ok(drained) => {
+                report.drained_contacts += drained;
+                report_drain(engine, account, &name, drained, sink).await;
+            }
+            Err(err) => report.failures.push((index, err)),
+        }
+    }
+
+    report
+}
+
+/// One calendar's maintenance tail: the window check, the change emission,
+/// and the drain — every step of a collection's pass after the sync whose
+/// report [`run_pim_round_many`] already holds. The first fault propagates to
+/// the caller, which attributes it to the collection's slice index; the tail
+/// stops there, so a collection never emits or drains under a window it could
+/// not keep honest. Returns the drain's count.
+#[allow(clippy::too_many_arguments)] // the round's fixed inputs plus this collection's own two
+async fn calendar_pass<P: Provider>(
+    engine: &Engine,
+    provider: &P,
+    account: &AccountId,
+    horizon: Horizon,
+    host_zone: &TimeZoneId,
+    synced: &CalendarSyncReport,
+    name: &str,
+    sink: &dyn EventSink,
+) -> Result<usize, ApiError> {
+    let expanded = widen_window(engine, provider, account, horizon, host_zone).await?;
+    let calendar_moved = carries_changes(&synced.calendars)
+        || carries_changes(&synced.events.applied)
+        || expanded.is_some_and(|pass| pass.occurrences > 0);
+    if calendar_moved {
+        sink.emit(EngineEvent::CalendarChanged {
+            account: name.to_owned(),
+        });
+    }
+    let drained = engine.drain_calendar_ops(provider, account).await?;
+    report_drain(engine, account, name, drained, sink).await;
+    Ok(drained)
 }
 
 /// Whether an apply count set says the scope's rows moved: an upsert or a
