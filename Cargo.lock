@@ -1723,6 +1723,7 @@ dependencies = [
  "engine-core",
  "engine-http",
  "engine-ical",
+ "engine-mime",
  "engine-provider",
  "engine-rfc5322",
  "engine-tls",
