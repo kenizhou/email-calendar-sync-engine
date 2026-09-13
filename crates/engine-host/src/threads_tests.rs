@@ -18,6 +18,12 @@ use engine_provider::{
 
 use super::*;
 
+// The unread-aggregate tests sit in a part file beside this one — an explicit
+// path because a plain `mod unread;` inside a `#[path]`-included module
+// resolves against the parent directory instead (the pim_tests convention).
+#[path = "threads_tests/unread.rs"]
+mod unread;
+
 /// The epoch seconds of a UTC wall clock, so the tests assert real instants rather
 /// than hand-arithmetic magic numbers. Days-from-civil (Hinnant): exact for the
 /// proleptic Gregorian calendar, which is what `received_at` strings are.
@@ -126,13 +132,22 @@ impl FakeMail {
             EmailAddress::named("Carol", "carol@h"),
         );
         solo.keywords.insert(Keyword::system(SystemKeyword::Seen));
-        Self {
-            caps: Capabilities::none().with_mail(),
-            mailboxes: vec![
+        Self::fixture(
+            vec![
                 mailbox("a", "Inbox", Some(MailboxRole::Inbox)),
                 mailbox("b", "Archive", None),
             ],
-            messages: vec![root, reply, solo],
+            vec![root, reply, solo],
+        )
+    }
+
+    /// A fake over an explicit fixture: the same first-sync snapshot semantics
+    /// as `seeded`, for the part files whose thread/label mix is their own.
+    fn fixture(mailboxes: Vec<Mailbox>, messages: Vec<Message>) -> Self {
+        Self {
+            caps: Capabilities::none().with_mail(),
+            mailboxes,
+            messages,
             cursor: SyncState::new("email-1"),
         }
     }

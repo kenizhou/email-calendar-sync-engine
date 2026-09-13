@@ -5,7 +5,10 @@
 //! a page of them at a time. [`ThreadsRead::threads`] answers exactly that with one
 //! grouped statement over the engine's `message` table, so a page costs the page
 //! and not the account, and the same store rows the engine's own list read uses
-//! stay the single source every surface agrees on.
+//! stay the single source every surface agrees on. The badge counts are the same
+//! story one level up: [`ThreadsRead::unread_counts_by_label`] and
+//! [`ThreadsRead::unread_thread_total`] answer them as aggregates of the same
+//! rows, so a folder pane never has to walk the account's pages to count.
 
 use std::fmt::Write as _;
 
@@ -117,6 +120,36 @@ pub trait ThreadsRead {
         account: &AccountId,
         opts: ThreadsOptions,
     ) -> Result<ThreadsPage, String>;
+
+    /// Reads the account's unread counts per mailbox label as one aggregate: for
+    /// every label, how many distinct threads with at least one unread member
+    /// carry that label, label order ascending.
+    ///
+    /// The semantics are exactly what folding every [`ThreadsRead::threads`]
+    /// page of the account yields — the walk a host without this verb had to
+    /// run: a member is unread when it carries neither `$seen` nor `$draft`, a
+    /// thread's labels are every mailbox any member is filed in, and a thread
+    /// counts once per label it carries (so a thread spanning two mailboxes
+    /// raises both badges). One grouped statement answers the whole account —
+    /// no pages, no cursor, nothing to cap.
+    ///
+    /// # Errors
+    ///
+    /// Returns the backend's message when the query fails or a stored label
+    /// fails to parse as a mailbox id.
+    async fn unread_counts_by_label(
+        &self,
+        account: &AccountId,
+    ) -> Result<Vec<(String, i64)>, String>;
+
+    /// Reads how many distinct threads of `account` have at least one unread
+    /// member — the tray-total shape of [`ThreadsRead::unread_counts_by_label`],
+    /// where a thread counts **once** no matter how many labels it carries.
+    ///
+    /// # Errors
+    ///
+    /// Returns the backend's message when the query fails.
+    async fn unread_thread_total(&self, account: &AccountId) -> Result<i64, String>;
 }
 
 /// The system-keyword bits the aggregates fold over, as the `message.flags`
@@ -149,6 +182,24 @@ impl ThreadsRead for engine_api::Engine {
         let limit = opts.limit;
         self.host_store()
             .read(move |conn| page(conn, &account, label.as_deref(), cursor.as_ref(), limit))
+            .await
+    }
+
+    async fn unread_counts_by_label(
+        &self,
+        account: &AccountId,
+    ) -> Result<Vec<(String, i64)>, String> {
+        // Owned copy so the closure crosses onto the blocking-pool reader.
+        let account = account.as_str().to_owned();
+        self.host_store()
+            .read(move |conn| unread_by_label(conn, &account))
+            .await
+    }
+
+    async fn unread_thread_total(&self, account: &AccountId) -> Result<i64, String> {
+        let account = account.as_str().to_owned();
+        self.host_store()
+            .read(move |conn| unread_total(conn, &account))
             .await
     }
 }
@@ -321,6 +372,63 @@ fn mailbox_ids(joined: Option<&str>) -> Result<Vec<MailboxId>, String> {
     }
     ids.sort();
     Ok(ids)
+}
+
+/// The account's unread counts per label, straight off the same rows
+/// [`page`] summarizes.
+///
+/// The statement drives from the account's **unread** members `u`, joins every
+/// member `m` of the same thread (`message_account_thread` answers that as an
+/// index seek), then each member's mailbox rows `b` (the membership primary key
+/// answers the `(scope_key, provider_key, kind)` prefix as a seek) — so the
+/// cost is the unread members and their threads, never a page-walk of the
+/// account. `COUNT(DISTINCT m.thread_id)` per label is the fold's own rule: a
+/// thread counts once per label it carries however many members share it, and
+/// carrying a label means *any* member is filed there — the same
+/// membership-join shape `page`'s labels subquery uses, so the two reads can
+/// never disagree about what a thread's labels are. A draft member never drives
+/// a count: `(u.flags & SEEN|DRAFT) = 0` is `page`'s unread definition
+/// verbatim.
+fn unread_by_label(conn: &Connection, account: &str) -> Result<Vec<(String, i64)>, String> {
+    let unread_bit = SEEN | DRAFT;
+    let sql = format!(
+        "SELECT b.value, COUNT(DISTINCT m.thread_id) \
+         FROM message u JOIN message m \
+           ON m.account = u.account AND m.thread_id = u.thread_id \
+         JOIN membership b \
+           ON b.scope_key = m.scope_key AND b.provider_key = m.provider_key \
+          WHERE u.account = ?1 AND u.thread_id IS NOT NULL \
+            AND (u.flags & {unread_bit}) = 0 AND b.kind = 'mailbox' \
+         GROUP BY b.value ORDER BY b.value"
+    );
+    let mut stmt = conn.prepare_cached(&sql).map_err(|err| err.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params![account], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
+        .map_err(|err| err.to_string())?;
+    let mut counts = Vec::new();
+    for row in rows {
+        let (label, count) = row.map_err(|err| err.to_string())?;
+        let label = MailboxId::try_from(label.as_str())
+            .map_err(|err| format!("a stored label is not a mailbox id: {err}"))?;
+        counts.push((label.as_str().to_owned(), count));
+    }
+    Ok(counts)
+}
+
+/// The account's unread threads, once each: the same unread-members scan as
+/// [`unread_by_label`] without the label join, so a thread filed in two labels
+/// still counts once — the tray total, not the sum of the badges.
+fn unread_total(conn: &Connection, account: &str) -> Result<i64, String> {
+    let unread_bit = SEEN | DRAFT;
+    let sql = format!(
+        "SELECT COUNT(DISTINCT thread_id) FROM message \
+          WHERE account = ?1 AND thread_id IS NOT NULL AND (flags & {unread_bit}) = 0"
+    );
+    let mut stmt = conn.prepare_cached(&sql).map_err(|err| err.to_string())?;
+    stmt.query_row(rusqlite::params![account], |row| row.get(0))
+        .map_err(|err| err.to_string())
 }
 
 #[cfg(test)]
