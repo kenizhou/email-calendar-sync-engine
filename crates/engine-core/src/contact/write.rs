@@ -91,7 +91,17 @@ impl ContactFieldSet {
     }
 
     pub(crate) fn from_card(card: &ContactCard) -> Self {
-        let mut fields = BTreeSet::from([ContactField::Kind]);
+        // Kind rides only when it is a REAL request: `Individual` is the
+        // default, every transport models it implicitly, and a destination
+        // may not carry a kind element at all (EAS's contacts class is
+        // individual-only by design). Seeding it unconditionally refused
+        // every contact create over such destinations with
+        // "does not support fields {Kind}" — a default-kind card asks
+        // nothing.
+        let mut fields = BTreeSet::new();
+        if card.kind != ContactKind::default() {
+            fields.insert(ContactField::Kind);
+        }
         macro_rules! populated {
             ($value:expr, $field:expr) => {
                 if !$value.is_empty() {

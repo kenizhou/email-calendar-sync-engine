@@ -130,6 +130,11 @@ fn contact_name_falls_back_to_non_blank_components() {
 #[test]
 fn populated_and_requested_fields_cover_every_writable_card_field() {
     let mut card = card();
+    // Kind is requested only when it is a REAL request (a non-default kind —
+    // the default `Individual` is modeled implicitly by every destination,
+    // and EAS's contacts class carries no kind element at all), so this
+    // exhaustive-population fixture answers with a non-default kind.
+    card.kind = ContactKind::Organization;
     card.name = Some(ContactName {
         full: Some("Complete Contact".into()),
         ..ContactName::default()
