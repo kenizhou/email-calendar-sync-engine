@@ -151,6 +151,12 @@ pub(crate) fn folder_from_json(
         .get("unreadItemCount")
         .and_then(Value::as_u64)
         .map(|count| u32::try_from(count).unwrap_or(u32::MAX));
+    // `totalItemCount` rides the same default projection — no extra request.
+    // A payload that omits it leaves the count absent rather than zeroing it.
+    mailbox.total_count = value
+        .get("totalItemCount")
+        .and_then(Value::as_u64)
+        .map(|count| u32::try_from(count).unwrap_or(u32::MAX));
     Ok(mailbox)
 }
 

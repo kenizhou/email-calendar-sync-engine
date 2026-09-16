@@ -41,6 +41,15 @@ pub struct Mailbox {
     /// conversation form (`unreadThreads`), so a portable field cannot mean that.
     #[serde(default)]
     pub unread_count: Option<u32>,
+    /// How many messages the collection holds in total, as **the server
+    /// counts them** — the same server-side rule as
+    /// [`unread_count`](Self::unread_count) (a synced window cannot answer
+    /// it). `None` means the provider did not report one. Graph's
+    /// `totalItemCount` is the reporting source today; a host uses it where
+    /// the TOTAL is the meaningful badge (kylins' Drafts folder — a draft is
+    /// never "unread").
+    #[serde(default)]
+    pub total_count: Option<u32>,
     /// Per-object revision tokens, if the provider supplies any.
     pub revisions: RevisionTokens,
     /// Preserved provider-defined extended properties.
@@ -60,6 +69,7 @@ impl Mailbox {
             sort_order: 0,
             subscribed: true,
             unread_count: None,
+            total_count: None,
             revisions: RevisionTokens::none(),
             extended: ExtendedProperties::new(),
         }
