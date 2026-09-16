@@ -5,6 +5,18 @@ This repository is [kylins-client](https://github.com/kenizhou/kylins-client)'s 
 We cannot submit PRs upstream, so the fork carries our engine changes as a small,
 disciplined patch series on top of `upstream/main`, rebased periodically.
 
+## Upstream files
+
+Never modify a file whose content tracks `upstream/main` beyond a ledgered
+registration point — no restructures, no splits, no re-wrapped docs, no
+renumbering — unless the developer asks for it explicitly. Fork code goes in
+fork-owned files (`outbox_release_cases.rs`, `engine-host`, `execute.rs` /
+`drain.rs`, …); an upstream file gains at most the one `mod` / `use` / export
+line that wires a fork-owned file in, and that line is a row in the patch-series
+table below. When a shared file crosses the 500-line cap, or a merge conflict
+tempts a reshape of upstream's half, stop and ask: a red length check on a
+shared file is the developer's call, not the agent's.
+
 ## Remotes
 
 - `origin` — this fork (the only push target).

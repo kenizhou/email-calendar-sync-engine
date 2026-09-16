@@ -52,6 +52,7 @@ Read before relevant work:
 - Prefer small, testable modules over broad abstractions.
 - Do not add speculative features, knobs, or provider shortcuts.
 - Do not refactor unrelated code. Mention unrelated issues in the final answer instead.
+- **Never modify files whose content tracks `upstream/main`** — no restructures, splits, re-wraps, or renumbering — beyond a ledgered registration point (one `mod`/`use`/export line), unless the developer explicitly asks. Fork code goes in fork-owned files; a shared file crossing the 500-line cap is the developer's call, not the agent's. This is a fork of allodia-eu/email-calendar-sync-engine; see `FORKING.md` → "Upstream files".
 - Do not write provider-specific assumptions into generic types unless a primary spec or provider doc proves they are universal. A symptom found on one provider does **not** scope the fix to that provider — see "Provider-neutral by default" below, which is a required step, not a preference.
 - Lock identity, sync, store, search, and recurrence invariants in tests before writing implementation code.
 - Keep public Rust APIs idiomatic by defaulting to the Rust API Guidelines: <https://rust-lang.github.io/api-guidelines/about.html>.
