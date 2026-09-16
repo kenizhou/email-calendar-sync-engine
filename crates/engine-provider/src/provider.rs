@@ -16,9 +16,9 @@ use engine_core::{
 };
 
 use crate::{
-    CalendarWrites, ConnectionInfo, Draft, EmailStream, MailEdit,
-    MailEditReceipt, MessageReport, ProviderError, ProviderResult, ReportReceipt, ScopeSync,
-    SenderIdentity, SenderIdentityId, SubmissionReceipt, error::unsupported,
+    CalendarWrites, ConnectionInfo, Draft, EmailStream, MailEdit, MailEditReceipt, MessageReport,
+    ProviderError, ProviderResult, ReportReceipt, ScopeSync, SenderIdentity, SenderIdentityId,
+    SubmissionReceipt, error::unsupported,
 };
 // `Capabilities`, `EmailChunk` and `PageToken` are named only by the doc links here, but
 // rustdoc resolves those against the *module's* scope — a link that worked in the crate root
