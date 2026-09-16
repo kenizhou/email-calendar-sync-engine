@@ -145,7 +145,7 @@ impl JmapProvider {
     }
 
     /// Downloads one blob by id through the session's `downloadUrl` template
-    /// (RFC 8620 §6.2), the same substitution [`crate::blob`] applies to the
+    /// (RFC 8620 §6.2), the same substitution `crate::blob` applies to the
     /// whole-source fetch.
     ///
     /// The `account` parameter is interface symmetry with the `Provider`

@@ -25,8 +25,10 @@ use crate::SyncError;
 /// Answers an invitation through the outbox by referencing the invitation
 /// **message**: durable op → claim → provider from-invite RSVP → record.
 ///
-/// The message-referencing twin of [`rsvp_calendar_event`], for the transports whose
-/// protocol answers from the email (EAS `MeetingResponse`): `invite` is the invitation
+/// The message-referencing twin of
+/// [`rsvp_calendar_event`](super::calendar::rsvp_calendar_event), for the
+/// transports whose protocol answers from the email (EAS `MeetingResponse`):
+/// `invite` is the invitation
 /// message, and `base` — the stored event, when the store holds one — is optional,
 /// because that is the shape the verb exists for. The default trait verb refuses a
 /// missing `base`, so a document transport keeps its exact `rsvp_calendar_event`
@@ -39,9 +41,9 @@ use crate::SyncError;
 ///
 /// # Errors
 ///
-/// As [`rsvp_calendar_event`]; additionally an adapter keeping the trait default
-/// refuses a `None` base as
-/// [`InvalidState`](engine_core::error::InvalidState).
+/// As [`rsvp_calendar_event`](super::calendar::rsvp_calendar_event);
+/// additionally an adapter keeping the trait default refuses a `None` base as
+/// [`InvalidState`](engine_core::error::FailureClass::InvalidState).
 // One argument past the lint's taste — the same split as `rsvp_calendar_event`:
 // the outbox's lease params, and the write's invite, base, and answer, which must
 // stay separate (the durable payload records the intent, never the base).

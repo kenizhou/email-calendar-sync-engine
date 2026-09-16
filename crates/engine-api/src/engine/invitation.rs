@@ -72,7 +72,8 @@ impl Engine {
     /// the provider verb as `base`; when the store holds none (an EAS account
     /// can answer before any calendar sync), `base` is `None` and only a
     /// message-referencing transport can answer — exactly the split
-    /// [`Provider::rsvp_event_from_invite`] exists to express.
+    /// [`CalendarWrites::rsvp_event_from_invite`](engine_provider::CalendarWrites::rsvp_event_from_invite)
+    /// exists to express.
     ///
     /// `comment` and `notify` map onto [`EventRsvp::comment`] and
     /// [`EventRsvp::notify_organizer`]; read

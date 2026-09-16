@@ -158,7 +158,7 @@ pub trait CalendarWrites: Send + Sync {
     /// while every event-answering transport inherits the default, which
     /// ignores the invite, requires `base`, and delegates to
     /// [`rsvp_event`](CalendarWrites::rsvp_event) (`None` base: no stored event —
-    /// legitimate, the reason the verb exists). See [`calendar_write`](crate::calendar_write).
+    /// legitimate, the reason the verb exists). See the `crate::calendar_write` module docs.
     ///
     /// # Errors
     ///

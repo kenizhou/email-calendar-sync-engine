@@ -77,7 +77,7 @@
 //! collection and an unbound adapter cannot name one. `calendar_rsvp` is
 //! on with the binding too (`rsvp_event_from_invite` over `MeetingResponse`
 //! — the controls composed per call from the negotiated version, see
-//! [`EasAdapter::rsvp_controls`]). The **contacts family is on with its
+//! `EasAdapter::rsvp_controls`). The **contacts family is on with its
 //! binding** ([`EasAdapter::with_contacts`], P2 Task 5): the read verbs
 //! (`sync_address_books` + `sync_contacts`, `adapter/contacts.rs`) and the
 //! write verbs (`create_contact`/`patch_contact`/`delete_contact` — Sync
@@ -89,7 +89,7 @@
 //!
 //! EAS item `Sync` carries one collection per request, so calendar event
 //! sync is per calendar folder — like email per mail folder, and exactly the
-//! [`GraphCalendarProvider`](provider_graph::GraphCalendarProvider) /
+//! `provider_graph::GraphCalendarProvider` /
 //! `CalDavProvider` shape. A host builds its calendar adapters from the
 //! container sync's discovery: any adapter can list the calendars
 //! (`sync_calendars` is per-account FolderSync), then each event-syncing
@@ -287,7 +287,7 @@ impl EasAdapter {
     }
 
     /// Binds the calendar family: names the calendar folder whose events
-    /// this adapter syncs ([`event_scope`](Provider::event_scope) →
+    /// this adapter syncs ([`event_scope`](engine_provider::Provider::event_scope) →
     /// [`SyncScope::EasCalendar`](engine_core::sync::SyncScope::EasCalendar))
     /// and turns the `calendars` capability bit on with it — the bit and
     /// the binding land together because event sync is per collection: an
@@ -314,7 +314,7 @@ impl EasAdapter {
     /// last-write-wins, not a survival failure. The RSVP bit lands with the
     /// binding as well (P2 Task 4: `rsvp_event_from_invite` over
     /// `MeetingResponse`), composed per call from the negotiated version —
-    /// see [`EasAdapter::rsvp_controls`].
+    /// see `EasAdapter::rsvp_controls`.
     #[must_use]
     pub fn with_calendar(mut self, calendar: CalendarId) -> Self {
         self.calendar = Some(calendar);

@@ -68,9 +68,9 @@ fn parse_range_text(text: &str) -> Result<Option<(u64, u64)>, WbxmlError> {
 /// eas_io_debug raw dump, 2026-08-02.
 ///
 /// Three fetch forms, in precedence order (first populated wins):
-/// 1. **Attachment fetch** (`file_reference`): Store + airsyncbase:FileReference [+ Options>Range
+/// 1. **Attachment fetch** (`file_reference`): Store + airsyncbase:FileReference \[+ Options>Range
 ///    when `range` is set — §2.2.3.125.3: with FileReference present, Range is the ONLY valid
-///    Options child].
+///    Options child\].
 /// 2. **Search-result fetch** (`long_id`, [MS-ASCMD] §4.10.3.3): Store + search:LongId (page 15,
 ///    0x18) + Options>BodyPreference(Type 2). The search:LongId replaces CollectionId/ServerId
 ///    (§2.2.3.98.1: they MUST NOT accompany it — that rule is stated for MeetingResponse/Source but

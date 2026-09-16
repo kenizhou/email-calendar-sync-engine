@@ -108,7 +108,7 @@ mod vault {
         /// untouched — no rewrite, so a concurrent reader never watches a
         /// good file change underneath it. Anything else at the path (nothing,
         /// or a truncated/corrupted file whose content no longer matches its
-        /// name) is written; see [`AttachmentVault::store`] for why that
+        /// name) is written; see `AttachmentVault::store` for why that
         /// repair is safe to race.
         ///
         /// # Errors
