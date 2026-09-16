@@ -78,6 +78,7 @@ fn migrations(tokenizer: FtsTokenizer) -> Vec<Migration> {
         Migration::sql(schema::V11),
         Migration::sql(schema::V12),
         Migration::sql(schema::V13),
+        Migration::sql(schema::V14),
     ]
 }
 
@@ -370,6 +371,52 @@ mod tests {
              plus how big the provider says it is so a size cap can ask in SQL; `schedule_tag` \
              is CalDAV scheduling state and has no place on a message"
         );
+    }
+
+    /// v14 relaxes `person.display_name` to nullable: the model's `Option<String>` is
+    /// `None` for a person whose sources carry neither a name nor an address, and the
+    /// v7 `NOT NULL` faulted every people replacement holding such a card. Pinned
+    /// here: a v12 store's people survive the rebuild, and the nameless row a v12
+    /// build could not write becomes insertable the moment the step lands. (Upstream's
+    /// v13 — the `pending_op_held_resource` index — is not fork work and runs too.)
+    #[test]
+    fn v14_preserves_people_and_makes_the_nameless_insertable() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        let all = migrations(FtsTokenizer::PorterUnicode61);
+        run(&mut conn, &all[..12]).unwrap();
+        assert_eq!(version(&conn), 12);
+        conn.execute(
+            "INSERT INTO person (id, ordinal, display_name, payload) VALUES (1, 0, 'Ada', '{}')",
+            [],
+        )
+        .unwrap();
+        let refused = conn.execute(
+            "INSERT INTO person (id, ordinal, display_name, payload) VALUES (2, 1, NULL, '{}')",
+            [],
+        );
+        assert!(refused.is_err(), "v12 rejects the nameless person");
+
+        run(&mut conn, &all).unwrap();
+        assert_eq!(version(&conn), i64::from(expected_version()));
+
+        let name: Option<String> = conn
+            .query_row("SELECT display_name FROM person WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(name.as_deref(), Some("Ada"), "the v12 person survives");
+
+        conn.execute(
+            "INSERT INTO person (id, ordinal, display_name, payload) VALUES (2, 1, NULL, '{}')",
+            [],
+        )
+        .unwrap();
+        let nameless: Option<Option<String>> = conn
+            .query_row("SELECT display_name FROM person WHERE id = 2", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(nameless, None, "the nameless person now persists");
     }
 
     /// Opening a store that is behind reports the pair a support answer needs: what it was, and

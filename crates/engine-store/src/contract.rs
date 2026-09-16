@@ -206,6 +206,8 @@ where
     let (store, _) = make();
     contact_cases::contact_generation_and_people_cas(&store).await;
     let (store, _) = make();
+    contact_cases::a_nameless_person_persists(&store).await;
+    let (store, _) = make();
     contact_cases::recipient_idempotency_and_suppression(&store).await;
     let (store, _) = make();
     contact_cases::contact_photo_cache_is_fingerprint_bound(&store).await;

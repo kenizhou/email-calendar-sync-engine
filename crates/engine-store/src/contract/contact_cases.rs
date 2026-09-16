@@ -1,11 +1,13 @@
 //! Contact/people/recipient derived-store cases shared by every backend.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use engine_core::{
     contact::{ContactCard, ContactEmail, ContactProperty, PropertyId},
-    ids::{AccountId, AddressBookId, ContactId, MailboxId, MessageId, ProviderKey},
+    ids::{AccountId, AddressBookId, ContactId, MailboxId, MessageId, PersonId, ProviderKey},
     mail::Message,
     membership::Memberships,
-    people::{CanonicalEmail, PeopleSnapshot},
+    people::{CanonicalEmail, PeopleSnapshot, Person},
     recipient::{RecipientCoverage, RecipientObservation},
     sync::{JmapDataType, SyncScope, SyncState, SyncUpdate, SyncWindow},
 };
@@ -113,6 +115,38 @@ where
             .unwrap()
     );
     assert_eq!(store.people_snapshot().await.unwrap(), first);
+}
+
+/// A person whose sources carry neither a name nor an address persists: the model's
+/// `display_name` is `None` by design ("naming the nameless is a presentation
+/// decision that belongs to the host"), and the SQLite v7 schema's `NOT NULL` on the
+/// column faulted every people replacement holding such a card until v13 relaxed it.
+pub(super) async fn a_nameless_person_persists<S>(store: &S)
+where
+    S: Store + ContactStore,
+{
+    let snapshot = PeopleSnapshot {
+        people: vec![Person {
+            id: PersonId::new(1).unwrap(),
+            display_name: None,
+            sources: BTreeSet::new(),
+            kinds: BTreeSet::new(),
+            names: Vec::new(),
+            emails: Vec::new(),
+            phones: Vec::new(),
+            organizations: Vec::new(),
+            titles: Vec::new(),
+            is_saved: false,
+            is_writable: false,
+        }],
+        aliases: BTreeMap::new(),
+        next_id: 2,
+    };
+    assert!(
+        store.replace_people(0, &snapshot).await.unwrap(),
+        "the nameless person must persist"
+    );
+    assert_eq!(store.people_snapshot().await.unwrap(), snapshot);
 }
 
 pub(super) async fn recipient_idempotency_and_suppression<S>(store: &S)
