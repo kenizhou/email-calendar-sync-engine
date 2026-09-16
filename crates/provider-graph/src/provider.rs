@@ -29,7 +29,8 @@ use engine_provider::{
 
 use crate::{fetch, transport::GraphClient};
 
-/// The folder list is re-discovered as a snapshot each pass (`GET /me/mailFolders`),
+/// The folder list is re-discovered as a snapshot each pass (`GET /me/mailFolders`
+/// plus the `childFolders` BFS — see [`fetch::folders`]),
 /// so it carries no provider cursor of its own — like IMAP's folder list.
 const FOLDER_LIST_CURSOR: &str = "graph-folders";
 
@@ -177,7 +178,8 @@ impl Provider for GraphProvider {
         _cursor: Option<&SyncState>,
     ) -> ProviderResult<ScopeSync<Mailbox>> {
         let mailboxes = fetch::folders(&self.client).await?;
-        // `GET /me/mailFolders` is a full snapshot every pass, so every folder is present.
+        // The folder listing (top level + `childFolders` BFS) is a full snapshot
+        // every pass, so every folder is present.
         let present: BTreeSet<ProviderKey> = mailboxes.iter().map(|m| m.id.key().clone()).collect();
         Ok(ScopeSync::new(
             SyncUpdate::snapshot(mailboxes, present),

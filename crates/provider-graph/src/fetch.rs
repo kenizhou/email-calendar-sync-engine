@@ -51,16 +51,30 @@ pub(crate) async fn folders(client: &GraphClient) -> Result<Vec<Mailbox>, GraphE
     // Drain every page of the folder list (`@odata.nextLink`), so a mailbox with
     // more than one page of folders is not truncated — and then tombstoned, since
     // this set becomes the snapshot's `present` set.
+    //
+    // `/mailFolders` lists ONLY the top level: children ride
+    // `/mailFolders/{id}/childFolders`, so the listing BFSes one probe per
+    // discovered folder (the contacts listing's own rule — a leaf answers an
+    // empty `value`, costing one request). Without the traversal every
+    // subfolder stayed unknown (kylins 2026-09-16: the folder pane showed a
+    // flat top level and no children).
     let mut mailboxes = Vec::new();
-    let mut url = client.url("/mailFolders?$top=100");
-    loop {
-        let doc = client.get(&url).await?;
-        for folder in value_array(&doc, "mailFolders")? {
-            mailboxes.push(folder_from_json(folder, Some(&root))?);
-        }
-        match odata_link(&doc, "@odata.nextLink") {
-            Some(next) => url = next,
-            None => break,
+    let mut queue = std::collections::VecDeque::from([client.url("/mailFolders?$top=100")]);
+    while let Some(mut url) = queue.pop_front() {
+        loop {
+            let doc = client.get(&url).await?;
+            for folder in value_array(&doc, "mailFolders")? {
+                let mailbox = folder_from_json(folder, Some(&root))?;
+                queue.push_back(client.url(&format!(
+                    "/mailFolders/{}/childFolders?$top=100",
+                    mailbox.id.as_str()
+                )));
+                mailboxes.push(mailbox);
+            }
+            match odata_link(&doc, "@odata.nextLink") {
+                Some(next) => url = next,
+                None => break,
+            }
         }
     }
     apply_roles(&mut mailboxes, &resolved);

@@ -48,8 +48,14 @@ fn initial_delta_url_windows_by_received_datetime_only_when_since_is_set() {
 #[tokio::test]
 async fn folders_resolve_roles_by_id_and_null_root_parents() {
     let mailboxes = folders(&fake_client(folder_routes())).await.unwrap();
-    assert_eq!(mailboxes.len(), 8);
-    assert!(mailboxes.iter().all(|m| m.parent.is_none()));
+    // 8 top-level + the one nested child the BFS discovers under
+    // `folder-extra-1`.
+    assert_eq!(mailboxes.len(), 9);
+    assert!(
+        mailboxes
+            .iter()
+            .all(|m| m.name != "Postvak IN" || m.parent.is_none())
+    );
     let role = |name: &str| {
         mailboxes
             .iter()
@@ -61,6 +67,42 @@ async fn folders_resolve_roles_by_id_and_null_root_parents() {
     assert_eq!(role("Postvak IN"), Some(MailboxRole::Inbox));
     assert_eq!(role("Verzonden items"), Some(MailboxRole::Sent));
     assert_eq!(role("Postvak UIT"), None);
+}
+
+// The 2026-09-16 kylins report: `/mailFolders` lists only the TOP level, so
+// every subfolder stayed unknown and the folder pane rendered no children.
+// The listing BFSes `childFolders`; a nested folder lands with its parent.
+#[tokio::test]
+async fn folders_traverse_child_folders_with_their_parents() {
+    let mailboxes = folders(&fake_client(folder_routes())).await.unwrap();
+    let child = mailboxes
+        .iter()
+        .find(|m| m.name == "Geneste map")
+        .expect("the nested child is listed");
+    assert_eq!(
+        child
+            .parent
+            .as_ref()
+            .map(engine_core::ids::MailboxId::as_str),
+        Some("folder-extra-1"),
+        "the child carries its parent id"
+    );
+    let parent = mailboxes
+        .iter()
+        .find(|m| m.id.as_str() == "folder-extra-1")
+        .expect("the parent is listed");
+    assert!(
+        parent.parent.is_none(),
+        "the top-level parent stays rootless"
+    );
+    // The server-side counts ride the default projection: unread (the
+    // fixture's Postvak IN row carries 2) and total (the nested child's
+    // fixture row carries 1) map to the mailbox model, absent → None.
+    let inbox = mailboxes.iter().find(|m| m.name == "Postvak IN").unwrap();
+    assert_eq!(inbox.unread_count, Some(2));
+    assert_eq!(inbox.total_count, Some(2));
+    assert_eq!(child.total_count, Some(1));
+    assert_eq!(child.unread_count, Some(0));
 }
 
 #[tokio::test]
@@ -238,6 +280,15 @@ async fn folders_drain_every_page_of_the_list() {
         .collect();
     routes.push(("mailFolders?$top", page1));
     routes.push(("skiptoken=PAGE2", page2));
+    // The listing BFS probes each discovered folder's children (leaves here).
+    routes.push((
+        "mailFolders/folder-a/childFolders",
+        serde_json::json!({ "value": [] }),
+    ));
+    routes.push((
+        "mailFolders/folder-b/childFolders",
+        serde_json::json!({ "value": [] }),
+    ));
     let mailboxes = folders(&fake_client(routes)).await.unwrap();
     assert_eq!(mailboxes.len(), 2);
 }

@@ -353,5 +353,46 @@ pub(crate) fn folder_routes() -> Vec<(&'static str, Value)> {
             "/mailFolders?$top",
             json(include_str!("../tests/fixtures/mail/mailfolders.json")),
         ),
+        // The childFolders probes of the listing BFS: every top-level folder
+        // gets one (leaves answer empty); `folder-extra-1` carries a nested
+        // child so the traversal is observable.
+        (
+            "/mailFolders/folder-extra-1/childFolders",
+            json(include_str!(
+                "../tests/fixtures/mail/mailfolders_child_extra1.json"
+            )),
+        ),
+        (
+            "/mailFolders/folder-archive/childFolders",
+            serde_json::json!({ "value": [] }),
+        ),
+        (
+            "/mailFolders/folder-drafts/childFolders",
+            serde_json::json!({ "value": [] }),
+        ),
+        (
+            "/mailFolders/folder-junkemail/childFolders",
+            serde_json::json!({ "value": [] }),
+        ),
+        (
+            "/mailFolders/folder-inbox/childFolders",
+            serde_json::json!({ "value": [] }),
+        ),
+        (
+            "/mailFolders/folder-outbox/childFolders",
+            serde_json::json!({ "value": [] }),
+        ),
+        (
+            "/mailFolders/folder-deleteditems/childFolders",
+            serde_json::json!({ "value": [] }),
+        ),
+        (
+            "/mailFolders/folder-sentitems/childFolders",
+            serde_json::json!({ "value": [] }),
+        ),
+        (
+            "/mailFolders/folder-extra-1-child/childFolders",
+            serde_json::json!({ "value": [] }),
+        ),
     ]
 }
