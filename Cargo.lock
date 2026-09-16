@@ -516,7 +516,7 @@ dependencies = [
 name = "engine-core"
 version = "0.1.0"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "idna",
  "serde",
  "serde_json",
@@ -1689,7 +1689,7 @@ version = "0.1.0"
 dependencies = [
  "async-stream",
  "async-trait",
- "base64",
+ "base64 0.22.1",
  "engine-cli",
  "engine-core",
  "engine-provider",

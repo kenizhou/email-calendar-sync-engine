@@ -30,6 +30,7 @@ use crate::{
 
 mod contact_cases;
 mod outbox_cases;
+mod outbox_release_cases;
 mod scope_cases;
 
 /// A trivial storable object the suite applies and reads back. Real domain types
@@ -182,9 +183,15 @@ where
     let (store, clock) = make();
     outbox_cases::claim_respects_limit(&store, &clock).await;
     let (store, clock) = make();
-    outbox_cases::release_returns_a_claimed_op_to_runnable(&store, &clock).await;
+    outbox_cases::a_targeted_claim_reaches_an_op_behind_a_backlog(&store, &clock).await;
     let (store, clock) = make();
-    outbox_cases::release_requires_the_current_lease(&store, &clock).await;
+    outbox_cases::a_targeted_claim_names_why_it_refused(&store, &clock).await;
+    let (store, clock) = make();
+    outbox_cases::a_dead_lease_holds_no_resource(&store, &clock).await;
+    let (store, clock) = make();
+    outbox_release_cases::release_returns_a_claimed_op_to_runnable(&store, &clock).await;
+    let (store, clock) = make();
+    outbox_release_cases::release_requires_the_current_lease(&store, &clock).await;
 }
 
 /// Runs contact-generation, people-CAS, and recipient-history contracts.

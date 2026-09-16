@@ -64,8 +64,8 @@ use engine_core::{
 };
 use engine_search::{CalendarQuery, MailQuery, SearchResults};
 use engine_store::{
-    ApplyBatch, Clock, DerivedWrite, LeaseRequest, LeasedPendingOp, OpLease, Result, SchemaStatus,
-    Store, SyncApplied, SyncClaim, SyncLease,
+    ApplyBatch, Clock, DerivedWrite, LeaseRequest, LeasedPendingOp, OpLease, PendingOpClaim,
+    Result, SchemaStatus, Store, SyncApplied, SyncClaim, SyncLease,
 };
 pub use options::{FtsTokenizer, OpenOptions};
 use rusqlite::Connection;
@@ -458,6 +458,19 @@ impl<C: Clock> Store for SqliteStore<C> {
         let expiry = expiry_after(now, req.ttl)?;
         let owner = req.owner;
         self.call(move |conn| outbox_ops::claim(conn, &account, &owner, now, expiry, limit))
+            .await
+    }
+
+    async fn claim_pending_op(
+        &self,
+        account: AccountId,
+        op: PendingOpId,
+        req: LeaseRequest,
+    ) -> Result<PendingOpClaim> {
+        let now = self.clock.now();
+        let expiry = expiry_after(now, req.ttl)?;
+        let owner = req.owner;
+        self.call(move |conn| outbox_ops::claim_one(conn, &account, op, &owner, now, expiry))
             .await
     }
 

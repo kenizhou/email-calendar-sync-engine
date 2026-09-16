@@ -12,7 +12,7 @@ use super::{acct, lease_request, pending_op, pk};
 use crate::{
     error::StoreError,
     lease::{FenceToken, ManualClock, OpLease, WorkerId},
-    outbox::PendingOpState,
+    outbox::{ClaimRejection, PendingOpClaim, PendingOpState},
     store::{Store, StoreRead},
 };
 
@@ -252,125 +252,246 @@ pub(super) async fn claim_respects_limit<S: Store + StoreRead>(store: &S, _clock
     assert_eq!(claimed.len(), 1);
 }
 
-/// `release_pending_op` hands a claimed op straight back to `Pending` under the
-/// holder's own lease: the released op is claimable again immediately, and the
-/// released lease is dead — its token was bumped, so neither a mark nor another
-/// release under it can ever apply. The still-leased sibling is untouched.
-pub(super) async fn release_returns_a_claimed_op_to_runnable<S: Store + StoreRead>(
+/// `claim_pending_op` leases the op it names however much older work is runnable.
+///
+/// The batch claim is ordered and bounded, so reaching a *particular* op through it
+/// works only while the account's runnable set stays under the batch size. An inline
+/// driver resolving the op it just enqueued needs that op, not the head of the queue.
+pub(super) async fn a_targeted_claim_reaches_an_op_behind_a_backlog<S: Store + StoreRead>(
     store: &S,
     _clock: &ManualClock,
 ) {
-    let account = acct("acct-release");
-    let held = store
-        .enqueue_pending_op(account.clone(), pending_op("rel-held", "res-held"))
-        .await
-        .unwrap();
-    let released = store
-        .enqueue_pending_op(account.clone(), pending_op("rel-freed", "res-freed"))
+    let account = acct("acct-targeted");
+    let mut older = Vec::new();
+    for i in 0..40 {
+        older.push(
+            store
+                .enqueue_pending_op(
+                    account.clone(),
+                    pending_op(&format!("older-{i}"), &format!("res-{i}")),
+                )
+                .await
+                .unwrap(),
+        );
+    }
+    let mine = store
+        .enqueue_pending_op(account.clone(), pending_op("mine", "res-mine"))
         .await
         .unwrap();
 
-    let claimed = store
-        .claim_pending_ops(account.clone(), lease_request("worker-a", 300), 10)
+    let claim = store
+        .claim_pending_op(account.clone(), mine, lease_request("worker", 30))
         .await
         .unwrap();
-    assert_eq!(claimed.len(), 2);
-
-    store.release_pending_op(&claimed[1].lease).await.unwrap();
+    let PendingOpClaim::Leased(leased) = claim else {
+        panic!("the named op must be leased, not refused: {claim:?}");
+    };
+    assert_eq!(leased.id, mine);
     assert_eq!(
-        store.pending_op_state(released).await.unwrap(),
-        Some(PendingOpState::Pending),
-        "the release handed the op back to Pending"
+        store.pending_op_state(mine).await.unwrap(),
+        Some(PendingOpState::InFlight)
     );
-    let dead = store
+
+    // It leases that op alone: the backlog is untouched, so nothing is leased to a
+    // worker that will never resolve it.
+    for id in [older[0], older[19]] {
+        assert_eq!(
+            store.pending_op_state(id).await.unwrap(),
+            Some(PendingOpState::Pending)
+        );
+    }
+}
+
+/// A refused targeted claim says which condition refused it.
+///
+/// A caller waits out a busy resource and does not wait out an unmet dependency, so
+/// one opaque "not claimable" cannot serve both.
+pub(super) async fn a_targeted_claim_names_why_it_refused<S: Store + StoreRead>(
+    store: &S,
+    _clock: &ManualClock,
+) {
+    let account = acct("acct-refusal");
+
+    // Unknown: no such op.
+    assert_eq!(
+        store
+            .claim_pending_op(
+                account.clone(),
+                PendingOpId::new(9_999),
+                lease_request("w", 30)
+            )
+            .await
+            .unwrap(),
+        PendingOpClaim::Refused(ClaimRejection::Unknown)
+    );
+
+    // Busy: another op holds this one's resource under a live lease.
+    let holder = store
+        .enqueue_pending_op(account.clone(), pending_op("holder", "res-shared"))
+        .await
+        .unwrap();
+    let waiter = store
+        .enqueue_pending_op(account.clone(), pending_op("waiter", "res-shared"))
+        .await
+        .unwrap();
+    let held = store
+        .claim_pending_op(account.clone(), holder, lease_request("w", 30))
+        .await
+        .unwrap();
+    let PendingOpClaim::Leased(held) = held else {
+        panic!("the holder must lease")
+    };
+    assert_eq!(
+        store
+            .claim_pending_op(account.clone(), waiter, lease_request("w", 30))
+            .await
+            .unwrap(),
+        PendingOpClaim::Refused(ClaimRejection::Busy)
+    );
+
+    // The op itself, already leased and live, is equally busy.
+    assert_eq!(
+        store
+            .claim_pending_op(account.clone(), holder, lease_request("w2", 30))
+            .await
+            .unwrap(),
+        PendingOpClaim::Refused(ClaimRejection::Busy)
+    );
+
+    // DependencyUnmet: the dependency has not reached terminal success.
+    let mut dependent = pending_op("dependent", "res-dependent");
+    dependent.depends_on.push(holder);
+    let dependent_id = store
+        .enqueue_pending_op(account.clone(), dependent)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .claim_pending_op(account.clone(), dependent_id, lease_request("w", 30))
+            .await
+            .unwrap(),
+        PendingOpClaim::Refused(ClaimRejection::DependencyUnmet)
+    );
+
+    // Settled: a terminal outcome is recorded, so there is nothing left to run.
+    store
         .mark_pending_op(
-            &claimed[1].lease,
+            &held.lease,
             PendingOutcome::Succeeded {
                 provider_key: pk("server"),
             },
         )
         .await
-        .expect_err("the released lease is fenced out");
-    assert_eq!(dead, StoreError::StaleLease);
-
-    // The next claimant gets exactly the released op — never the held one.
-    let reclaimed = store
-        .claim_pending_ops(account.clone(), lease_request("worker-b", 300), 10)
-        .await
         .unwrap();
     assert_eq!(
-        reclaimed.iter().map(|l| l.id).collect::<Vec<_>>(),
-        vec![released],
-        "only the released op is runnable again"
+        store
+            .claim_pending_op(account.clone(), holder, lease_request("w", 30))
+            .await
+            .unwrap(),
+        PendingOpClaim::Refused(ClaimRejection::Settled)
     );
-    assert_eq!(
-        store.pending_op_state(held).await.unwrap(),
-        Some(PendingOpState::InFlight),
-        "the still-leased op was not disturbed"
-    );
+
+    // Resolving it frees both the resource and the dependency.
+    for id in [waiter, dependent_id] {
+        let claim = store
+            .claim_pending_op(account.clone(), id, lease_request("w", 30))
+            .await
+            .unwrap();
+        assert!(
+            matches!(claim, PendingOpClaim::Leased(ref l) if l.id == id),
+            "op {id:?} must be claimable once the holder settled, got {claim:?}"
+        );
+    }
 }
 
-/// Release is the current lease holder's alone: a superseded lease (the op was
-/// re-claimed after expiry) is rejected, and so is the *current* lease once the
-/// op has recorded an outcome — a terminal state must never walk back to
-/// runnable.
-pub(super) async fn release_requires_the_current_lease<S: Store + StoreRead>(
+/// A dead lease holds nothing, and a dependency that does not exist is never met.
+///
+/// The first is how an account with a backlog of abandoned in-flight ops recovers
+/// without surgery: those ops still read `InFlight`, but their leases expired, so they
+/// serialize against nothing, a new write to the same resource runs, and the abandoned
+/// op itself is claimable again under a fresh token.
+pub(super) async fn a_dead_lease_holds_no_resource<S: Store + StoreRead>(
     store: &S,
     clock: &ManualClock,
 ) {
-    let account = acct("acct-release-guard");
-    store
-        .enqueue_pending_op(account.clone(), pending_op("rel-stale", "res-stale"))
+    let account = acct("acct-dead-lease");
+    let abandoned = store
+        .enqueue_pending_op(account.clone(), pending_op("abandoned", "res-shared"))
         .await
         .unwrap();
-    store
-        .enqueue_pending_op(account.clone(), pending_op("rel-done", "res-done"))
+    let later = store
+        .enqueue_pending_op(account.clone(), pending_op("later", "res-shared"))
         .await
         .unwrap();
-    let claimed = store
-        .claim_pending_ops(account.clone(), lease_request("worker-a", 30), 10)
+    let solo = store
+        .enqueue_pending_op(account.clone(), pending_op("solo", "res-solo"))
         .await
         .unwrap();
-    assert_eq!(claimed.len(), 2);
 
-    // Stale: the lease expired and another worker re-claimed the ops.
-    clock.advance(Duration::from_secs(90));
-    let reclaimed = store
-        .claim_pending_ops(account.clone(), lease_request("worker-b", 300), 10)
+    // Claimed and never resolved: the shape a driver leaves behind when it dies
+    // mid-write.
+    let claim = store
+        .claim_pending_op(account.clone(), abandoned, lease_request("gone", 30))
         .await
         .unwrap();
-    assert_eq!(reclaimed.len(), 2);
-    let stale = store
-        .release_pending_op(&claimed[0].lease)
+    assert!(matches!(claim, PendingOpClaim::Leased(_)));
+    let dead = store
+        .claim_pending_op(account.clone(), solo, lease_request("gone", 30))
         .await
-        .expect_err("a superseded lease cannot release");
-    assert_eq!(stale, StoreError::StaleLease);
+        .unwrap();
+    let PendingOpClaim::Leased(dead) = dead else {
+        panic!("the solo op must lease")
+    };
     assert_eq!(
-        store.pending_op_state(claimed[0].id).await.unwrap(),
-        Some(PendingOpState::InFlight),
-        "the re-claiming worker's hold is untouched"
+        store
+            .claim_pending_op(account.clone(), later, lease_request("w", 30))
+            .await
+            .unwrap(),
+        PendingOpClaim::Refused(ClaimRejection::Busy),
+        "while the lease is live the resource is genuinely held"
     );
 
-    // Resurrection guard: `mark` does not bump the token, so the token alone
-    // cannot tell a released claim from a marked one — the op being `InFlight`
-    // is what refuses to walk a recorded outcome back to runnable.
-    store
-        .mark_pending_op(
-            &reclaimed[1].lease,
-            PendingOutcome::Succeeded {
-                provider_key: pk("server"),
-            },
-        )
+    clock.advance(Duration::from_secs(90)); // the abandoned op's lease expires
+
+    let claim = store
+        .claim_pending_op(account.clone(), later, lease_request("w", 30))
         .await
         .unwrap();
-    let resurrect = store
-        .release_pending_op(&reclaimed[1].lease)
-        .await
-        .expect_err("an op past its outcome cannot be released");
-    assert_eq!(resurrect, StoreError::StaleLease);
+    assert!(
+        matches!(claim, PendingOpClaim::Leased(ref l) if l.id == later),
+        "a dead lease must not hold the resource, got {claim:?}"
+    );
+    // The abandoned op is still there, still unresolved: recovering the resource is
+    // not the same as discarding the intent.
     assert_eq!(
-        store.pending_op_state(reclaimed[1].id).await.unwrap(),
-        Some(PendingOpState::Succeeded),
-        "the terminal outcome stands"
+        store.pending_op_state(abandoned).await.unwrap(),
+        Some(PendingOpState::InFlight)
+    );
+    // And such an op is claimable again itself, under a token that fences out the
+    // driver that walked away with the old one. This is what unwedges an account:
+    // nothing has to notice the abandoned op, the next attempt simply takes it.
+    let retaken = store
+        .claim_pending_op(account.clone(), solo, lease_request("w2", 30))
+        .await
+        .unwrap();
+    let PendingOpClaim::Leased(retaken) = retaken else {
+        panic!("an op whose own lease died must be re-claimable, got {retaken:?}")
+    };
+    assert_ne!(retaken.lease.token(), dead.lease.token());
+
+    // A dependency naming an op this account's outbox does not hold is unmet, not met
+    // by default.
+    let mut orphan = pending_op("orphan", "res-orphan");
+    orphan.depends_on.push(PendingOpId::new(8_888));
+    let orphan_id = store
+        .enqueue_pending_op(account.clone(), orphan)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .claim_pending_op(account, orphan_id, lease_request("w", 30))
+            .await
+            .unwrap(),
+        PendingOpClaim::Refused(ClaimRejection::DependencyUnmet)
     );
 }

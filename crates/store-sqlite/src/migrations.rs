@@ -77,6 +77,7 @@ fn migrations(tokenizer: FtsTokenizer) -> Vec<Migration> {
         Migration::filled(schema::V10, backfill::msgid_refs),
         Migration::sql(schema::V11),
         Migration::sql(schema::V12),
+        Migration::sql(schema::V13),
     ]
 }
 
