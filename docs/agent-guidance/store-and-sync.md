@@ -699,9 +699,9 @@ one event never race on either provider.
   what makes a `Conflict` recoverable: the retry re-applies the edit to a **freshly fetched**
   base. Re-sending bytes built from the copy the server has moved past would silently revert
   somebody else's edit with a write the server happily accepts. (Drainer-side calendar
-  replay — re-applying the edit to a freshly fetched base — is registered, not built: the
-  landed drainer covers mail and contact verbs only, and today a `Conflict` is recorded
-  and surfaced to the caller.)
+  replay — re-applying the edit to a freshly fetched base — is built: the fork-owned PIM
+  drains below re-read the base by id and re-apply the stored intent, so a queued edit
+  that lost its inline race recovers against the base the next sync recorded.)
 
 - **A mail submission's payload is a *tagged* intent (`SubmitPayload`), and for
   caller-rendered bytes the tag is the dispatch key.** `kind: "draft"` carries the
@@ -717,17 +717,25 @@ one event never race on either provider.
   the message's `Message-ID` in one namespace (`submit:{id}` / `draft:{id}`), so the
   same message through either path collapses to one op.
 
-- **Calendar and contact drain is a registered port, not built.** The fork once
-  carried its own per-surface drainers (`drain_mail_ops` / `drain_contact_ops` /
-  `drain_calendar_ops` with release-on-retryable); upstream landing its own queue
-  and mail-only `drain_outbox` superseded them, and the fork deleted its series
-  rather than maintain two answers to one question. Still owed on the upstream
-  design: replay for calendar verbs (a patch or delete takes the `base` event
-  *beside* the request, so draining one means re-reading it and re-applying the
-  stored intent), contact verbs likewise, and a `NeedsConfirmation`
-  reconciliation planner (a parked op is never re-driven; the host confirms).
-  Until then those ops stay queued through every drain pass, counted as
-  deferred.
+- **Calendar and contact drain is the fork-owned PIM port (`outbox/drain_pim` +
+  `outbox/drain_replay`), built on the upstream queue.** Upstream's
+  `drain_outbox` dispatches mail kinds only, by design; the fork's owed
+  follow-up landed as kind-filtered targeted-claim loops over the same queue:
+  list the account's ops, admit only this drain's kinds (`Contact*` /
+  `Calendar*`), lease each by id through `claim_pending_op` (which reclaims an
+  expired `InFlight` and refuses a live one), replay through the same
+  `execute_*` halves the inline drivers run, and record through
+  `mark_pending_op` / `record_failure` — the store owns park-vs-settle and the
+  `MAX_ATTEMPTS` bound, exactly as for mail. A replay re-reads the base the
+  base-dependent verbs need by id from the store (a patch or RSVP whose event
+  is gone settles `Conflict`; an occurrence delete of a gone event succeeds; a
+  create, a series delete, and a document replace need no base), and a payload
+  that does not decode as the tagged intent its kind column names settles as
+  terminal poison. The `Engine` facade verbs are `drain_contact_ops` /
+  `drain_calendar_ops` (fork-owned `engine-api` `engine/drain_pim.rs`), and
+  `engine-host`'s `run_pim_round` drives both after its per-scope syncs. Still
+  owed on the upstream design: a `NeedsConfirmation` reconciliation planner (a
+  parked op is never re-driven; the host confirms).
 
 - **A write does not update the store; a *reconcile* does** (issue #65). The drivers are
   deliberately pure: they record the op, call the provider, record the outcome. They never
@@ -760,7 +768,10 @@ one event never race on either provider.
   `retry_after` when it sent one, else 30s doubling to a 30-minute cap), and it becomes
   claimable again when that time passes. It settles as `Failed` only once `attempts` reaches
   `MAX_ATTEMPTS`. Every other class settles at once: a conflict or an auth failure needs
-  recomputation or a human, and backing off changes neither. `Failed` therefore means *the
+  recomputation or a human, and backing off changes neither — and `is_retryable` is
+  `Retryable|RateLimited` only, so a `NeedsResync` write settles on its **first** failure:
+  the recovery is a fresh sync and a re-issued write, never a blind replay (the kylins T13
+  fact). `Failed` therefore means *the
   outbox gave up*, not *one attempt failed*, and a claim refused for a backoff answers
   `ClaimRejection::Backoff` rather than `Settled`, because the caller must not conclude the
   op is finished.
