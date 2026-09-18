@@ -1,218 +1,482 @@
-//! The outbox drainer: the background counterpart of the inline drivers.
+//! The background drainer: the pass that finally attempts what the inline drivers
+//! recorded and left behind.
 //!
-//! An inline driver resolves the op it just enqueued in the same call; a
-//! drainer resolves the ops nobody finished — an unstarted `Pending` op, or a
-//! crash orphan (`InFlight` under a lease that has expired) — by claiming a
-//! batch and replaying each op through the same execute halves the inline path
-//! runs ([`execute_claimed_mail`](super::execute::execute_claimed_mail) /
-//! [`execute_claimed_contact`](super::execute::execute_claimed_contact) /
-//! [`execute_claimed_calendar`](super::execute::execute_claimed_calendar)),
-//! then settling each under its lease. One claim batch per call: work is
-//! bounded, and a deeper backlog simply needs another call.
+//! The inline drivers run one op at the moment a user asks for it. Anything that failed
+//! stayed durably enqueued and nothing came back for it, so a write attempted without a
+//! network silently never happened (issue #60). This is what comes back.
 //!
-//! Three entry points, one per provider surface, because the split is the
-//! providers' own: a mail-only provider (IMAP) cannot satisfy
-//! `ContactsProvider` yet still has mail ops to drain, and every calendar verb
-//! lives on `Provider` itself, so the calendar drain needs no tighter bound
-//! than the mail one. The claim and settle machinery — everything except the
-//! one execute call per op — is shared ([`settle_claimed`]).
+//! **It claims only what it can run.** A pass reads the account's queue, keeps the ops
+//! whose [`PendingOpKind`] it dispatches, and takes each one under a *targeted* claim. The
+//! batch claim would lease whatever is runnable, including kinds this pass cannot
+//! dispatch, and an op leased by a worker that will not resolve it is held for its whole
+//! lease: the failure #202 removed from the inline path, which must not come back here.
+//!
+//! **Mail only, so far.** [`Draft`], [`MailEdit`] and [`MessageReport`] are complete in
+//! the payload: the provider call takes the account and the request and nothing else. A
+//! calendar patch or delete takes the `base` event *beside* the request, so draining one
+//! means re-reading it from the store and re-applying the stored intent to it, which is
+//! also the conflict recovery and is its own piece of work. Until then those ops stay
+//! queued, untouched and counted as deferred, rather than being leased and abandoned.
 
 use core::time::Duration;
 
-use engine_core::{error::FailureClass, ids::AccountId, write::PendingOutcome};
-use engine_provider::{ContactsProvider, Provider};
-use engine_store::{LeaseRequest, LeasedPendingOp, Store, StoreError, StoreRead, WorkerId};
-
-use super::execute::{
-    ExecuteFailure, execute_claimed_calendar, execute_claimed_contact, execute_claimed_mail,
+use engine_core::{
+    error::FailureClass,
+    ids::AccountId,
+    write::{PendingOpId, PendingOpKind, PendingOutcome, SubmitPayload},
 };
+use engine_provider::{Draft, MailEdit, MessageReport, Provider, SentCopy};
+use engine_store::{
+    LeaseRequest, LeasedPendingOp, PendingOpClaim, PendingOpRow, PendingOpState, Store, StoreRead,
+    WorkerId,
+};
+
+use super::{OutboxIntent, record_failure_parked};
 use crate::SyncError;
 
-/// Drains up to `limit` of this account's runnable **mail** ops — `submit_mail`,
-/// `edit_mail`, and `report_message` intents — claiming them under a fresh lease
-/// and replaying each through the mail execute half with exactly the inline
-/// drivers' semantics (an ambiguous send parks as `NeedsConfirmation`, never
-/// blind-retried).
+/// What one drain pass did, one entry per op it attempted.
 ///
-/// Returns how many ops this call drove to a recorded outcome — `Succeeded`,
-/// `Failed` (including the terminal `Failed` a payload that does not decode as
-/// a tagged intent is poison-marked with), or a parked `NeedsConfirmation`.
-/// Not counted: ops left unmarked, which are (a) **foreign-scope verbs** — a
-/// calendar or contact intent, claimed because claims are scope-blind, skipped
-/// without a mark and **released** back to `Pending` under the claim's own
-/// lease, so the right executor — the calendar or contact drain — can claim it
-/// immediately, in the same round — and (b) an op whose
-/// mark came back `StaleLease` (another worker re-claimed it; its outcome is
-/// that worker's to record, dropped here silently).
+/// A pass that attempted nothing is not an error: an empty outbox, ops still waiting out a
+/// backoff, and a queue of kinds this pass cannot dispatch all reach it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DrainReport {
+    /// The ops this pass attempted, in the order it took them.
+    pub attempted: Vec<DrainedOp>,
+    /// Ops left for a later pass: not yet due, serialized behind another op, or of a kind
+    /// this pass does not dispatch. None of them was leased.
+    pub deferred: usize,
+}
+
+impl DrainReport {
+    /// How many provider calls succeeded, a delivered-but-unfiled send included: the
+    /// message went out either way, which is the fact a caller acts on.
+    #[must_use]
+    pub fn delivered(&self) -> usize {
+        self.attempted
+            .iter()
+            .filter(|op| {
+                matches!(
+                    op.outcome,
+                    DrainOutcome::Succeeded | DrainOutcome::SentNotFiled { .. }
+                )
+            })
+            .count()
+    }
+
+    /// Whether this pass changed nothing, so a caller can skip a refresh.
+    #[must_use]
+    pub fn is_idle(&self) -> bool {
+        self.attempted.is_empty()
+    }
+}
+
+/// One op a drain pass attempted, and what became of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DrainedOp {
+    /// The durable op.
+    pub id: PendingOpId,
+    /// Which write it was.
+    pub kind: PendingOpKind,
+    /// What the provider call did.
+    pub outcome: DrainOutcome,
+}
+
+/// The outcome of one drained op.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DrainOutcome {
+    /// The provider call succeeded and the op settled.
+    Succeeded,
+    /// A submission was **delivered** and the sender's copy was not filed.
+    ///
+    /// Its own variant because the two facts have to travel together: folding it into
+    /// [`Succeeded`](DrainOutcome::Succeeded) loses the copy in silence, and folding it
+    /// into a failure invites re-sending mail the recipients already have. The op is
+    /// settled either way — the mail has gone.
+    SentNotFiled {
+        /// Why filing failed: a class and protocol detail, never draft content.
+        detail: String,
+    },
+    /// The call failed retryably, so the op is queued again for a later pass.
+    Parked {
+        /// How it failed.
+        class: FailureClass,
+        /// How many attempts it has now had.
+        attempts: u32,
+    },
+    /// The call failed in a way no retry fixes, or the op ran out of attempts. It will
+    /// not be attempted again.
+    Failed {
+        /// How it failed.
+        class: FailureClass,
+    },
+    /// A send whose outcome is genuinely ambiguous: parked for confirmation and **never**
+    /// retried, so the outbox cannot double-send.
+    AwaitingConfirmation {
+        /// The provider's description of the ambiguity.
+        detail: String,
+    },
+    /// The stored payload could not be read as the request its kind names, so the op
+    /// never reached the provider and is settled.
+    ///
+    /// Distinct from [`Failed`](DrainOutcome::Failed), which is the provider refusing:
+    /// nothing was asked of it. A payload written by a build this one cannot read reaches
+    /// here, and no number of retries changes that, so the op settles rather than
+    /// blocking the pass behind it for ever.
+    Undecodable {
+        /// What could not be decoded.
+        detail: String,
+    },
+}
+
+/// Attempts every op in `account`'s outbox that is due and that this pass can dispatch.
 ///
-/// The cost of a skip is its claim slot, not a lease TTL: the claim moves a
-/// skipped op to `InFlight` only momentarily — the settle half hands it
-/// straight back, with its fencing token bumped so the skipper's dead lease
-/// can never mark or release it again. Drains can therefore run in any order
-/// without burning each other's ops into lease-holds; a skip costs the op its
-/// place in this batch, nothing more.
-///
-/// A replayed submission's `SentCopy` fact (what became of the sender's own
-/// copy) is lost: the outcome records only the op state. Phase-1 limitation;
-/// the host observes completion through the op state.
+/// The host decides *when*: on reconnect (it owns the reachability signal), after a sync,
+/// or when a user asks. The engine polls nothing — a timer here would wake a dead network
+/// on a battery.
 ///
 /// # Errors
 ///
-/// Returns [`SyncError::Store`] when the claim, a mark, a release, or a
-/// replay's store read fails (an execution failure is not an error: it arrives
-/// as the outcome this call records).
-pub async fn drain_mail_ops<P, S>(
+/// Returns [`SyncError::Store`] if the queue cannot be read or an outcome cannot be
+/// recorded. A **provider** failure is not an error: it is recorded against its op and
+/// reported in the [`DrainReport`], because one unreachable recipient must not stop the
+/// rest of the queue going out.
+pub async fn drain_outbox<P, S>(
     provider: &P,
     store: &S,
     account: &AccountId,
     worker: WorkerId,
     ttl: Duration,
-    limit: usize,
-) -> Result<usize, SyncError>
+) -> Result<DrainReport, SyncError>
 where
     P: Provider,
-    S: Store,
-{
-    let claimed = store
-        .claim_pending_ops(account.clone(), LeaseRequest::new(worker, ttl), limit)
-        .await?;
-    let mut driven = 0;
-    for leased in &claimed {
-        let executed = execute_claimed_mail(provider, account, leased).await;
-        driven += usize::from(settle_claimed(store, leased, executed).await?);
-    }
-    Ok(driven)
-}
-
-/// Drains up to `limit` of this account's runnable **contact** ops —
-/// `create_contact`, `patch_contact`, and `delete_contact` intents — with the
-/// same claim/replay/settle discipline and the same counting semantics as
-/// [`drain_mail_ops`] (see its docs for the exact accounting and the skip's
-/// release). Patch and delete replays re-read the base card by id from the store,
-/// exactly as the contact execute half prescribes.
-///
-/// # Errors
-///
-/// Returns [`SyncError::Store`] when the claim, a mark, a release, or a
-/// replay's base-card read fails (an execution failure is not an error: it
-/// arrives as the outcome this call records).
-pub async fn drain_contact_ops<P, S>(
-    provider: &P,
-    store: &S,
-    account: &AccountId,
-    worker: WorkerId,
-    ttl: Duration,
-    limit: usize,
-) -> Result<usize, SyncError>
-where
-    P: ContactsProvider,
     S: Store + StoreRead,
 {
-    let claimed = store
-        .claim_pending_ops(account.clone(), LeaseRequest::new(worker, ttl), limit)
-        .await?;
-    let mut driven = 0;
-    for leased in &claimed {
-        let executed = execute_claimed_contact(provider, store, account, leased).await;
-        driven += usize::from(settle_claimed(store, leased, executed).await?);
+    let queue = store.list_pending_ops(account.clone()).await?;
+    let mut report = DrainReport::default();
+
+    for row in queue {
+        let Some(op) = dispatchable(&row) else {
+            report.deferred += 1;
+            continue;
+        };
+        let req = LeaseRequest::new(worker.clone(), ttl);
+        // Targeted: this pass leases exactly the op it is about to run. A refusal is the
+        // store's answer that the op is not this pass's to take (still backing off, or
+        // serialized behind a live write), not a failure.
+        let PendingOpClaim::Leased(leased) =
+            store.claim_pending_op(account.clone(), row.id, req).await?
+        else {
+            report.deferred += 1;
+            continue;
+        };
+        let outcome = run_one(provider, store, account, &leased, op).await?;
+        report.attempted.push(DrainedOp {
+            id: row.id,
+            kind: op.kind(),
+            outcome,
+        });
     }
-    Ok(driven)
+    Ok(report)
 }
 
-/// Drains up to `limit` of this account's runnable **calendar** ops —
-/// `create_event`, `patch_event`, `put_event_doc`, `rsvp_event`, and
-/// `delete_event` intents — with the same claim/replay/settle discipline and
-/// the same counting semantics as [`drain_mail_ops`] (see its docs for the
-/// exact accounting and the skip's release). A replayed patch, RSVP, or
-/// occurrence delete re-reads the base event by id from the store, exactly as
-/// the calendar execute half prescribes: a patch or RSVP whose event is gone
-/// is a terminal `Conflict`, an occurrence delete whose event is gone is a
-/// success, and a series delete needs no base at all.
+/// The writes this pass runs: exactly the kinds whose provider call is complete in the
+/// stored payload.
 ///
-/// # Errors
+/// A type rather than a subset of [`PendingOpKind`] checked by hand, so [`run_one`]
+/// matches exhaustively. The alternative leaves a fallback arm for kinds
+/// [`dispatchable`] already excluded: unreachable, untestable, and one edit away from
+/// being neither.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MailOp {
+    Submit,
+    Edit,
+    Report,
+}
+
+impl MailOp {
+    /// The stored kind this dispatches, for the report a caller reads.
+    fn kind(self) -> PendingOpKind {
+        match self {
+            Self::Submit => PendingOpKind::MailSubmit,
+            Self::Edit => PendingOpKind::MailEdit,
+            Self::Report => PendingOpKind::MailReport,
+        }
+    }
+}
+
+/// What a queued submission asks for, decoded from either payload generation the
+/// row may carry.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "decoded per op and consumed in the same call, so boxing the draft would add \
+              an allocation to every drained submit without shrinking anything that \
+              outlives the call"
+)]
+enum QueuedSubmit {
+    /// Render this draft and send it — both generations' default.
+    Draft(Draft),
+    /// Send the caller's already-rendered bytes verbatim (the fork's
+    /// rendered-source seam), to the envelope recipients the payload records.
+    RenderedSource {
+        rfc5322: Vec<u8>,
+        recipients: Vec<String>,
+    },
+}
+
+/// The request a mail row stores, in either payload generation this queue holds.
 ///
-/// Returns [`SyncError::Store`] when the claim, a mark, a release, or a
-/// replay's base-event read fails (an execution failure is not an error: it
-/// arrives as the outcome this call records).
-pub async fn drain_calendar_ops<P, S>(
+/// The fork's inline drivers enqueue a tagged envelope
+/// ([`OutboxIntent`](super::OutboxIntent)); a row an upstream-shaped build wrote
+/// carries the request itself. Both are live shapes in one store, so the drainer
+/// decodes whichever one the row is — and a row whose envelope verb disagrees with
+/// its kind column decodes as neither, because guessing the verb is what the kind
+/// column exists to prevent.
+#[must_use]
+fn mail_request(payload: &serde_json::Value, op: MailOp) -> Option<QueuedMail> {
+    if let Ok(intent) = serde_json::from_value::<OutboxIntent>(payload.clone()) {
+        return match (op, intent) {
+            (MailOp::Submit, OutboxIntent::SubmitMail { payload }) => {
+                let submit = match payload {
+                    SubmitPayload::Draft(draft) => QueuedSubmit::Draft(draft),
+                    SubmitPayload::RenderedSource {
+                        rfc5322,
+                        recipients,
+                    } => QueuedSubmit::RenderedSource {
+                        rfc5322,
+                        recipients,
+                    },
+                };
+                Some(QueuedMail::Submit(submit))
+            }
+            (MailOp::Edit, OutboxIntent::EditMail { edit }) => Some(QueuedMail::Edit(edit)),
+            (MailOp::Report, OutboxIntent::ReportMessage { report }) => {
+                Some(QueuedMail::Report(report))
+            }
+            _ => None,
+        };
+    }
+    match op {
+        MailOp::Submit => serde_json::from_value::<Draft>(payload.clone())
+            .ok()
+            .map(|draft| QueuedMail::Submit(QueuedSubmit::Draft(draft))),
+        MailOp::Edit => serde_json::from_value::<MailEdit>(payload.clone())
+            .ok()
+            .map(QueuedMail::Edit),
+        MailOp::Report => serde_json::from_value::<MessageReport>(payload.clone())
+            .ok()
+            .map(QueuedMail::Report),
+    }
+}
+
+/// One decoded mail request: the plain enum over [`QueuedSubmit`] / `MailEdit` /
+/// `MessageReport` that [`run_one`] dispatches on.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "decoded per op and consumed in the same call, so boxing the submit would add \
+              an allocation to every drained op without shrinking anything that \
+              outlives the call"
+)]
+enum QueuedMail {
+    Submit(QueuedSubmit),
+    Edit(MailEdit),
+    Report(MessageReport),
+}
+
+/// The write this pass would run for `row`, or `None` to leave it alone.
+///
+/// Three reasons to leave one: it carries no kind (enqueued before the store recorded
+/// one, so nothing says which request type its payload is), it is not `Pending` (in
+/// flight under someone else's lease, or awaiting a confirmation no retry may resolve),
+/// or it is a kind whose provider call needs more than the payload.
+fn dispatchable(row: &PendingOpRow) -> Option<MailOp> {
+    if row.state != PendingOpState::Pending {
+        return None;
+    }
+    match row.kind? {
+        PendingOpKind::MailSubmit => Some(MailOp::Submit),
+        PendingOpKind::MailEdit => Some(MailOp::Edit),
+        PendingOpKind::MailReport => Some(MailOp::Report),
+        PendingOpKind::CalendarCreate
+        | PendingOpKind::CalendarPatch
+        | PendingOpKind::CalendarDocument
+        | PendingOpKind::CalendarRsvp
+        | PendingOpKind::CalendarDelete
+        | PendingOpKind::ContactCreate
+        | PendingOpKind::ContactPatch
+        | PendingOpKind::ContactDelete => None,
+    }
+}
+
+/// Runs one claimed op and records its outcome under the lease it was claimed with.
+async fn run_one<P, S>(
     provider: &P,
     store: &S,
     account: &AccountId,
-    worker: WorkerId,
-    ttl: Duration,
-    limit: usize,
-) -> Result<usize, SyncError>
+    leased: &LeasedPendingOp,
+    op: MailOp,
+) -> Result<DrainOutcome, SyncError>
 where
     P: Provider,
     S: Store + StoreRead,
 {
-    let claimed = store
-        .claim_pending_ops(account.clone(), LeaseRequest::new(worker, ttl), limit)
-        .await?;
-    let mut driven = 0;
-    for leased in &claimed {
-        let executed = execute_claimed_calendar(provider, store, account, leased).await;
-        driven += usize::from(settle_claimed(store, leased, executed).await?);
+    match op {
+        MailOp::Submit => {
+            let Some(submit) = decode_mail(store, leased, op).await? else {
+                return Ok(undecodable("draft"));
+            };
+            let QueuedMail::Submit(submit) = submit else {
+                return Ok(undecodable("draft"));
+            };
+            let result = match submit {
+                QueuedSubmit::Draft(draft) => provider.submit_email(account, &draft).await,
+                QueuedSubmit::RenderedSource {
+                    rfc5322,
+                    recipients,
+                } => {
+                    provider
+                        .submit_email_source(account, &rfc5322, &recipients)
+                        .await
+                }
+            };
+            match result {
+                Ok(receipt) => {
+                    store
+                        .mark_pending_op(
+                            &leased.lease,
+                            PendingOutcome::Succeeded {
+                                provider_key: receipt.email_key,
+                            },
+                        )
+                        .await?;
+                    Ok(match receipt.sent_copy {
+                        SentCopy::Filed => DrainOutcome::Succeeded,
+                        SentCopy::Unfiled { detail } => DrainOutcome::SentNotFiled { detail },
+                    })
+                }
+                Err(err) => {
+                    // An ambiguous send is parked, never recorded as a retryable failure:
+                    // the outbox must not risk putting it in front of its recipients twice.
+                    if err.requires_confirmation() {
+                        let detail = err.detail().to_owned();
+                        store
+                            .mark_pending_op(
+                                &leased.lease,
+                                PendingOutcome::NeedsConfirmation {
+                                    detail: detail.clone(),
+                                },
+                            )
+                            .await?;
+                        return Ok(DrainOutcome::AwaitingConfirmation { detail });
+                    }
+                    settle(store, leased, &err).await
+                }
+            }
+        }
+        MailOp::Edit => {
+            let Some(edit) = decode_mail(store, leased, op).await? else {
+                return Ok(undecodable("mail edit"));
+            };
+            let QueuedMail::Edit(edit) = edit else {
+                return Ok(undecodable("mail edit"));
+            };
+            match provider.edit_mail(account, &edit).await {
+                Ok(receipt) => {
+                    store
+                        .mark_pending_op(
+                            &leased.lease,
+                            PendingOutcome::Succeeded {
+                                provider_key: receipt.message_key,
+                            },
+                        )
+                        .await?;
+                    Ok(DrainOutcome::Succeeded)
+                }
+                Err(err) => settle(store, leased, &err).await,
+            }
+        }
+        MailOp::Report => {
+            let Some(report) = decode_mail(store, leased, op).await? else {
+                return Ok(undecodable("message report"));
+            };
+            let QueuedMail::Report(report) = report else {
+                return Ok(undecodable("message report"));
+            };
+            match provider.report_message(account, &report).await {
+                Ok(receipt) => {
+                    store
+                        .mark_pending_op(
+                            &leased.lease,
+                            PendingOutcome::Succeeded {
+                                provider_key: receipt.message_key,
+                            },
+                        )
+                        .await?;
+                    Ok(DrainOutcome::Succeeded)
+                }
+                Err(err) => settle(store, leased, &err).await,
+            }
+        }
     }
-    Ok(driven)
 }
 
-/// The settle half all drains share: records one claimed op's execution result
-/// under its lease, discriminating on the structured
-/// [`ExecuteFailure`](super::execute::ExecuteFailure) the execute halves report
-/// — never on an error string — and settling the outcome through
-/// [`settle_outcome`](super::settle_outcome), the mark-or-release decision the
-/// inline drivers run, so a replay and an inline write can never disagree (a
-/// retryable or resync-required failure goes back to `Pending` for the next
-/// drain rather than dying terminally).
+/// Records a provider failure and reports whether the store parked or settled it.
 ///
-/// Returns whether this drain drove the op to a settled outcome (the count the
-/// loops report). The no-count cases:
-///
-/// - **Out of scope** — the op is another drain's to execute; skipped *unmarked* and **released**
-///   back to `Pending` under the lease the claim minted (its fencing token bumped, so this drain's
-///   lease is dead), so the right executor can claim it immediately rather than being resolved by a
-///   loop that cannot know its semantics — or waiting out a lease TTL, the pre-release cost.
-/// - **Released for retry** — a `Failed` outcome classified retryable or resync-required goes back
-///   to `Pending` uncounted; the next drain replays it.
-/// - **Stale lease on the mark or release** — another worker re-claimed the op underneath; its
-///   outcome is that worker's to record, so the result is dropped silently.
-///
-/// Terminal poison (an undecodable payload) is marked terminally `Failed` with
-/// class [`Permanent`](FailureClass::Permanent) so the lease never expires back
-/// into runnable and the op cannot recycle forever. The decode detail stays on
-/// the failure surface — the same place every other `Failed` mark's detail (the
-/// inline drivers' provider errors) stays; Phase 1 persists no outcome payload.
-pub(crate) async fn settle_claimed<S>(
+/// The store owns that decision (`store-and-sync.md`): it counts the attempt and compares
+/// the class against the attempt bound. Reading the state back after the write is what
+/// keeps this from being a second, disagreeing copy of the rule.
+async fn settle<S: Store + StoreRead>(
     store: &S,
     leased: &LeasedPendingOp,
-    executed: Result<PendingOutcome, ExecuteFailure>,
-) -> Result<bool, SyncError>
-where
-    S: Store,
-{
-    let outcome = match executed {
-        Ok(outcome) => outcome,
-        Err(ExecuteFailure::Undecodable(_)) => PendingOutcome::Failed {
-            class: FailureClass::Permanent,
-            retry_after: None,
+    err: &engine_provider::ProviderError,
+) -> Result<DrainOutcome, SyncError> {
+    record_failure_parked(store, leased, err).await?;
+    let class = err.class();
+    let row = store
+        .list_pending_ops(leased.lease.account().clone())
+        .await?
+        .into_iter()
+        .find(|row| row.id == leased.id);
+    Ok(match row {
+        Some(row) => DrainOutcome::Parked {
+            class,
+            attempts: row.attempts,
         },
-        Err(ExecuteFailure::OutOfScope) => {
-            // Hand the op straight back: this drain claimed an intent it cannot
-            // execute, and the lease it holds is the only thing standing between
-            // the op and its own drain. A stale release means the lease already
-            // expired and another worker re-claimed the op — that worker owns it
-            // now, dropped silently exactly as a stale mark is.
-            return match store.release_pending_op(&leased.lease).await {
-                Ok(()) | Err(StoreError::StaleLease) => Ok(false),
-                Err(err) => Err(SyncError::Store(err)),
-            };
-        }
-        Err(ExecuteFailure::Store(err)) => return Err(SyncError::Store(err)),
-    };
-    match super::settle_outcome(store, &leased.lease, outcome).await {
-        Ok(released) => Ok(!released),
-        Err(SyncError::Store(StoreError::StaleLease)) => Ok(false),
-        Err(err) => Err(err),
+        // Gone from the queue means it settled: the class was not retryable, or the
+        // attempts ran out.
+        None => DrainOutcome::Failed { class },
+    })
+}
+
+/// Deserializes a claimed op's payload into the request its kind names — in either
+/// payload generation the row may carry ([`mail_request`]) — settling the op as
+/// permanently failed and returning `None` when it cannot be read.
+///
+/// A pass must not abort here. One op whose payload this build cannot read would
+/// otherwise stop every op behind it draining, for ever, and the unreadable one is not
+/// coming back however many times it is tried.
+async fn decode_mail(
+    store: &impl Store,
+    leased: &LeasedPendingOp,
+    op: MailOp,
+) -> Result<Option<QueuedMail>, SyncError> {
+    if let Some(request) = mail_request(&leased.op.payload, op) {
+        return Ok(Some(request));
+    }
+    store
+        .mark_pending_op(
+            &leased.lease,
+            PendingOutcome::Failed {
+                class: FailureClass::Permanent,
+                retry_after: None,
+            },
+        )
+        .await?;
+    Ok(None)
+}
+
+/// The outcome for an op whose payload could not be read.
+fn undecodable(what: &str) -> DrainOutcome {
+    DrainOutcome::Undecodable {
+        detail: format!("queued {what} could not be read by this build"),
     }
 }

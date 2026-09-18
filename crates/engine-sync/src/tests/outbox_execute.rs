@@ -24,6 +24,7 @@ use crate::outbox::execute::{ExecuteFailure, execute_claimed_contact, execute_cl
 /// record of the write.
 async fn hand_claimed(
     store: &SqliteStore<ManualClock>,
+    kind: PendingOpKind,
     idempotency: &str,
     resource: &str,
     payload: serde_json::Value,
@@ -33,6 +34,7 @@ async fn hand_claimed(
             account(),
             PendingOp::new(
                 IdempotencyKey::new(idempotency).unwrap(),
+                kind,
                 ResourceKey::new(resource).unwrap(),
                 payload,
             ),
@@ -61,6 +63,7 @@ async fn an_ambiguous_hand_claimed_submit_parks_for_confirmation() {
     let store = SqliteStore::open_in_memory(clock()).unwrap();
     let leased = hand_claimed(
         &store,
+        PendingOpKind::MailSubmit,
         "execute:submit:ambiguous",
         "draft:send-1@test.local",
         serde_json::to_value(OutboxIntent::SubmitMail {
@@ -84,6 +87,7 @@ async fn a_hand_claimed_submit_succeeds_and_resolves_to_the_sent_key() {
     let store = SqliteStore::open_in_memory(clock()).unwrap();
     let leased = hand_claimed(
         &store,
+        PendingOpKind::MailSubmit,
         "execute:submit:ok",
         "draft:send-2@test.local",
         serde_json::to_value(OutboxIntent::SubmitMail {
@@ -114,6 +118,7 @@ async fn a_calendar_op_is_classified_out_of_scope_without_any_accounting() {
     let store = SqliteStore::open_in_memory(clock()).unwrap();
     let leased = hand_claimed(
         &store,
+        PendingOpKind::CalendarDelete,
         "execute:calendar:refused",
         "event:evt-1@test.local",
         serde_json::to_value(OutboxIntent::DeleteEvent {
@@ -147,6 +152,7 @@ async fn an_undecodable_payload_is_classified_poison() {
     let store = SqliteStore::open_in_memory(clock()).unwrap();
     let leased = hand_claimed(
         &store,
+        PendingOpKind::MailSubmit,
         "execute:undecodable",
         "mail:whatever",
         serde_json::Value::Null,
@@ -180,6 +186,7 @@ async fn a_delete_of_an_already_gone_card_completes_idempotently() {
     let contact = ContactId::try_from("card-gone").unwrap();
     let leased = hand_claimed(
         &store,
+        PendingOpKind::ContactDelete,
         "execute:delete:gone",
         "contact:card-gone",
         serde_json::to_value(OutboxIntent::DeleteContact {

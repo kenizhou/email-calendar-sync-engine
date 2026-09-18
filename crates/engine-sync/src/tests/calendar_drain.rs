@@ -10,10 +10,10 @@ use engine_core::time::UtcDateTime;
 use engine_provider::{DeleteTarget, Occurrence};
 
 use super::{
-    drain::{at, crash_orphan, enqueue_op, stored_event, ttl},
+    drain_ops::{at, crash_orphan, enqueue_op, stored_event, ttl},
     *,
 };
-use crate::outbox::drain::drain_calendar_ops;
+use crate::outbox::drain_ops::drain_calendar_ops;
 
 /// One calendar drain round: the calendar loop under the shared fixtures.
 async fn drain_calendar(
@@ -71,6 +71,7 @@ async fn a_crash_orphaned_event_create_drains_to_succeeded() {
     let op = crash_orphan(
         &store,
         &clock,
+        PendingOpKind::CalendarCreate,
         "drain:calendar:create",
         "event:evt-9@test.local",
         serde_json::to_value(OutboxIntent::CreateEvent {
@@ -101,6 +102,7 @@ async fn a_provider_failure_drains_to_a_counted_terminal_failed() {
     let store = SqliteStore::open_in_memory(clock()).unwrap();
     let op = enqueue_op(
         &store,
+        PendingOpKind::CalendarCreate,
         "drain:calendar:create-refused",
         "event:evt-9@test.local",
         serde_json::to_value(OutboxIntent::CreateEvent {
@@ -147,6 +149,7 @@ async fn a_crash_orphaned_patch_replays_against_the_stored_base() {
     );
     let op = enqueue_op(
         &store,
+        PendingOpKind::CalendarPatch,
         "drain:calendar:patch",
         "event:evt-1@test.local",
         serde_json::to_value(OutboxIntent::PatchEvent { edit }).unwrap(),
@@ -178,6 +181,7 @@ async fn a_crash_orphaned_rsvp_replays_against_the_stored_base() {
     let rsvp = EventRsvp::to(&stored_event(), "alice@test.local", RsvpResponse::Accepted);
     let op = enqueue_op(
         &store,
+        PendingOpKind::CalendarRsvp,
         "drain:calendar:rsvp",
         "event:evt-1@test.local",
         serde_json::to_value(OutboxIntent::RsvpEvent { rsvp }).unwrap(),
@@ -208,6 +212,7 @@ async fn a_patch_whose_event_is_gone_fails_as_conflict() {
     );
     let op = enqueue_op(
         &store,
+        PendingOpKind::CalendarPatch,
         "drain:calendar:patch-gone",
         "event:evt-1@test.local",
         serde_json::to_value(OutboxIntent::PatchEvent { edit }).unwrap(),
@@ -233,6 +238,7 @@ async fn a_series_delete_replays_without_a_stored_base() {
     let store = SqliteStore::open_in_memory(clock()).unwrap();
     let op = enqueue_op(
         &store,
+        PendingOpKind::CalendarDelete,
         "drain:calendar:delete-series",
         "event:evt-1@test.local",
         serde_json::to_value(OutboxIntent::DeleteEvent {
@@ -271,6 +277,7 @@ async fn an_occurrence_delete_replays_against_the_stored_base() {
     };
     let op = enqueue_op(
         &store,
+        PendingOpKind::CalendarDelete,
         "drain:calendar:delete-occurrence",
         "event:evt-1@test.local",
         serde_json::to_value(OutboxIntent::DeleteEvent { deletion }).unwrap(),
@@ -300,6 +307,7 @@ async fn an_occurrence_delete_whose_event_is_gone_completes() {
     };
     let op = enqueue_op(
         &store,
+        PendingOpKind::CalendarDelete,
         "drain:calendar:delete-occurrence-gone",
         "event:evt-1@test.local",
         serde_json::to_value(OutboxIntent::DeleteEvent { deletion }).unwrap(),
@@ -327,6 +335,7 @@ async fn a_crash_orphaned_invite_rsvp_replays_without_a_stored_event() {
     let rsvp = EventRsvp::to(&stored_event(), "alice@test.local", RsvpResponse::Accepted);
     let op = enqueue_op(
         &store,
+        PendingOpKind::CalendarRsvp,
         "drain:calendar:rsvp-invite",
         "event:evt-1@test.local",
         serde_json::to_value(OutboxIntent::RsvpEventFromInvite {
@@ -372,6 +381,7 @@ async fn a_resync_required_write_failure_releases_the_op_for_a_warm_drain() {
     let store = SqliteStore::open_in_memory(clock()).unwrap();
     let op = enqueue_op(
         &store,
+        PendingOpKind::CalendarCreate,
         "drain:calendar:resync",
         "event:evt-8@test.local",
         serde_json::to_value(OutboxIntent::CreateEvent {

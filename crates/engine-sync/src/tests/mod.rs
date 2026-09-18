@@ -15,6 +15,7 @@ use std::{
 use engine_core::{
     calendar::{Calendar, Event, Frequency, Recurrence, RecurrenceBound, RecurrenceRule},
     contact::ContactDraft,
+    error::FailureClass,
     ids::{CalendarId, EventId, MailboxId, MessageId, MessageIdHeader, ProviderKey, Uid},
     mail::{EmailAddress, MailStateChange, Mailbox, MailboxRole, Message},
     membership::Memberships,
@@ -22,14 +23,14 @@ use engine_core::{
     sync::{JmapDataType, SyncScope, SyncState, SyncUpdate, SyncWindow},
     time::{CalendarDateTime, LocalDateTime, TimeZoneId},
     version::{ETag, RevisionTokens},
-    write::{IdempotencyKey, PendingOp, PendingOutcome, ResourceKey, SubmitPayload},
+    write::{IdempotencyKey, PendingOp, PendingOpKind, PendingOutcome, ResourceKey, SubmitPayload},
 };
 use engine_provider::{
-    CalendarWrites, Capabilities, ConnectionInfo, ContactWriteReceipt, ContactsProvider, Draft,
-    EmailChunk, EmailStream, EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp,
-    EventWrite, EventWriteReceipt, MailEdit, MailEditReceipt, OverrideSurvival, PatchTarget,
-    Provider, ProviderError, ProviderResult, RsvpResponse, ScopeSync, SubmissionReceipt,
-    WriteGuard,
+    CalendarWrites, Capabilities, ConnectionInfo, ContactWriteReceipt, Draft, EmailChunk,
+    EmailStream, EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, EventWrite,
+    EventWriteReceipt, MailEdit, MailEditReceipt, MessageReport, OverrideSurvival, PatchTarget,
+    Provider, ProviderError, ProviderResult, ReportReceipt, ReportVerdict, RsvpResponse, ScopeSync,
+    SubmissionReceipt, WriteGuard,
 };
 use engine_recurrence::Horizon;
 use engine_store::{
@@ -38,11 +39,11 @@ use engine_store::{
 use store_sqlite::SqliteStore;
 
 use super::{
-    AccountId, AccountProgress, IgnoreCommits, OutboxIntent, StreamTuning, SyncCommit,
-    SyncObserver, create_calendar_event, delete_calendar_event, edit_mail, expand_calendar_horizon,
-    patch_calendar_event, put_calendar_document, reconcile_calendar_events, refresh_folders,
-    rsvp_calendar_event, rsvp_event_from_invite, submit_mail, submit_mail_source, sync_calendar,
-    sync_mail,
+    AccountId, AccountProgress, DrainOutcome, IgnoreCommits, OutboxIntent, StreamTuning,
+    SyncCommit, SyncObserver, create_calendar_event, delete_calendar_event, drain_outbox,
+    edit_mail, expand_calendar_horizon, patch_calendar_event, put_calendar_document,
+    reconcile_calendar_events, refresh_folders, rsvp_calendar_event, rsvp_event_from_invite,
+    submit_mail, submit_mail_source, sync_calendar, sync_mail,
 };
 
 mod calendar_drain;
@@ -51,6 +52,9 @@ mod calendar_sync;
 mod calendar_write;
 mod contact_sync;
 mod drain;
+mod drain_ops;
+// The fake's contacts surface: a fork-owned split holding the 500-line cap.
+mod fake_contacts;
 mod mail_account;
 mod mail_edit;
 mod mail_sync;
@@ -64,8 +68,14 @@ mod submit;
 /// provider carrying a flag per path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Fault {
-    /// The send fails outright.
+    /// The send is throttled: retryable, so the op stays queued.
     Submit,
+    /// The send is refused for good (a rejected recipient), so the op settles.
+    PermanentSubmit,
+    /// The send goes out, but the sender's copy cannot be filed in Sent.
+    UnfiledCopy,
+    /// Reporting a message is throttled.
+    Report,
     /// The send is lost *after* `DATA` — the ambiguous, unretryable case.
     AmbiguousSubmit,
     /// Every write's revision guard is refused (a CalDAV `412`, a JMAP `stateMismatch`).
@@ -103,6 +113,9 @@ struct FakeMail {
     /// Records each invite-referencing answer as `(invite message id, had a stored base,
     /// attendee)` — the capture the from-invite verb's tests assert.
     invite_answers: Mutex<Vec<(String, bool, String)>>,
+    /// Sends left to refuse before this provider starts accepting them: the outage a
+    /// drain pass is supposed to ride out. Counts down per attempt.
+    failing_sends: Mutex<u32>,
 }
 
 impl FakeMail {
@@ -124,6 +137,7 @@ impl FakeMail {
             folder: None,
             started: Arc::new(Mutex::new(Vec::new())),
             invite_answers: Mutex::default(),
+            failing_sends: Mutex::new(0),
         }
     }
 
@@ -153,6 +167,22 @@ impl FakeMail {
 
     fn fails(&self, fault: Fault) -> bool {
         self.faults.contains(&fault)
+    }
+
+    /// Refuses the next `n` sends as throttled, then accepts: a provider that comes back.
+    fn failing_sends(self, n: u32) -> Self {
+        *self.failing_sends.lock().expect("failing_sends mutex") = n;
+        self
+    }
+
+    /// Whether this send should be refused, counting one off the outage if so.
+    fn send_is_out(&self) -> bool {
+        let mut left = self.failing_sends.lock().expect("failing_sends mutex");
+        if *left == 0 {
+            return false;
+        }
+        *left -= 1;
+        true
     }
 
     fn with_calendar(mut self, calendars: Vec<Calendar>, events: Vec<Event>) -> Self {
@@ -245,8 +275,16 @@ impl Provider for FakeMail {
             Err(ProviderError::needs_confirmation(
                 "post-DATA acknowledgement lost",
             ))
-        } else if self.fails(Fault::Submit) {
+        } else if self.fails(Fault::PermanentSubmit) {
+            Err(ProviderError::permanent("recipient rejected"))
+        } else if self.fails(Fault::Submit) || self.send_is_out() {
             Err(ProviderError::rate_limited("slow down", None))
+        } else if self.fails(Fault::UnfiledCopy) {
+            Ok(SubmissionReceipt::unfiled(
+                ProviderKey::new("sent-1").unwrap(),
+                draft.message_id.clone(),
+                "APPEND refused: over quota",
+            ))
         } else {
             Ok(SubmissionReceipt::filed(
                 ProviderKey::new("sent-1").unwrap(),
@@ -319,6 +357,17 @@ impl Provider for FakeMail {
             return Err(ProviderError::conflict("UIDVALIDITY changed"));
         }
         Ok(MailEditReceipt::new(edit.target().clone()))
+    }
+
+    async fn report_message(
+        &self,
+        _account: &AccountId,
+        report: &MessageReport,
+    ) -> ProviderResult<ReportReceipt> {
+        if self.fails(Fault::Report) {
+            return Err(ProviderError::rate_limited("slow down", None));
+        }
+        Ok(ReportReceipt::new(report.target.clone()))
     }
 }
 
@@ -431,22 +480,6 @@ impl CalendarWrites for FakeMail {
             return Err(ProviderError::conflict("etag precondition failed"));
         }
         Ok(())
-    }
-}
-
-/// The fake carries the contacts surface too, so the outbox dispatch and drain
-/// tests can drive contact verbs through it: a create returns a canned receipt
-/// echoing the draft's card id (the one verb a happy-path contact drive needs).
-/// Every other contact verb keeps the trait's erroring defaults, which no test
-/// here should reach — the gone-card paths resolve without a provider call.
-#[async_trait::async_trait]
-impl ContactsProvider for FakeMail {
-    async fn create_contact(
-        &self,
-        _account: &AccountId,
-        draft: &ContactDraft,
-    ) -> ProviderResult<ContactWriteReceipt> {
-        Ok(ContactWriteReceipt::new(draft.card.id.clone()))
     }
 }
 

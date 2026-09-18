@@ -18,7 +18,9 @@ use engine_core::{
 use engine_store::PendingOpState;
 
 use super::*;
-use crate::outbox::drain::{drain_calendar_ops, drain_contact_ops, drain_mail_ops, settle_claimed};
+use crate::outbox::drain_ops::{
+    drain_calendar_ops, drain_contact_ops, drain_mail_ops, settle_claimed,
+};
 
 /// The lease the tests arm — long enough to span a claim, short enough that a
 /// two-minute advance expires it.
@@ -30,6 +32,7 @@ pub(super) fn ttl() -> Duration {
 /// the inline drivers' enqueue half leaves it.
 pub(super) async fn enqueue_op(
     store: &SqliteStore<ManualClock>,
+    kind: PendingOpKind,
     idempotency: &str,
     resource: &str,
     payload: serde_json::Value,
@@ -39,6 +42,7 @@ pub(super) async fn enqueue_op(
             account(),
             PendingOp::new(
                 IdempotencyKey::new(idempotency).unwrap(),
+                kind,
                 ResourceKey::new(resource).unwrap(),
                 payload,
             ),
@@ -53,11 +57,12 @@ pub(super) async fn enqueue_op(
 pub(super) async fn crash_orphan(
     store: &SqliteStore<ManualClock>,
     clock: &ManualClock,
+    kind: PendingOpKind,
     idempotency: &str,
     resource: &str,
     payload: serde_json::Value,
 ) -> PendingOpId {
-    let op = enqueue_op(store, idempotency, resource, payload).await;
+    let op = enqueue_op(store, kind, idempotency, resource, payload).await;
     store
         .claim_pending_ops(account(), LeaseRequest::new(worker(), ttl()), 16)
         .await
@@ -85,6 +90,7 @@ async fn a_crash_orphaned_submit_is_re_driven_to_succeeded() {
     let op = crash_orphan(
         &store,
         &clock,
+        PendingOpKind::MailSubmit,
         "drain:submit:orphan",
         "draft:send-1@test.local",
         serde_json::to_value(OutboxIntent::SubmitMail {
@@ -115,6 +121,7 @@ async fn an_ambiguous_re_drive_parks_needs_confirmation_and_never_recycles() {
     let op = crash_orphan(
         &store,
         &clock,
+        PendingOpKind::MailSubmit,
         "drain:submit:ambiguous",
         "draft:send-2@test.local",
         serde_json::to_value(OutboxIntent::SubmitMail {
@@ -149,6 +156,7 @@ async fn an_undecodable_payload_is_terminally_failed_and_never_reclaimed() {
     let store = SqliteStore::open_in_memory(clock()).unwrap();
     let op = enqueue_op(
         &store,
+        PendingOpKind::MailSubmit,
         "drain:poison",
         "mail:poison",
         serde_json::Value::Null,
@@ -184,6 +192,7 @@ async fn a_calendar_op_in_the_mail_drain_is_released_back_to_pending() {
     let store = SqliteStore::open_in_memory(clock()).unwrap();
     let op = enqueue_op(
         &store,
+        PendingOpKind::CalendarDelete,
         "drain:calendar",
         "event:evt-1@test.local",
         serde_json::to_value(OutboxIntent::DeleteEvent {
@@ -213,6 +222,7 @@ async fn a_contact_verb_in_the_mail_drain_is_released_back_to_pending() {
     let store = SqliteStore::open_in_memory(clock()).unwrap();
     let op = enqueue_op(
         &store,
+        PendingOpKind::ContactCreate,
         "drain:contact-verb",
         "contact:card-1",
         serde_json::to_value(OutboxIntent::CreateContact {
@@ -238,6 +248,7 @@ async fn a_mail_verb_in_the_contact_drain_is_released_back_to_pending() {
     let store = SqliteStore::open_in_memory(clock()).unwrap();
     let op = enqueue_op(
         &store,
+        PendingOpKind::MailEdit,
         "drain:mail-verb",
         "mail:msg-1",
         serde_json::to_value(OutboxIntent::EditMail {
@@ -272,6 +283,7 @@ async fn a_foreign_op_a_drain_skipped_is_driven_by_its_own_drain_in_the_same_rou
     let store = SqliteStore::open_in_memory(clock()).unwrap();
     let calendar_op = enqueue_op(
         &store,
+        PendingOpKind::CalendarDelete,
         "drain:mixed:calendar",
         "event:evt-mixed@test.local",
         serde_json::to_value(OutboxIntent::DeleteEvent {
@@ -282,6 +294,7 @@ async fn a_foreign_op_a_drain_skipped_is_driven_by_its_own_drain_in_the_same_rou
     .await;
     let contact_op = enqueue_op(
         &store,
+        PendingOpKind::ContactCreate,
         "drain:mixed:contact",
         "contact:card-mixed",
         serde_json::to_value(OutboxIntent::CreateContact {
@@ -340,6 +353,7 @@ async fn a_rate_limited_submit_releases_the_op_for_a_later_drain() {
     let store = SqliteStore::open_in_memory(clock()).unwrap();
     let op = enqueue_op(
         &store,
+        PendingOpKind::MailSubmit,
         "drain:submit:limited",
         "draft:send-7@test.local",
         serde_json::to_value(OutboxIntent::SubmitMail {
@@ -378,6 +392,7 @@ async fn a_stale_mark_drops_the_op_without_error_or_count() {
     let store = SqliteStore::open_in_memory(clock.clone()).unwrap();
     let op = enqueue_op(
         &store,
+        PendingOpKind::MailSubmit,
         "drain:stale",
         "draft:send-3@test.local",
         serde_json::to_value(OutboxIntent::SubmitMail {
@@ -434,6 +449,7 @@ async fn a_contact_create_orphan_drains_to_succeeded_through_the_provider() {
     let op = crash_orphan(
         &store,
         &clock,
+        PendingOpKind::ContactCreate,
         "drain:contact:create",
         "contact-create:personal",
         serde_json::to_value(OutboxIntent::CreateContact {

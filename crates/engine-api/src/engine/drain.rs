@@ -206,6 +206,7 @@ mod tests {
                 account(),
                 PendingOp::new(
                     IdempotencyKey::new(idempotency).expect("valid idempotency key"),
+                    intent.pending_op_kind(),
                     ResourceKey::new(resource).expect("valid resource key"),
                     serde_json::to_value(intent).expect("serializable intent"),
                 ),

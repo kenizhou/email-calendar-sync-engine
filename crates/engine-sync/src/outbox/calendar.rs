@@ -10,7 +10,7 @@ use engine_core::{
     calendar::Event,
     ids::{AccountId, EventId, Uid},
     version::RevisionTokens,
-    write::{IdempotencyKey, PendingOp, PendingOpId, PendingOutcome, ResourceKey},
+    write::{IdempotencyKey, PendingOp, PendingOpId, PendingOpKind, PendingOutcome, ResourceKey},
 };
 use engine_provider::{
     EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, EventWrite, EventWriteReceipt,
@@ -73,6 +73,7 @@ where
         account,
         worker,
         ttl,
+        PendingOpKind::CalendarCreate,
         idempotency,
         &draft.uid,
         OutboxIntent::CreateEvent {
@@ -131,6 +132,7 @@ where
         account,
         worker,
         ttl,
+        PendingOpKind::CalendarPatch,
         idempotency,
         &edit.uid,
         OutboxIntent::PatchEvent { edit: edit.clone() },
@@ -174,6 +176,7 @@ where
         account,
         worker,
         ttl,
+        PendingOpKind::CalendarDocument,
         idempotency,
         &write.uid,
         OutboxIntent::PutEventDoc {
@@ -237,6 +240,7 @@ where
         account,
         worker,
         ttl,
+        PendingOpKind::CalendarRsvp,
         idempotency,
         &rsvp.uid,
         OutboxIntent::RsvpEvent { rsvp: rsvp.clone() },
@@ -292,6 +296,7 @@ where
         account,
         worker,
         ttl,
+        PendingOpKind::CalendarDelete,
         idempotency,
         &deletion.uid,
         OutboxIntent::DeleteEvent {
@@ -435,11 +440,16 @@ pub(crate) async fn execute_delete_event<P: Provider>(
 /// provider id, because the `UID` is the one identity that exists *before* a create has an
 /// id and survives a transport that assigns its own — so a create and a follow-up edit of
 /// the same event serialize against each other on either provider.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the outbox's lease parameters plus the op's identity, kind and request"
+)]
 pub(super) async fn enqueue_calendar_op<S: Store>(
     store: &S,
     account: &AccountId,
     worker: WorkerId,
     ttl: Duration,
+    kind: PendingOpKind,
     idempotency: &str,
     uid: &Uid,
     intent: OutboxIntent,
@@ -455,7 +465,7 @@ pub(super) async fn enqueue_calendar_op<S: Store>(
         account,
         worker,
         ttl,
-        PendingOp::new(idempotency_key, resource, payload),
+        PendingOp::new(idempotency_key, kind, resource, payload),
     )
     .await
 }

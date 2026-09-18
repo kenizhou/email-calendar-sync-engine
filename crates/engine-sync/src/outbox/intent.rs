@@ -17,7 +17,7 @@ use engine_core::{
     contact::{ContactDraft, ContactPatch},
     ids::{ContactId, MailboxId, MessageId},
     membership::Memberships,
-    write::SubmitPayload,
+    write::{PendingOpKind, SubmitPayload},
 };
 use engine_provider::{
     Draft, EventDeletion, EventDraft, EventEdit, EventRsvp, EventWrite, MailEdit, MessageReport,
@@ -114,6 +114,31 @@ pub enum OutboxIntent {
         /// The event (or occurrence) to delete.
         deletion: EventDeletion,
     },
+}
+
+impl OutboxIntent {
+    /// The queue kind this intent enqueues as — the `PendingOpKind` column the
+    /// inline drivers stamp beside this payload. The mapping lives here so a
+    /// helper that builds an op from an intent alone stamps the same column the
+    /// drivers do, and the two can never drift apart silently.
+    #[must_use]
+    pub fn pending_op_kind(&self) -> PendingOpKind {
+        match self {
+            Self::SubmitMail { .. } => PendingOpKind::MailSubmit,
+            Self::EditMail { .. } => PendingOpKind::MailEdit,
+            Self::ReportMessage { .. } => PendingOpKind::MailReport,
+            Self::CreateEvent { .. } => PendingOpKind::CalendarCreate,
+            Self::PatchEvent { .. } => PendingOpKind::CalendarPatch,
+            Self::PutEventDoc { .. } => PendingOpKind::CalendarDocument,
+            Self::RsvpEvent { .. } | Self::RsvpEventFromInvite { .. } => {
+                PendingOpKind::CalendarRsvp
+            }
+            Self::DeleteEvent { .. } => PendingOpKind::CalendarDelete,
+            Self::CreateContact { .. } => PendingOpKind::ContactCreate,
+            Self::PatchContact { .. } => PendingOpKind::ContactPatch,
+            Self::DeleteContact { .. } => PendingOpKind::ContactDelete,
+        }
+    }
 }
 
 /// The durable reference to an invitation message: its [`MessageId`] and mailbox

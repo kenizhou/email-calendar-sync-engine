@@ -9,10 +9,7 @@ use engine_core::write::PendingOutcome;
 
 use super::{acct, lease_request, pending_op, pk};
 use crate::{
-    error::StoreError,
-    lease::ManualClock,
-    outbox::PendingOpState,
-    store::{Store, StoreRead},
+    StoreRead, error::StoreError, lease::ManualClock, outbox::PendingOpState, store::Store,
 };
 
 /// `release_pending_op` hands a claimed op straight back to `Pending` under the

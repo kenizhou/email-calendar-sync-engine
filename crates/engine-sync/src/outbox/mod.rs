@@ -20,14 +20,15 @@
 //! [`execute_claimed_contact`](execute::execute_claimed_contact), and
 //! [`execute_claimed_calendar`](execute::execute_claimed_calendar)) dispatch
 //! on the claimed op's tagged intent alone, which is what lets the outbox
-//! drainer ([`drain_mail_ops`](drain::drain_mail_ops) /
-//! [`drain_contact_ops`](drain::drain_contact_ops) /
-//! [`drain_calendar_ops`](drain::drain_calendar_ops)) replay ops the inline
+//! drainer ([`drain_mail_ops`](drain_ops::drain_mail_ops) /
+//! [`drain_contact_ops`](drain_ops::drain_contact_ops) /
+//! [`drain_calendar_ops`](drain_ops::drain_calendar_ops)) replay ops the inline
 //! driver never finished.
 
 mod calendar;
 mod contact;
-pub(crate) mod drain;
+mod drain;
+pub(crate) mod drain_ops;
 pub(crate) mod execute;
 mod intent;
 mod invite;
@@ -40,7 +41,8 @@ pub use calendar::{
     put_calendar_document, rsvp_calendar_event,
 };
 pub use contact::{ContactWriteOutcome, create_contact, delete_contact, patch_contact};
-pub use drain::{drain_calendar_ops, drain_contact_ops, drain_mail_ops};
+pub use drain::{DrainOutcome, DrainReport, DrainedOp, drain_outbox};
+pub use drain_ops::{drain_calendar_ops, drain_contact_ops, drain_mail_ops};
 use engine_core::{
     ids::AccountId,
     write::{PendingOp, PendingOutcome},
@@ -129,6 +131,23 @@ async fn record_failure<S: Store>(
     err: &engine_provider::ProviderError,
 ) -> Result<(), SyncError> {
     settle_outcome(store, &leased.lease, write_failure_outcome(err)).await?;
+    Ok(())
+}
+
+/// Records a failed write outcome the way [`drain_outbox`](drain::drain_outbox) settles
+/// its passes: a plain mark, so the **store** owns the park-or-settle decision (it
+/// counts the attempt and compares the class against the attempt bound) rather than
+/// releasing the op for the per-surface drainers' immediate retry
+/// ([`record_failure`]). The two drainer families keep their own disciplines; each
+/// must read its failures back the way it wrote them.
+pub(crate) async fn record_failure_parked<S: Store>(
+    store: &S,
+    leased: &LeasedPendingOp,
+    err: &engine_provider::ProviderError,
+) -> Result<(), SyncError> {
+    store
+        .mark_pending_op(&leased.lease, write_failure_outcome(err))
+        .await?;
     Ok(())
 }
 

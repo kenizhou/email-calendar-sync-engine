@@ -19,6 +19,7 @@ mod error;
 mod lease;
 pub mod mem;
 mod outbox;
+mod read;
 mod source;
 mod store;
 
@@ -34,9 +35,13 @@ pub use error::{Result, StoreError};
 pub use lease::{
     Clock, FenceToken, LeaseRequest, ManualClock, OpLease, SyncClaim, SyncLease, WorkerId,
 };
-pub use outbox::{ClaimRejection, LeasedPendingOp, PendingOpClaim, PendingOpState};
+pub use outbox::{
+    ClaimRejection, LeasedPendingOp, MAX_ATTEMPTS, OpRejection, PendingOpClaim, PendingOpRow,
+    PendingOpState, retry_delay,
+};
+pub use read::{IndexRowCounts, MailListRow, MailSelector, SchemaStatus, StoreRead};
 pub use source::{MessageBodyStore, MessageSourceCache, SourcesDropped};
-pub use store::{IndexRowCounts, MailListRow, MailSelector, SchemaStatus, Store, StoreRead};
+pub use store::Store;
 
 /// The version of the engine's **normalization** — how providers decode wire data and
 /// how `engine-core` projects it (subject charset decoding, header parsing, address
@@ -62,4 +67,10 @@ pub use store::{IndexRowCounts, MailListRow, MailSelector, SchemaStatus, Store, 
 ///   whose synthesized `accepted` masks the participation status the account actually answered
 ///   (Google) or contradicts it with a placeholder `needs-action` (Graph), until the re-snapshot
 ///   re-projects it.
-pub const NORMALIZER_VERSION: u32 = 4;
+/// - `5`: a Graph event's `uid` is the iCalendar `UID` the organizer assigned, read from `uid`
+///   rather than from `iCalUId` — Exchange's `PidLidGlobalObjectId` re-encoding of it, which wraps
+///   an outside `UID` in a structure of its own (`graph.md`). A stored event keeps the re-encoding,
+///   so a meeting organized outside Exchange carries one identity in the iMIP message that
+///   announced it and another in the calendar that filed it, and scheduling reconciliation keying
+///   on that value (RFC 5546 §2.1.5) matches neither, until the re-snapshot re-reads it.
+pub const NORMALIZER_VERSION: u32 = 5;

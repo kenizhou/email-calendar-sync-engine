@@ -5,7 +5,7 @@ use core::time::Duration;
 use engine_core::{
     contact::{ContactCard, ContactDraft, ContactPatch},
     ids::{AccountId, ContactId},
-    write::{IdempotencyKey, PendingOp, PendingOpId, PendingOutcome, ResourceKey},
+    write::{IdempotencyKey, PendingOp, PendingOpId, PendingOpKind, PendingOutcome, ResourceKey},
 };
 use engine_provider::{ContactWriteReceipt, ContactsProvider, ProviderError};
 use engine_store::{LeasedPendingOp, Store, WorkerId};
@@ -46,6 +46,7 @@ where
         account,
         worker,
         ttl,
+        PendingOpKind::ContactCreate,
         idempotency,
         &resource,
         OutboxIntent::CreateContact {
@@ -89,6 +90,7 @@ where
         account,
         worker,
         ttl,
+        PendingOpKind::ContactPatch,
         idempotency,
         &format!("contact:{}", base.id.as_str()),
         OutboxIntent::PatchContact {
@@ -128,6 +130,7 @@ where
         account,
         worker,
         ttl,
+        PendingOpKind::ContactDelete,
         idempotency,
         &format!("contact:{}", base.id.as_str()),
         OutboxIntent::DeleteContact {
@@ -232,6 +235,7 @@ async fn enqueue_contact_op<S: Store>(
     account: &AccountId,
     worker: WorkerId,
     ttl: Duration,
+    kind: PendingOpKind,
     idempotency: &str,
     resource: &str,
     intent: OutboxIntent,
@@ -247,7 +251,7 @@ async fn enqueue_contact_op<S: Store>(
         account,
         worker,
         ttl,
-        PendingOp::new(idempotency, resource, payload),
+        PendingOp::new(idempotency, kind, resource, payload),
     )
     .await
 }

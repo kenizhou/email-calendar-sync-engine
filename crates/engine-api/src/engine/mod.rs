@@ -39,6 +39,7 @@ pub use calendar_writes::{CalendarDelete, CalendarWrite, Reconciled};
 pub use contacts::{
     ContactDelete, ContactReconciled, ContactWrite, PeoplePage, PeopleQuery, RecipientSuggestions,
 };
+pub use writes::queued_draft;
 
 /// The worker identity this engine stamps on every lease it claims.
 ///

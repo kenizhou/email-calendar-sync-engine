@@ -34,7 +34,10 @@ async fn submit_mail_enqueues_then_sends_and_records_success() {
 }
 
 #[tokio::test]
-async fn submit_mail_records_failure_without_blind_retry() {
+async fn submit_mail_keeps_a_rate_limited_send_queued_rather_than_losing_it() {
+    // The provider throttles, which is retryable: the send did not go out, and the
+    // message must still be somewhere. It stays queued with the failure recorded,
+    // rather than settling as Failed with nothing holding the draft.
     let provider = FakeMail::new(vec![], vec![]).failing(Fault::Submit);
     let store = SqliteStore::open_in_memory(clock()).unwrap();
 
@@ -59,6 +62,7 @@ async fn submit_mail_records_failure_without_blind_retry() {
             account(),
             PendingOp::new(
                 IdempotencyKey::new("submit:send-2@test.local").unwrap(),
+                PendingOpKind::MailSubmit,
                 ResourceKey::new("draft:send-2@test.local").unwrap(),
                 serde_json::Value::Null,
             ),
@@ -69,6 +73,29 @@ async fn submit_mail_records_failure_without_blind_retry() {
         store.pending_op_state(op_id).await.unwrap(),
         Some(PendingOpState::Pending)
     );
+}
+
+#[tokio::test]
+async fn submit_mail_settles_a_permanent_failure_instead_of_queueing_it() {
+    // A rejected recipient is not a wait: retrying sends the same message to the same
+    // server for the same answer, so the op settles and the caller is told.
+    let provider = FakeMail::new(vec![], vec![]).failing(Fault::PermanentSubmit);
+    let store = SqliteStore::open_in_memory(clock()).unwrap();
+
+    let err = submit_mail(
+        &provider,
+        &store,
+        &account(),
+        worker(),
+        Duration::from_mins(1),
+        &draft("send-3@test.local"),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, crate::SyncError::Provider(_)));
+
+    // Nothing outstanding: it will not be attempted again.
+    assert!(store.list_pending_ops(account()).await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -95,6 +122,7 @@ async fn submit_mail_parks_an_ambiguous_send_for_confirmation() {
             account(),
             PendingOp::new(
                 IdempotencyKey::new("submit:send-3@test.local").unwrap(),
+                PendingOpKind::MailSubmit,
                 ResourceKey::new("draft:send-3@test.local").unwrap(),
                 serde_json::Value::Null,
             ),
@@ -192,6 +220,7 @@ async fn submit_mail_source_enqueues_then_sends_and_records_success() {
             account(),
             PendingOp::new(
                 IdempotencyKey::new("submit:send-4@test.local").unwrap(),
+                PendingOpKind::MailSubmit,
                 ResourceKey::new("draft:send-4@test.local").unwrap(),
                 serde_json::Value::Null,
             ),
@@ -227,6 +256,7 @@ async fn submit_mail_source_records_failure_without_blind_retry() {
             account(),
             PendingOp::new(
                 IdempotencyKey::new("submit:send-5@test.local").unwrap(),
+                PendingOpKind::MailSubmit,
                 ResourceKey::new("draft:send-5@test.local").unwrap(),
                 serde_json::Value::Null,
             ),
@@ -264,6 +294,7 @@ async fn submit_mail_source_parks_an_ambiguous_send_for_confirmation() {
             account(),
             PendingOp::new(
                 IdempotencyKey::new("submit:send-6@test.local").unwrap(),
+                PendingOpKind::MailSubmit,
                 ResourceKey::new("draft:send-6@test.local").unwrap(),
                 serde_json::Value::Null,
             ),

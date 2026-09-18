@@ -6,13 +6,13 @@
 
 use engine_core::{
     ids::{AccountId, ProviderKey},
-    write::PendingOpId,
+    write::{PendingOpId, PendingOpKind, SubmitPayload},
 };
 use engine_provider::{Draft, MailEdit, MessageReport, Provider};
-use engine_store::{PendingOpState, StoreRead};
+use engine_store::{OpRejection, PendingOpRow, PendingOpState, Store, StoreRead};
 use engine_sync::{
-    MailEditOutcome, ReportOutcome, SubmitOutcome, SyncError, edit_mail, report_message,
-    submit_mail, submit_mail_source,
+    DrainReport, MailEditOutcome, OutboxIntent, ReportOutcome, SubmitOutcome, SyncError,
+    drain_outbox, edit_mail, report_message, submit_mail, submit_mail_source,
 };
 
 use super::{LEASE_TTL, map_sync_error, worker};
@@ -220,4 +220,106 @@ impl Engine {
     ) -> Result<Option<PendingOpState>, ApiError> {
         Ok(self.store.pending_op_state(op).await?)
     }
+
+    /// Attempts every queued write for `account` that is due and that the drainer can
+    /// dispatch, returning what became of each.
+    ///
+    /// **Call this when the device reconnects**, and after a sync. The engine runs no timer
+    /// of its own: the reachability signal is the host's, and a poll from here would wake a
+    /// dead network on a battery.
+    ///
+    /// A provider failure is not an error. It is recorded against its own op — retryable
+    /// classes park for a later pass, the rest settle — and reported in the
+    /// [`DrainReport`], so one bad recipient does not stop the rest of the queue going out.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Sync`] if the queue cannot be read or an outcome cannot be
+    /// recorded.
+    pub async fn drain_outbox<P: Provider>(
+        &self,
+        provider: &P,
+        account: &AccountId,
+    ) -> Result<DrainReport, ApiError> {
+        drain_outbox(provider, &self.store, account, worker(), LEASE_TTL)
+            .await
+            .map_err(map_sync_error)
+    }
+
+    /// Everything still outstanding in `account`'s outbox, in enqueue order: what has
+    /// not gone yet, what is being attempted, how many attempts each has had, and how
+    /// the last one failed.
+    ///
+    /// A lease-free read, and the only way a host learns what it left behind: after a
+    /// restart it holds none of the op ids
+    /// [`pending_op_state`](Self::pending_op_state) answers about. Settled ops are
+    /// excluded; they are kept as the idempotency record, not as outstanding work.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] on a backend failure.
+    pub async fn outbox(&self, account: &AccountId) -> Result<Vec<PendingOpRow>, ApiError> {
+        Ok(self.store.list_pending_ops(account.clone()).await?)
+    }
+
+    /// Withdraws a queued op so it is never attempted, returning `None` when it was
+    /// withdrawn and the reason when it could not be.
+    ///
+    /// Refusal is not failure: an op under a live lease may be mid-round-trip, and one
+    /// awaiting confirmation may already have been delivered. Neither can be called
+    /// back, so neither is withdrawn.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] on a backend failure.
+    pub async fn cancel_pending_op(
+        &self,
+        account: &AccountId,
+        op: PendingOpId,
+    ) -> Result<Option<OpRejection>, ApiError> {
+        Ok(self.store.cancel_pending_op(account.clone(), op).await?)
+    }
+
+    /// Clears a queued op's retry backoff so the next [`drain_outbox`](Self::drain_outbox)
+    /// attempts it, returning `None` when it did and the reason when it could not.
+    ///
+    /// What a host wires to "Send now". The attempt count is not reset: one more attempt
+    /// now is not a fresh bound. An op with no backoff to clear is already due, which is
+    /// what the caller wanted, so that is `None` too.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Store`] on a backend failure.
+    pub async fn retry_pending_op_now(
+        &self,
+        account: &AccountId,
+        op: PendingOpId,
+    ) -> Result<Option<OpRejection>, ApiError> {
+        Ok(self.store.retry_pending_op_now(account.clone(), op).await?)
+    }
+}
+
+/// The message a queued send would deliver, decoded from an outbox row.
+///
+/// `None` for any row that is not a [`MailSubmit`](PendingOpKind::MailSubmit), including
+/// one enqueued before the store recorded a kind. The payload is the driver's own
+/// serialization of the [`Draft`], so this is the one supported way to read it back: a
+/// host rendering an outbox needs the recipients and subject, and must not re-implement
+/// the encoding to get them.
+///
+/// Both payload generations decode: this build's drivers enqueue the draft inside the
+/// tagged submit envelope (a rendered-source send has no draft to recover, so it is
+/// `None` here), and a row an upstream-shaped build wrote carries the draft itself.
+#[must_use]
+pub fn queued_draft(row: &PendingOpRow) -> Option<Draft> {
+    if row.kind != Some(PendingOpKind::MailSubmit) {
+        return None;
+    }
+    if let Ok(OutboxIntent::SubmitMail { payload }) = serde_json::from_value(row.payload.clone()) {
+        return match payload {
+            SubmitPayload::Draft(draft) => Some(draft),
+            SubmitPayload::RenderedSource { .. } => None,
+        };
+    }
+    serde_json::from_value(row.payload.clone()).ok()
 }

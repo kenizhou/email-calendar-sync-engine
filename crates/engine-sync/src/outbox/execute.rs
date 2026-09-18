@@ -5,9 +5,9 @@
 //! Every inline driver is enqueue-and-claim plus its verb's `execute_*` half
 //! plus a mark; these dispatchers are that middle step reached from the durable
 //! record instead of from the caller's arguments — the half a drainer
-//! ([`drain_mail_ops`](super::drain::drain_mail_ops) /
-//! [`drain_contact_ops`](super::drain::drain_contact_ops) /
-//! [`drain_calendar_ops`](super::drain::drain_calendar_ops)) replays a claimed op
+//! ([`drain_mail_ops`](super::drain_ops::drain_mail_ops) /
+//! [`drain_contact_ops`](super::drain_ops::drain_contact_ops) /
+//! [`drain_calendar_ops`](super::drain_ops::drain_calendar_ops)) replays a claimed op
 //! through. They never record: the caller holds the lease and marks whatever
 //! comes back.
 //!

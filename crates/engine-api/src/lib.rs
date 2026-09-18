@@ -46,7 +46,7 @@ mod scheduling;
 
 pub use engine::{
     CalendarDelete, CalendarWrite, ContactDelete, ContactReconciled, ContactWrite, Engine,
-    PeoplePage, PeopleQuery, RecipientSuggestions, Reconciled,
+    PeoplePage, PeopleQuery, RecipientSuggestions, Reconciled, queued_draft,
 };
 // Re-exports of the types this facade's signatures mention, so hosts depend on
 // `engine-api` alone (the providers themselves still come from the adapter crates).
@@ -112,9 +112,11 @@ pub use engine_core::{
         CalendarDate, CalendarDateTime, Duration, LocalDateTime, TimeZoneId, UtcDateTime,
         resolve_zone_name,
     },
-    write::PendingOpId,
+    write::{PendingOpId, PendingOpKind},
 };
-pub use engine_core::{mail::MailFlags, search_index::MailRow};
+// `FailureClass` names a public field of `PendingOpRow`, so a host reading an outbox
+// row must be able to name its type without depending on `engine-core`.
+pub use engine_core::{error::FailureClass, mail::MailFlags, search_index::MailRow};
 /// How every HTTP provider answers a throttled reply, and how a host hears about it.
 ///
 /// Re-exported because both halves are the host's: it builds one [`RetryConfig`] and hands it
@@ -138,15 +140,16 @@ pub use engine_recurrence::{
 pub use engine_search::{ParseError, SearchHit, SearchResults};
 use engine_store::StoreError;
 pub use engine_store::{
-    ContactPhotoFile, MailListRow, OccurrenceRow, PendingOpState, PruneReport, SchemaStatus,
-    SourcesDropped, SweepReport, SyncApplied, TzdataVersion,
+    ContactPhotoFile, MailListRow, OccurrenceRow, OpRejection, PendingOpRow, PendingOpState,
+    PruneReport, SchemaStatus, SourcesDropped, SweepReport, SyncApplied, TzdataVersion,
 };
 pub use engine_sync::{
     AccountProgress, CalendarSyncReport, CalendarWriteOutcome, ContactReconcileReport,
-    ContactSourceReport, ContactSyncReport, ContactWriteOutcome, EventSyncReport, FolderSync,
-    HorizonExpansion, IgnoreCommits, MailEditOutcome, MailSyncReport, PeopleRebuildReport,
-    ProgressSnapshot, ReportOutcome, StreamTuning, SubmitOutcome, SyncCommit, SyncError,
-    SyncObserver, SyncTiming, ThreadRebuildReport, UnexpandableEvent,
+    ContactSourceReport, ContactSyncReport, ContactWriteOutcome, DrainOutcome, DrainReport,
+    DrainedOp, EventSyncReport, FolderSync, HorizonExpansion, IgnoreCommits, MailEditOutcome,
+    MailSyncReport, PeopleRebuildReport, ProgressSnapshot, ReportOutcome, StreamTuning,
+    SubmitOutcome, SyncCommit, SyncError, SyncObserver, SyncTiming, ThreadRebuildReport,
+    UnexpandableEvent,
 };
 pub use scheduling::InboundScheduling;
 // The store-creation options `Engine::open_with`/`Engine::open_in_memory_with` take.
@@ -190,7 +193,7 @@ impl ApiError {
     /// Whether this failure is a provider **conflict** — the provider's state moved
     /// underneath the operation (an IMAP `UIDVALIDITY` renumbering, a stale or
     /// expunged target), classified
-    /// [`FailureClass::Conflict`](engine_core::error::FailureClass::Conflict). The
+    /// [`FailureClass::Conflict`]. The
     /// documented recovery is *re-sync the affected scope, then retry* (e.g. the
     /// [`Engine::message_body`] error contract); this accessor lets a host automate
     /// that recovery without parsing error text.

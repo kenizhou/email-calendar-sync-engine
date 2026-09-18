@@ -12,7 +12,7 @@
 
 use core::time::Duration;
 
-use engine_core::{calendar::Event, ids::AccountId, mail::Message};
+use engine_core::{calendar::Event, ids::AccountId, mail::Message, write::PendingOpKind};
 use engine_provider::{EventRsvp, EventWriteReceipt, Provider, ProviderError};
 use engine_store::{Store, WorkerId};
 
@@ -73,8 +73,17 @@ where
             mailboxes: invite.mailboxes.clone(),
         },
     };
-    let leased =
-        enqueue_calendar_op(store, account, worker, ttl, idempotency, &rsvp.uid, intent).await?;
+    let leased = enqueue_calendar_op(
+        store,
+        account,
+        worker,
+        ttl,
+        PendingOpKind::CalendarRsvp,
+        idempotency,
+        &rsvp.uid,
+        intent,
+    )
+    .await?;
     resolve(
         store,
         leased,

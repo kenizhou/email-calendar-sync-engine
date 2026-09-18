@@ -13,7 +13,7 @@ use engine_core::{
     membership::Memberships,
     sync::{SyncScope, SyncState, SyncUpdate},
     time::Duration,
-    write::{IdempotencyKey, PendingOp, ResourceKey, SubmitPayload},
+    write::{IdempotencyKey, PendingOp, PendingOpKind, ResourceKey, SubmitPayload},
 };
 use engine_provider::{
     CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, Provider,
@@ -262,6 +262,7 @@ async fn seed_unstarted_submit(engine: &Engine, idempotency: &str, message_id: &
             account(),
             PendingOp::new(
                 IdempotencyKey::new(idempotency).unwrap(),
+                PendingOpKind::MailSubmit,
                 ResourceKey::new(format!("draft:{message_id}")).unwrap(),
                 serde_json::to_value(OutboxIntent::SubmitMail {
                     payload: SubmitPayload::Draft(draft),
