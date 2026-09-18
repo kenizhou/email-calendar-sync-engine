@@ -7,15 +7,27 @@ disciplined patch series on top of `upstream/main`, rebased periodically.
 
 ## Upstream files
 
-Never modify a file whose content tracks `upstream/main` beyond a ledgered
-registration point — no restructures, no splits, no re-wrapped docs, no
-renumbering — unless the developer asks for it explicitly. Fork code goes in
-fork-owned files (`outbox_release_cases.rs`, `engine-host`, `execute.rs` /
-`drain.rs`, …); an upstream file gains at most the one `mod` / `use` / export
-line that wires a fork-owned file in, and that line is a row in the patch-series
-table below. When a shared file crosses the 500-line cap, or a merge conflict
-tempts a reshape of upstream's half, stop and ask: a red length check on a
-shared file is the developer's call, not the agent's.
+**The governing goal: modify upstream-tracked files as little as possible.**
+Every diff against `upstream/main` must be one of exactly two shapes:
+
+1. **A registration point** — the one `mod` / `use` / export line that wires a
+   fork-owned file in, and that line is a row in the patch-series table below.
+2. **An additive member a fork feature cannot exist without** — a trait method,
+   an inherent-impl method, an appended schema step — each ledgered in the
+   table with the feature that needs it.
+
+Anything else — restructures, splits, re-wrapped docs, renumbering, reshaping
+an existing fn's signature or body — is never done silently. When a fork change
+would need shape (3), **re-home the feature into a fork-owned file instead**
+and leave the upstream file byte-identical: the FTS tokenizer (2026-09-18) is
+the precedent — the feature moved to `fts_migrations.rs`/`schema/fts.rs` and
+`schema.rs`/`migrations.rs` went back to upstream verbatim. When upstream
+supersedes a fork feature entirely, discard ours (see the merge-review section
+below). Fork code lives in fork-owned files (`engine-host`, `fts_migrations.rs`,
+`invite.rs`, `tokenizer_reconcile.rs`, …). When a shared file crosses the
+500-line cap, or a merge conflict tempts a reshape of upstream's half, stop and
+ask: a red length check on a shared file is the developer's call, not the
+agent's.
 
 ## Remotes
 
