@@ -50,6 +50,7 @@ mod calendar_sync;
 mod calendar_write;
 mod contact_sync;
 mod drain;
+mod drain_pim;
 mod mail_account;
 mod mail_edit;
 mod mail_sync;

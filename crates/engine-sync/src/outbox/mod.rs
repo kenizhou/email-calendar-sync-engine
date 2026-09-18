@@ -24,6 +24,8 @@
 mod calendar;
 mod contact;
 mod drain;
+mod drain_pim;
+mod drain_replay;
 mod intent;
 mod invite;
 mod mail;
@@ -36,6 +38,7 @@ pub use calendar::{
 };
 pub use contact::{ContactWriteOutcome, create_contact, delete_contact, patch_contact};
 pub use drain::{DrainOutcome, DrainReport, DrainedOp, drain_outbox};
+pub use drain_pim::{drain_calendar_ops, drain_contact_ops};
 use engine_core::{
     ids::AccountId,
     write::{PendingOp, PendingOutcome},
