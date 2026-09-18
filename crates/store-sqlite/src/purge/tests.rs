@@ -5,7 +5,6 @@
 use rusqlite::Connection;
 
 use super::purge_account;
-use crate::FtsTokenizer;
 
 /// Migrates a fresh in-memory database and seeds two accounts (`a`, `b`) with one
 /// object each across every table `purge_account` touches, so a purge of `a` must
@@ -14,7 +13,7 @@ use crate::FtsTokenizer;
 /// can be probed by `MATCH`.
 fn seed_two_accounts() -> Connection {
     let mut conn = Connection::open_in_memory().unwrap();
-    crate::migrations::migrate(&mut conn, FtsTokenizer::PorterUnicode61).unwrap();
+    crate::fts_migrations::migrate_porter(&mut conn).unwrap();
     for (account, scope, key, subject_term, body_term) in [
         ("a", "sa", "k1", "alpha", "gamma"),
         ("b", "sb", "k2", "beta", "delta"),

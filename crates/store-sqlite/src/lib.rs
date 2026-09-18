@@ -34,6 +34,7 @@ mod contact_ops;
 mod contact_store;
 mod convert;
 mod derived_ops;
+mod fts_migrations;
 mod mail_ops;
 mod migrations;
 mod options;
@@ -168,7 +169,13 @@ impl<C: Clock> SqliteStore<C> {
         // the refusal must land before a step mutates the database.
         let tokenizer_found = classify(&conn)?;
         ensure_compatible(tokenizer_found, options.fts_tokenizer)?;
-        let schema = migrations::migrate(&mut conn, options.fts_tokenizer)?;
+        // The default (porter) database runs upstream's own list verbatim; only
+        // a trigram open runs the fork's list (same steps, the two FTS-bearing
+        // ones swapped for their trigram twins).
+        let schema = match options.fts_tokenizer {
+            FtsTokenizer::PorterUnicode61 => fts_migrations::migrate_porter(&mut conn)?,
+            FtsTokenizer::Trigram => fts_migrations::migrate_trigram(&mut conn)?,
+        };
         // After migrate (the record insert needs meta), before readers open.
         record(&conn, options.fts_tokenizer)?;
         migrations::reconcile_normalizer_version(&conn, engine_store::NORMALIZER_VERSION)?;

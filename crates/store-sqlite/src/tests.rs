@@ -7,7 +7,6 @@
 use engine_store::ManualClock;
 
 use super::SqliteStore;
-use crate::options::FtsTokenizer;
 
 #[test]
 fn debug_is_redacted() {
@@ -24,7 +23,7 @@ fn debug_is_redacted() {
 #[test]
 fn a_normalizer_version_change_clears_sync_cursors() {
     let mut conn = rusqlite::Connection::open_in_memory().unwrap();
-    crate::migrations::migrate(&mut conn, FtsTokenizer::PorterUnicode61).unwrap();
+    crate::fts_migrations::migrate_porter(&mut conn).unwrap();
 
     // A synced scope carries a cursor; reconciling at the same version keeps it.
     crate::migrations::reconcile_normalizer_version(&conn, 1).unwrap();
@@ -62,7 +61,7 @@ fn a_normalizer_version_change_clears_sync_cursors() {
 #[test]
 fn clear_one_cursor_clears_the_cursor_but_keeps_a_held_lease() {
     let mut conn = rusqlite::Connection::open_in_memory().unwrap();
-    crate::migrations::migrate(&mut conn, FtsTokenizer::PorterUnicode61).unwrap();
+    crate::fts_migrations::migrate_porter(&mut conn).unwrap();
 
     // A scope mid-sync: a cursor plus a live lease (a fencing token and a future
     // expiry). The per-scope clear runs concurrently with such syncs, so unlike

@@ -174,7 +174,11 @@ mod tests {
         for tokenizer in [FtsTokenizer::PorterUnicode61, FtsTokenizer::Trigram] {
             let conn = Connection::open_in_memory().unwrap();
             conn.execute_batch(crate::schema::V1).unwrap();
-            conn.execute_batch(&crate::schema::v2(tokenizer)).unwrap();
+            conn.execute_batch(match tokenizer {
+                FtsTokenizer::PorterUnicode61 => crate::schema::V2,
+                FtsTokenizer::Trigram => crate::schema::fts::V2_TRIGRAM,
+            })
+            .unwrap();
             assert!(
                 matches!(
                     classify(&conn),
@@ -188,7 +192,7 @@ mod tests {
     #[test]
     fn a_recorded_row_classifies_as_known_and_an_unknown_value_errors() {
         let mut conn = Connection::open_in_memory().unwrap();
-        crate::migrations::migrate(&mut conn, FtsTokenizer::Trigram).unwrap();
+        crate::fts_migrations::migrate_trigram(&mut conn).unwrap();
         // Before the row exists, the DDL already classifies the database.
         assert!(matches!(
             classify(&conn),

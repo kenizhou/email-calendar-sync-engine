@@ -18,7 +18,11 @@ fn fresh_database_uses_the_requested_tokenizer_for_both_fts_tables() {
         (FtsTokenizer::PorterUnicode61, "porter unicode61"),
     ] {
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
-        crate::migrations::migrate(&mut conn, tokenizer).unwrap();
+        match tokenizer {
+            FtsTokenizer::PorterUnicode61 => crate::migrations::migrate(&mut conn),
+            FtsTokenizer::Trigram => crate::fts_migrations::migrate_trigram(&mut conn),
+        }
+        .unwrap();
         for table in ["fts_index", "message_body_fts"] {
             let ddl: String = conn
                 .query_row(
@@ -43,7 +47,7 @@ fn a_fresh_database_accepts_any_request_and_records_it() {
     let found = classify(&conn).unwrap();
     assert!(matches!(found, FtsTokenizerKnown::Fresh));
     ensure_compatible(found, FtsTokenizer::Trigram).unwrap();
-    crate::migrations::migrate(&mut conn, FtsTokenizer::Trigram).unwrap();
+    crate::fts_migrations::migrate_trigram(&mut conn).unwrap();
     record(&conn, FtsTokenizer::Trigram).unwrap();
     assert_eq!(recorded(&conn), "trigram");
 }
@@ -54,7 +58,7 @@ fn a_fresh_database_accepts_any_request_and_records_it() {
 #[test]
 fn a_pre_option_database_derives_porter_records_it_and_refuses_trigram() {
     let mut conn = rusqlite::Connection::open_in_memory().unwrap();
-    crate::migrations::migrate(&mut conn, FtsTokenizer::PorterUnicode61).unwrap();
+    crate::migrations::migrate(&mut conn).unwrap();
     // The full schema, but no recorded row — exactly how a pre-option database
     // meets this build.
     let found = classify(&conn).unwrap();
@@ -73,7 +77,7 @@ fn a_pre_option_database_derives_porter_records_it_and_refuses_trigram() {
 #[test]
 fn a_recorded_tokenizer_mismatching_the_request_is_refused() {
     let mut conn = rusqlite::Connection::open_in_memory().unwrap();
-    crate::migrations::migrate(&mut conn, FtsTokenizer::Trigram).unwrap();
+    crate::fts_migrations::migrate_trigram(&mut conn).unwrap();
     conn.execute(
         "INSERT INTO meta (key, value) VALUES ('fts_tokenizer', 'trigram')",
         [],
@@ -100,8 +104,7 @@ fn a_recorded_tokenizer_mismatching_the_request_is_refused() {
 fn a_v2_database_classifies_porter_and_refuses_trigram_unmutated() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch(crate::schema::V1).unwrap();
-    conn.execute_batch(&crate::schema::v2(FtsTokenizer::PorterUnicode61))
-        .unwrap();
+    conn.execute_batch(crate::schema::V2).unwrap();
     conn.pragma_update(None, "user_version", 2).unwrap();
 
     let found = classify(&conn).unwrap();
@@ -138,8 +141,7 @@ fn a_v4_database_refusing_trigram_is_left_unmutated() {
     {
         let conn = rusqlite::Connection::open(&path).unwrap();
         conn.execute_batch(crate::schema::V1).unwrap();
-        conn.execute_batch(&crate::schema::v2(FtsTokenizer::PorterUnicode61))
-            .unwrap();
+        conn.execute_batch(crate::schema::V2).unwrap();
         conn.execute_batch(crate::schema::V3).unwrap();
         conn.execute_batch(crate::schema::V4).unwrap();
         conn.pragma_update(None, "user_version", 4).unwrap();
@@ -184,7 +186,7 @@ fn a_v4_database_refusing_trigram_is_left_unmutated() {
 #[test]
 fn a_crashed_trigram_database_classifies_from_the_ddl_and_repairs_the_record() {
     let mut conn = rusqlite::Connection::open_in_memory().unwrap();
-    crate::migrations::migrate(&mut conn, FtsTokenizer::Trigram).unwrap();
+    crate::fts_migrations::migrate_trigram(&mut conn).unwrap();
     // ...and then the process died before `record` ran.
 
     let found = classify(&conn).unwrap();
@@ -261,7 +263,11 @@ fn trigram_matches_mid_string_cjk_where_porter_cannot() {
         (FtsTokenizer::PorterUnicode61, 0),
     ] {
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
-        crate::migrations::migrate(&mut conn, tokenizer).unwrap();
+        match tokenizer {
+            FtsTokenizer::PorterUnicode61 => crate::migrations::migrate(&mut conn),
+            FtsTokenizer::Trigram => crate::fts_migrations::migrate_trigram(&mut conn),
+        }
+        .unwrap();
         conn.execute(
             "INSERT INTO fts_doc (scope_key, provider_key, subject, body, location)
              VALUES ('s', 'm1', '周报', ?1, '会议室 3A')",
@@ -285,7 +291,7 @@ fn trigram_matches_mid_string_cjk_where_porter_cannot() {
 #[test]
 fn trigram_two_character_queries_do_not_match() {
     let mut conn = rusqlite::Connection::open_in_memory().unwrap();
-    crate::migrations::migrate(&mut conn, FtsTokenizer::Trigram).unwrap();
+    crate::fts_migrations::migrate_trigram(&mut conn).unwrap();
     conn.execute(
         "INSERT INTO fts_doc (scope_key, provider_key, subject, body, location)
          VALUES ('s', 'm1', '周报', '请查收今天的会议纪要附件', '')",

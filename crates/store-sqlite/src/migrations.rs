@@ -22,12 +22,10 @@
 //! (it has no `user_version`); the migration SQL stays per-store because the
 //! dialects differ, while the portable query layer lives in `engine-search`.
 
-use std::borrow::Cow;
-
 use engine_store::{Result, SchemaStatus, StoreError};
 use rusqlite::{Connection, OptionalExtension, Transaction};
 
-use crate::{backfill, convert::backend, options::FtsTokenizer, schema};
+use crate::{backfill, convert::backend, schema};
 
 /// One migration step: its DDL, and optionally a data move that must land with it.
 ///
@@ -35,25 +33,26 @@ use crate::{backfill, convert::backend, options::FtsTokenizer, schema};
 /// the move to commit in the same transaction as the DDL, so a database is never at the new
 /// version with the new table empty. The move is pinned to its own version rather than borrowing
 /// the live write path, which moves on.
-struct Migration {
-    sql: Cow<'static, str>,
+#[derive(Clone, Copy)]
+pub(crate) struct Migration {
+    sql: &'static str,
     fill: Option<fn(&Transaction<'_>) -> Result<()>>,
 }
 
 impl Migration {
     /// A step that is only DDL.
-    fn sql(sql: impl Into<Cow<'static, str>>) -> Self {
-        Self {
-            sql: sql.into(),
-            fill: None,
-        }
+    pub(crate) const fn sql(sql: &'static str) -> Self {
+        Self { sql, fill: None }
     }
 
     /// A step whose new shape is filled from what the store already holds, in the same
     /// transaction.
-    fn filled(sql: impl Into<Cow<'static, str>>, fill: fn(&Transaction<'_>) -> Result<()>) -> Self {
+    pub(crate) const fn filled(
+        sql: &'static str,
+        fill: fn(&Transaction<'_>) -> Result<()>,
+    ) -> Self {
         Self {
-            sql: sql.into(),
+            sql,
             fill: Some(fill),
         }
     }
@@ -61,41 +60,42 @@ impl Migration {
 
 /// The ordered migration steps. Index `i` is schema version `i + 1`; the stored
 /// `user_version` is the count applied. **Append only** — never edit or reorder a
-/// shipped step. The two FTS-bearing steps (`v2`, `v5`) are built for `tokenizer`,
-/// which a database fixes at creation and never changes afterwards.
-fn migrations(tokenizer: FtsTokenizer) -> Vec<Migration> {
-    vec![
-        Migration::sql(schema::V1),
-        Migration::sql(schema::v2(tokenizer)),
-        Migration::sql(schema::V3),
-        Migration::sql(schema::V4),
-        Migration::sql(schema::v5(tokenizer)),
-        Migration::sql(schema::V6),
-        Migration::sql(schema::V7),
-        Migration::sql(schema::V8),
-        Migration::sql(schema::V9),
-        Migration::filled(schema::V10, backfill::msgid_refs),
-        Migration::sql(schema::V11),
-        Migration::sql(schema::V12),
-        Migration::sql(schema::V13),
-        Migration::sql(schema::V14),
-        Migration::sql(schema::V15),
-    ]
-}
+/// shipped step.
+pub(crate) const MIGRATIONS: &[Migration] = &[
+    Migration::sql(schema::V1),
+    Migration::sql(schema::V2),
+    Migration::sql(schema::V3),
+    Migration::sql(schema::V4),
+    Migration::sql(schema::V5),
+    Migration::sql(schema::V6),
+    Migration::sql(schema::V7),
+    Migration::sql(schema::V8),
+    Migration::sql(schema::V9),
+    Migration::filled(schema::V10, backfill::msgid_refs),
+    Migration::sql(schema::V11),
+    Migration::sql(schema::V12),
+    Migration::sql(schema::V13),
+    Migration::sql(schema::V14),
+];
 
-/// Brings `conn` up to the latest schema version, creating the two FTS-bearing
-/// steps with `tokenizer`.
+/// Brings `conn` up to the latest schema version.
 ///
 /// # Errors
 ///
 /// Returns [`StoreError::Backend`] if a step fails or the database is newer than
 /// this build understands.
-pub(crate) fn migrate(conn: &mut Connection, tokenizer: FtsTokenizer) -> Result<SchemaStatus> {
-    run(conn, &migrations(tokenizer))
+#[allow(
+    dead_code,
+    reason = "upstream's own entry point, kept verbatim; this build routes both opens \
+              through fts_migrations, whose lists append the fork's steps beyond \
+              upstream's fourteen"
+)]
+pub(crate) fn migrate(conn: &mut Connection) -> Result<SchemaStatus> {
+    run(conn, MIGRATIONS)
 }
 
 /// The version-driven runner, parameterized over the step list for testing.
-fn run(conn: &mut Connection, migrations: &[Migration]) -> Result<SchemaStatus> {
+pub(crate) fn run(conn: &mut Connection, migrations: &[Migration]) -> Result<SchemaStatus> {
     let current: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .map_err(backend)?;
@@ -109,7 +109,7 @@ fn run(conn: &mut Connection, migrations: &[Migration]) -> Result<SchemaStatus> 
     for (index, step) in migrations.iter().enumerate().skip(applied) {
         let version = i64::try_from(index + 1).map_err(backend)?;
         let tx = conn.transaction().map_err(backend)?;
-        tx.execute_batch(&step.sql).map_err(backend)?;
+        tx.execute_batch(step.sql).map_err(backend)?;
         if let Some(fill) = step.fill {
             fill(&tx)?;
         }
@@ -166,5 +166,6 @@ pub(crate) fn reconcile_normalizer_version(conn: &Connection, current: u32) -> R
     Ok(())
 }
 
+#[cfg(test)]
 #[cfg(test)]
 mod tests;

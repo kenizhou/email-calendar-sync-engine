@@ -3,7 +3,7 @@
 use super::*;
 /// The version this build expects — the number of steps it knows.
 fn expected_version() -> u32 {
-    u32::try_from(migrations(FtsTokenizer::PorterUnicode61).len()).unwrap()
+    u32::try_from(super::super::fts_migrations::migrations_trigram().len()).unwrap()
 }
 
 fn version(conn: &Connection) -> i64 {
@@ -42,7 +42,7 @@ fn table_count(conn: &Connection, name: &str) -> i64 {
 #[test]
 fn fresh_database_applies_every_step_and_records_the_version() {
     let mut conn = Connection::open_in_memory().unwrap();
-    migrate(&mut conn, FtsTokenizer::PorterUnicode61).unwrap();
+    crate::fts_migrations::migrate_porter(&mut conn).unwrap();
     assert_eq!(version(&conn), i64::from(expected_version()));
     // The v1 tables exist.
     assert_eq!(table_count(&conn, "object"), 1);
@@ -54,10 +54,10 @@ fn fresh_database_applies_every_step_and_records_the_version() {
 #[test]
 fn rerunning_is_a_noop() {
     let mut conn = Connection::open_in_memory().unwrap();
-    migrate(&mut conn, FtsTokenizer::PorterUnicode61).unwrap();
+    crate::fts_migrations::migrate_porter(&mut conn).unwrap();
     let after_first = version(&conn);
     // A second run applies nothing and does not error on the existing tables.
-    migrate(&mut conn, FtsTokenizer::PorterUnicode61).unwrap();
+    crate::fts_migrations::migrate_porter(&mut conn).unwrap();
     assert_eq!(version(&conn), after_first);
 }
 
@@ -137,7 +137,7 @@ fn a_failing_step_rolls_back_and_leaves_the_version_unchanged() {
 fn v14_keeps_the_ops_a_v13_store_held_and_leaves_them_unclassified() {
     let mut conn = Connection::open_in_memory().unwrap();
     // Bring a store up to v13, the shape before the queue columns existed.
-    let upto_v13 = &migrations(FtsTokenizer::PorterUnicode61)[..13];
+    let upto_v13 = &crate::fts_migrations::migrations_porter()[..13];
     run(&mut conn, upto_v13).unwrap();
     assert_eq!(version(&conn), 13);
 
@@ -151,7 +151,7 @@ fn v14_keeps_the_ops_a_v13_store_held_and_leaves_them_unclassified() {
     )
     .unwrap();
 
-    migrate(&mut conn, FtsTokenizer::PorterUnicode61).unwrap();
+    crate::fts_migrations::migrate_porter(&mut conn).unwrap();
     assert_eq!(version(&conn), i64::from(expected_version()));
 
     // The row is still there, with its payload and idempotency record intact: that
@@ -187,7 +187,7 @@ fn v14_keeps_the_ops_a_v13_store_held_and_leaves_them_unclassified() {
 #[test]
 fn photos_cached_before_v11_still_read_as_photos_after_it() {
     let mut conn = Connection::open_in_memory().unwrap();
-    run(&mut conn, &migrations(FtsTokenizer::PorterUnicode61)[..10]).unwrap();
+    run(&mut conn, &crate::fts_migrations::migrations_porter()[..10]).unwrap();
     assert_eq!(version(&conn), 10);
     // Written the way a v10 build wrote it — the `missing` column does not exist yet.
     conn.execute(
@@ -198,7 +198,7 @@ fn photos_cached_before_v11_still_read_as_photos_after_it() {
         )
         .unwrap();
 
-    migrate(&mut conn, FtsTokenizer::PorterUnicode61).unwrap();
+    crate::fts_migrations::migrate_porter(&mut conn).unwrap();
     assert_eq!(version(&conn), i64::from(expected_version()));
     let (hash, missing): (String, i64) = conn
         .query_row(
@@ -217,7 +217,7 @@ fn photos_cached_before_v11_still_read_as_photos_after_it() {
 #[test]
 fn the_message_table_carries_a_messages_whole_mutable_state() {
     let mut conn = Connection::open_in_memory().unwrap();
-    migrate(&mut conn, FtsTokenizer::PorterUnicode61).unwrap();
+    crate::fts_migrations::migrate_porter(&mut conn).unwrap();
 
     assert_eq!(table_count(&conn, "mail_index"), 0, "v9 retires it");
 
@@ -265,7 +265,7 @@ fn the_message_table_carries_a_messages_whole_mutable_state() {
 #[test]
 fn v14_preserves_people_and_makes_the_nameless_insertable() {
     let mut conn = Connection::open_in_memory().unwrap();
-    let all = migrations(FtsTokenizer::PorterUnicode61);
+    let all = crate::fts_migrations::migrations_porter();
     run(&mut conn, &all[..12]).unwrap();
     assert_eq!(version(&conn), 12);
     conn.execute(
@@ -314,7 +314,7 @@ fn v14_preserves_people_and_makes_the_nameless_insertable() {
 fn the_v10_step_fills_the_graph_from_the_payloads_already_stored() {
     let mut conn = Connection::open_in_memory().unwrap();
     // Bring the database up to v9 — everything before the graph existed.
-    run(&mut conn, &migrations(FtsTokenizer::PorterUnicode61)[..9]).unwrap();
+    run(&mut conn, &crate::fts_migrations::migrations_porter()[..9]).unwrap();
     assert_eq!(version(&conn), 9);
 
     // A stored reply and its original, as v9 held them: a payload plus a message row. The
@@ -334,7 +334,7 @@ fn the_v10_step_fills_the_graph_from_the_payloads_already_stored() {
         .unwrap();
     }
 
-    run(&mut conn, &migrations(FtsTokenizer::PorterUnicode61)).unwrap();
+    run(&mut conn, &crate::fts_migrations::migrations_porter()).unwrap();
     assert_eq!(version(&conn), i64::from(expected_version()));
 
     let rows: i64 = conn
@@ -366,7 +366,7 @@ fn the_v10_step_fills_the_graph_from_the_payloads_already_stored() {
 #[test]
 fn an_undecodable_payload_does_not_fail_the_upgrade() {
     let mut conn = Connection::open_in_memory().unwrap();
-    run(&mut conn, &migrations(FtsTokenizer::PorterUnicode61)[..9]).unwrap();
+    run(&mut conn, &crate::fts_migrations::migrations_porter()[..9]).unwrap();
     conn.execute(
         "INSERT INTO object (scope_key, provider_key, payload) VALUES ('s1', 'bad', 'not json')",
         [],
@@ -379,7 +379,7 @@ fn an_undecodable_payload_does_not_fail_the_upgrade() {
     )
     .unwrap();
 
-    run(&mut conn, &migrations(FtsTokenizer::PorterUnicode61)).unwrap();
+    run(&mut conn, &crate::fts_migrations::migrations_porter()).unwrap();
     assert_eq!(version(&conn), i64::from(expected_version()));
 }
 
@@ -387,9 +387,9 @@ fn an_undecodable_payload_does_not_fail_the_upgrade() {
 fn migrating_reports_the_version_it_moved_from() {
     let mut conn = Connection::open_in_memory().unwrap();
     // A store as an older build left it.
-    run(&mut conn, &migrations(FtsTokenizer::PorterUnicode61)[..4]).unwrap();
+    run(&mut conn, &crate::fts_migrations::migrations_porter()[..4]).unwrap();
 
-    let status = migrate(&mut conn, FtsTokenizer::PorterUnicode61).unwrap();
+    let status = crate::fts_migrations::migrate_porter(&mut conn).unwrap();
 
     assert_eq!(status.migrated_from, Some(4), "where it came from");
     assert_eq!(status.version, expected_version(), "where it landed");
@@ -405,11 +405,11 @@ fn migrating_reports_the_version_it_moved_from() {
 fn a_fresh_or_current_store_reports_no_migration() {
     let mut conn = Connection::open_in_memory().unwrap();
 
-    let fresh = migrate(&mut conn, FtsTokenizer::PorterUnicode61).unwrap();
+    let fresh = crate::fts_migrations::migrate_porter(&mut conn).unwrap();
     assert_eq!(fresh.migrated_from, None, "nothing to migrate from");
     assert_eq!(fresh.version, expected_version());
 
-    let reopened = migrate(&mut conn, FtsTokenizer::PorterUnicode61).unwrap();
+    let reopened = crate::fts_migrations::migrate_porter(&mut conn).unwrap();
     assert_eq!(reopened.migrated_from, None, "already current");
     assert_eq!(reopened.version, expected_version());
 }

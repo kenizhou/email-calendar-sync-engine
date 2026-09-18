@@ -11,10 +11,7 @@ use engine_store::{FtsField, OccurrenceRow, TzdataVersion, WorkerId};
 use rusqlite::Connection;
 
 use super::*;
-use crate::{
-    FtsTokenizer,
-    scope_ops::{OwnedUpdate, apply, claim, maintenance},
-};
+use crate::scope_ops::{OwnedUpdate, apply, claim, maintenance};
 
 fn instant(text: &str) -> UtcDateTime {
     text.parse().expect("valid instant")
@@ -33,7 +30,7 @@ fn events_scope() -> SyncScope {
 
 fn open() -> (Connection, String) {
     let mut conn = Connection::open_in_memory().expect("open");
-    crate::migrations::migrate(&mut conn, FtsTokenizer::PorterUnicode61).expect("schema");
+    crate::fts_migrations::migrate_porter(&mut conn).expect("schema");
     (conn, convert::scope_key(&events_scope()))
 }
 
@@ -314,7 +311,7 @@ fn a_reported_size_is_stored_and_a_silent_re_fetch_does_not_erase_it() {
     // same message through two adapters — or an adapter that starts reporting and stops —
     // must not lose the number a size cap decides on.
     let mut conn = Connection::open_in_memory().expect("open");
-    crate::migrations::migrate(&mut conn, FtsTokenizer::PorterUnicode61).expect("schema");
+    crate::fts_migrations::migrate_porter(&mut conn).expect("schema");
 
     let tx = conn.transaction().expect("tx");
     mail::upsert_message(&tx, "s1", "acct", &sized_row("m1", Some(4_194_304))).expect("insert");

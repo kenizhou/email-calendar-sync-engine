@@ -3,7 +3,6 @@
 use rusqlite::Connection;
 
 use super::*;
-use crate::FtsTokenizer;
 
 pub(super) fn account(value: &str) -> AccountId {
     AccountId::try_from(value).expect("valid account")
@@ -12,7 +11,7 @@ pub(super) fn account(value: &str) -> AccountId {
 /// A migrated database with two accounts' scopes registered.
 pub(super) fn open() -> Connection {
     let mut conn = Connection::open_in_memory().expect("open");
-    crate::migrations::migrate(&mut conn, FtsTokenizer::PorterUnicode61).expect("schema");
+    crate::fts_migrations::migrate_porter(&mut conn).expect("schema");
     for (scope, acct) in [("scope-a", "a"), ("scope-b", "b")] {
         conn.execute(
             "INSERT INTO sync_scope (scope_key, account, token) VALUES (?1, ?2, 1)",
