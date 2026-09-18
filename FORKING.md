@@ -64,6 +64,29 @@ blob GC, delta bounds, occurrence edits all arrived within weeks); at minimum
 monthly. Force-pushing `origin/main` after a rebase is expected in a fork;
 upstream history is never rewritten.
 
+## Every upstream merge: the overlap and adoption review
+
+Before resolving conflicts in any upstream merge or rebase, survey what upstream
+brought (`git log --oneline <old-upstream>..upstream/main`) and act on two
+questions, in this order. Skipping this review is how a fork ends up maintaining
+two answers to one question — the 2026-09-18 outbox-drainer merge was painful
+almost entirely because it was skipped for months.
+
+1. **Overlap: did upstream implement or fix something we also carry?** Check
+   every new upstream commit against the patch-series table above (the table is
+   the index of what we carry). When upstream's implementation supersedes ours,
+   **discard the fork's version and migrate onto upstream's** — delete our
+   parallel code, adapt our callers, re-home what must stay into fork-owned
+   files, and mark the table row `DISCARDED (superseded by upstream)` with the
+   behaviour differences a host must know about. Two drainers, two retry
+   cadences, or two payload shapes in one crate is never the steady state.
+2. **Adoption: did upstream land a feature we do not carry?** For each one,
+   assess whether kylins can adopt it (what it would replace, what it needs
+   from the host). Record the assessment — a row here, or an entry in kylins
+   `docs/engine-enhancement-requests.md` — even when the answer is "not now";
+   an unrecorded assessment has to be re-done from scratch next merge. Do not
+   implement an adoption speculatively inside the engine fork.
+
 ## Standards
 
 All engine-repo discipline still applies here (CI gate, 500-line cap, fixture
