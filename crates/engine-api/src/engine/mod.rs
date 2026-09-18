@@ -27,6 +27,7 @@ mod contact_photo;
 mod contact_query;
 mod contact_reads;
 mod contacts;
+mod drain_pim;
 mod host_access;
 mod identities;
 mod invitation;
