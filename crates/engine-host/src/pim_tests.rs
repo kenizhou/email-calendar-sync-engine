@@ -78,8 +78,7 @@ async fn a_first_round_emits_one_change_event_per_scope_and_reports_both() {
     assert_eq!(report.calendar.events.applied.upserted, 2);
     assert_eq!(report.contacts.address_books.applied.upserted, 1);
     assert_eq!(report.contacts.cards.applied.upserted, 2);
-    assert_eq!(report.drained_cal, 0);
-    assert_eq!(report.drained_contacts, 0);
+    assert_eq!(report.drained, 0);
 }
 
 #[tokio::test]
@@ -100,50 +99,17 @@ async fn a_quiet_round_emits_nothing() {
     assert!(sink.events().is_empty(), "nothing changed, nothing drained");
     assert_eq!(report.calendar.events.applied.upserted, 0);
     assert_eq!(report.contacts.cards.applied.upserted, 0);
-    assert_eq!(report.drained_cal, 0);
-    assert_eq!(report.drained_contacts, 0);
+    assert_eq!(report.drained, 0);
 }
 
 #[tokio::test]
-async fn a_drained_calendar_op_reports_the_outbox_after_the_calendar_drain() {
+async fn a_queued_calendar_op_stays_queued_through_the_round() {
+    // The drainer is mail-only so far (upstream's `drain_outbox`): a queued
+    // calendar op is counted as deferred and left untouched — the round still
+    // completes, the op is still runnable for the port that follows, and no
+    // outbox event fires for a pass that attempted nothing.
     let engine = Engine::open_in_memory().expect("engine");
-    seed_calendar_create(&engine, "drain-9@test.local").await;
-    let sink = CollectingSink::default();
-
-    let report = round(&engine, &RoundPim::full(), &sink, horizon())
-        .await
-        .expect("the round completes");
-
-    // The round's order, pinned: the calendar change, then the drain's outbox
-    // depth, then the contacts change; nothing runnable was left for the
-    // contact drain, so no second outbox event.
-    assert_eq!(
-        sink.events(),
-        vec![
-            calendar_changed(),
-            EngineEvent::OutboxChanged {
-                account: "acct-1".to_owned(),
-                pending: 0,
-            },
-            contacts_changed(),
-        ]
-    );
-    assert_eq!(report.drained_cal, 1, "the unstarted create was replayed");
-    assert_eq!(report.drained_contacts, 0);
-}
-
-#[tokio::test]
-async fn a_contact_op_the_calendar_drain_released_is_driven_in_the_same_round() {
-    // The drain-ordering starvation fix, pinned end to end (engine task T7b;
-    // the pre-T7b pin was `a_contact_op_the_calendar_drain_skipped_stays_
-    // lease_held`, which held the op InFlight under the calendar drain's lease
-    // — permanent starvation under this round's fixed calendar-first order).
-    // Claims are still scope-blind and the round's order is still fixed, but a
-    // skip now releases the op's lease straight back to Pending: the calendar
-    // drain claims the contact op, skips it unmarked, releases it — and the
-    // contact drain in the SAME round claims and drives it.
-    let engine = Engine::open_in_memory().expect("engine");
-    let first = seed_contact_create(&engine, "card-9").await;
+    let op = seed_calendar_create(&engine, "drain-9@test.local").await;
     let sink = CollectingSink::default();
 
     let report = round(&engine, &RoundPim::full(), &sink, horizon())
@@ -152,63 +118,39 @@ async fn a_contact_op_the_calendar_drain_released_is_driven_in_the_same_round() 
 
     assert_eq!(
         sink.events(),
-        vec![
-            calendar_changed(),
-            contacts_changed(),
-            EngineEvent::OutboxChanged {
-                account: "acct-1".to_owned(),
-                pending: 0,
-            },
-        ],
-        "the calendar drain settled nothing (a skip is not a settled op); the \
-         contact drain drove the released op and reported the depth"
+        vec![calendar_changed(), contacts_changed()],
+        "both scopes changed; the drain attempted nothing"
     );
+    assert_eq!(report.drained, 0);
     assert_eq!(
-        report.drained_cal, 0,
-        "the calendar drain claims and skips the contact op, counting nothing"
+        engine.pending_op_state(op).await.expect("op state read"),
+        Some(PendingOpState::Pending),
+        "the calendar op is still queued for the calendar-drain port"
     );
-    assert_eq!(
-        report.drained_contacts, 1,
-        "the released op was claimable by this round's contact drain"
-    );
-    assert_eq!(
-        engine.pending_op_state(first).await.expect("op state read"),
-        Some(PendingOpState::Succeeded),
-        "the contact op reached its terminal outcome in the same round"
-    );
+}
 
-    // The second round proves the fix holds round over round: a fresh contact
-    // op is claimed, released, and driven by the second round's own contact
-    // drain — the pre-T7b behavior burned each fresh op into a lease-hold the
-    // calendar drain re-claimed every round, so no round ever cleared one.
-    sink.clear();
-    let second = seed_contact_create(&engine, "card-10").await;
+#[tokio::test]
+async fn a_queued_contact_op_stays_queued_through_the_round() {
+    // The same contract on the contacts half: a queued contact op is deferred,
+    // not lease-held and not lost — still `Pending` after the round.
+    let engine = Engine::open_in_memory().expect("engine");
+    let op = seed_contact_create(&engine, "card-9").await;
+    let sink = CollectingSink::default();
+
     let report = round(&engine, &RoundPim::full(), &sink, horizon())
         .await
-        .expect("the second round completes");
+        .expect("the round completes");
 
     assert_eq!(
         sink.events(),
-        vec![EngineEvent::OutboxChanged {
-            account: "acct-1".to_owned(),
-            pending: 0,
-        }],
-        "a quiet sync delta; the drain's depth event is the round's only news"
+        vec![calendar_changed(), contacts_changed()],
+        "the drain attempted nothing, so no outbox event"
     );
-    assert_eq!(report.drained_cal, 0);
-    assert_eq!(report.drained_contacts, 1);
+    assert_eq!(report.drained, 0);
     assert_eq!(
-        engine
-            .pending_op_state(second)
-            .await
-            .expect("op state read"),
-        Some(PendingOpState::Succeeded),
-        "the second round's contact drain drove the fresh op too"
-    );
-    assert_eq!(
-        engine.pending_op_state(first).await.expect("op state read"),
-        Some(PendingOpState::Succeeded),
-        "the first op stays terminally settled"
+        engine.pending_op_state(op).await.expect("op state read"),
+        Some(PendingOpState::Pending),
+        "the contact op is still queued for the contact-drain port"
     );
 }
 

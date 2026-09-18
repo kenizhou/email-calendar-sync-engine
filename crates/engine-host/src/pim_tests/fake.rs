@@ -281,8 +281,9 @@ async fn seed_unstarted(
         .expect("the op enqueues")
 }
 
-/// One unstarted calendar create, the calendar drain's replay.
-pub(super) async fn seed_calendar_create(engine: &Engine, uid: &str) {
+/// One unstarted calendar create — its id returned so a test can pin the op's
+/// lifecycle state across rounds.
+pub(super) async fn seed_calendar_create(engine: &Engine, uid: &str) -> PendingOpId {
     let draft = EventDraft::new(
         CalendarId::try_from("/cal/default/").expect("valid calendar"),
         Uid::new(uid).expect("valid uid"),
@@ -297,7 +298,7 @@ pub(super) async fn seed_calendar_create(engine: &Engine, uid: &str) {
         format!("event:{uid}"),
         OutboxIntent::CreateEvent { draft },
     )
-    .await;
+    .await
 }
 
 /// One unstarted contact create, the contact drain's replay — its id returned

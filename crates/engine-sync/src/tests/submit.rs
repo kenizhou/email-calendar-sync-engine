@@ -53,25 +53,23 @@ async fn submit_mail_keeps_a_rate_limited_send_queued_rather_than_losing_it() {
     .unwrap_err();
     assert!(matches!(err, crate::SyncError::Provider(_)));
 
-    // Recover the op id via an idempotent re-enqueue and confirm it was
-    // RELEASED back to Pending — the rate-limit classification carries the
-    // retry promise, so the next drain (recovered provider) replays it rather
-    // than the op dying terminally.
-    let op_id = store
-        .enqueue_pending_op(
-            account(),
-            PendingOp::new(
-                IdempotencyKey::new("submit:send-2@test.local").unwrap(),
-                PendingOpKind::MailSubmit,
-                ResourceKey::new("draft:send-2@test.local").unwrap(),
-                serde_json::Value::Null,
-            ),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        store.pending_op_state(op_id).await.unwrap(),
-        Some(PendingOpState::Pending)
+    // The caller got an error, and the queue still holds the send: parked
+    // behind a backoff with its failure recorded.
+    let queued = store.list_pending_ops(account()).await.unwrap();
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].kind, Some(PendingOpKind::MailSubmit));
+    assert_eq!(queued[0].state, PendingOpState::Pending);
+    assert_eq!(queued[0].attempts, 1);
+    assert_eq!(queued[0].failure_class, Some(FailureClass::RateLimited));
+    assert!(queued[0].next_attempt_at.is_some());
+    // The draft itself is recoverable from the row — inside the tagged intent
+    // envelope this build's drivers enqueue — so nothing else has to have kept it.
+    assert!(
+        matches!(
+            serde_json::from_value::<OutboxIntent>(queued[0].payload.clone()).unwrap(),
+            OutboxIntent::SubmitMail { .. }
+        ),
+        "a queued send carries its submission intent"
     );
 }
 

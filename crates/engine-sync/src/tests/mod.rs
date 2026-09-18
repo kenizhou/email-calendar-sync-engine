@@ -14,7 +14,6 @@ use std::{
 
 use engine_core::{
     calendar::{Calendar, Event, Frequency, Recurrence, RecurrenceBound, RecurrenceRule},
-    contact::ContactDraft,
     error::FailureClass,
     ids::{CalendarId, EventId, MailboxId, MessageId, MessageIdHeader, ProviderKey, Uid},
     mail::{EmailAddress, MailStateChange, Mailbox, MailboxRole, Message},
@@ -26,11 +25,11 @@ use engine_core::{
     write::{IdempotencyKey, PendingOp, PendingOpKind, PendingOutcome, ResourceKey, SubmitPayload},
 };
 use engine_provider::{
-    CalendarWrites, Capabilities, ConnectionInfo, ContactWriteReceipt, Draft, EmailChunk,
-    EmailStream, EventDeletion, EventDraft, EventEdit, EventPatch, EventRsvp, EventWrite,
-    EventWriteReceipt, MailEdit, MailEditReceipt, MessageReport, OverrideSurvival, PatchTarget,
-    Provider, ProviderError, ProviderResult, ReportReceipt, ReportVerdict, RsvpResponse, ScopeSync,
-    SubmissionReceipt, WriteGuard,
+    CalendarWrites, Capabilities, ConnectionInfo, Draft, EmailChunk, EmailStream, EventDeletion,
+    EventDraft, EventEdit, EventPatch, EventRsvp, EventWrite, EventWriteReceipt, MailEdit,
+    MailEditReceipt, MessageReport, OverrideSurvival, PatchTarget, Provider, ProviderError,
+    ProviderResult, ReportReceipt, ReportVerdict, RsvpResponse, ScopeSync, SubmissionReceipt,
+    WriteGuard,
 };
 use engine_recurrence::Horizon;
 use engine_store::{
@@ -46,19 +45,14 @@ use super::{
     submit_mail, submit_mail_source, sync_calendar, sync_mail,
 };
 
-mod calendar_drain;
 mod calendar_invite;
 mod calendar_sync;
 mod calendar_write;
 mod contact_sync;
 mod drain;
-mod drain_ops;
-// The fake's contacts surface: a fork-owned split holding the 500-line cap.
-mod fake_contacts;
 mod mail_account;
 mod mail_edit;
 mod mail_sync;
-mod outbox_execute;
 mod state_change;
 mod streaming;
 mod streaming_resume;
@@ -482,44 +476,5 @@ impl CalendarWrites for FakeMail {
         Ok(())
     }
 }
-
-fn draft(message_id: &str) -> Draft {
-    Draft::new(
-        MessageIdHeader::new(message_id).unwrap(),
-        EmailAddress::new("alice@test.local"),
-        vec![EmailAddress::new("bob@test.local")],
-        "Subject",
-        "Body",
-    )
-}
-
-fn mailbox(id: &str, name: &str, role: Option<MailboxRole>) -> Mailbox {
-    let mut mailbox = Mailbox::new(MailboxId::try_from(id).unwrap(), name);
-    mailbox.role = role;
-    mailbox
-}
-
-fn message(id: &str, mailbox: &str, subject: &str) -> Message {
-    let mut message = Message::new(
-        MessageId::try_from(id).unwrap(),
-        Memberships::of_one(MailboxId::try_from(mailbox).unwrap()),
-    );
-    message.envelope.subject = Some(subject.to_owned());
-    message
-}
-
-fn account() -> AccountId {
-    AccountId::try_from("acct-1").unwrap()
-}
-
-fn clock() -> ManualClock {
-    ManualClock::new("2026-01-01T00:00:00Z".parse().unwrap())
-}
-
-fn worker() -> WorkerId {
-    WorkerId::new("w-1")
-}
-
-fn key(value: &str) -> ProviderKey {
-    ProviderKey::new(value).unwrap()
-}
+mod fixtures;
+pub(crate) use fixtures::*;

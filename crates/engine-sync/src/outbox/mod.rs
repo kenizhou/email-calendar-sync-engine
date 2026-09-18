@@ -15,21 +15,15 @@
 //! and how, is not the outbox's business.
 //!
 //! These are the thin per-op drivers — one op, claimed and resolved inline as
-//! enqueue-and-claim, the verb's execution half, and a mark. That middle half
-//! is shared: the dispatchers ([`execute_claimed_mail`](execute::execute_claimed_mail),
-//! [`execute_claimed_contact`](execute::execute_claimed_contact), and
-//! [`execute_claimed_calendar`](execute::execute_claimed_calendar)) dispatch
-//! on the claimed op's tagged intent alone, which is what lets the outbox
-//! drainer ([`drain_mail_ops`](drain_ops::drain_mail_ops) /
-//! [`drain_contact_ops`](drain_ops::drain_contact_ops) /
-//! [`drain_calendar_ops`](drain_ops::drain_calendar_ops)) replay ops the inline
-//! driver never finished.
+//! enqueue-and-claim, the verb's execution half, and a mark — and the
+//! background drainer ([`drain_outbox`](drain::drain_outbox)) that replays the
+//! ops an inline driver never finished. The drivers' payloads are tagged
+//! intents ([`OutboxIntent`]); a row an upstream-shaped build wrote carries the
+//! request itself, and the drainer decodes whichever shape the row is.
 
 mod calendar;
 mod contact;
 mod drain;
-pub(crate) mod drain_ops;
-pub(crate) mod execute;
 mod intent;
 mod invite;
 mod mail;
@@ -42,13 +36,12 @@ pub use calendar::{
 };
 pub use contact::{ContactWriteOutcome, create_contact, delete_contact, patch_contact};
 pub use drain::{DrainOutcome, DrainReport, DrainedOp, drain_outbox};
-pub use drain_ops::{drain_calendar_ops, drain_contact_ops, drain_mail_ops};
 use engine_core::{
     ids::AccountId,
     write::{PendingOp, PendingOutcome},
 };
 use engine_store::{
-    ClaimRejection, LeaseRequest, LeasedPendingOp, OpLease, PendingOpClaim, Store, WorkerId,
+    ClaimRejection, LeaseRequest, LeasedPendingOp, PendingOpClaim, Store, WorkerId,
 };
 pub use intent::{InviteRef, OutboxIntent};
 pub use invite::rsvp_event_from_invite;
@@ -118,87 +111,22 @@ async fn enqueue_and_claim<S: Store>(
 /// Every calendar write is safe to retry — `PUT`/`DELETE` are idempotent HTTP methods (RFC
 /// 7231 §4.2.2), a JMAP `/set` addresses the object by id, and the revision guard makes a
 /// retry self-correcting — so, unlike an SMTP send whose post-`DATA` ack can be lost
-/// ambiguously, a failed calendar write has no `NeedsConfirmation` case. The mail *edit*
-/// path shares this for the same reason (`imap-smtp.md`); only [`submit_mail`] branches.
-///
-/// Whether the failure is *recorded terminal* or *released for a later retry* is
-/// [`settle_outcome`]'s decision, shared with the drainer — a retryable or
-/// resync-required failure goes back to `Pending` so the next drain (whose provider may
-/// have recovered or warmed) replays it, exactly as the classification promised.
+/// ambiguously, a failed calendar write has no `NeedsConfirmation` case: every failure is a
+/// plain classified `Failed`. The mail *edit* path shares this for the same reason
+/// (`imap-smtp.md`); only [`submit_mail`] branches.
 async fn record_failure<S: Store>(
     store: &S,
     leased: &LeasedPendingOp,
     err: &engine_provider::ProviderError,
 ) -> Result<(), SyncError> {
-    settle_outcome(store, &leased.lease, write_failure_outcome(err)).await?;
-    Ok(())
-}
-
-/// Records a failed write outcome the way [`drain_outbox`](drain::drain_outbox) settles
-/// its passes: a plain mark, so the **store** owns the park-or-settle decision (it
-/// counts the attempt and compares the class against the attempt bound) rather than
-/// releasing the op for the per-surface drainers' immediate retry
-/// ([`record_failure`]). The two drainer families keep their own disciplines; each
-/// must read its failures back the way it wrote them.
-pub(crate) async fn record_failure_parked<S: Store>(
-    store: &S,
-    leased: &LeasedPendingOp,
-    err: &engine_provider::ProviderError,
-) -> Result<(), SyncError> {
     store
-        .mark_pending_op(&leased.lease, write_failure_outcome(err))
+        .mark_pending_op(
+            &leased.lease,
+            PendingOutcome::Failed {
+                class: err.class(),
+                retry_after: err.retry_after(),
+            },
+        )
         .await?;
     Ok(())
-}
-
-/// Settles one claimed op's outcome — the single mark-or-release decision both the
-/// inline drivers and the drainer run, so a replayed op and an inline one can never
-/// disagree.
-///
-/// A terminal outcome (`Succeeded`, `NeedsConfirmation`, and a `Failed` whose class is
-/// neither retryable nor resync-required — `Permanent`, `Conflict`, `Authentication`) is
-/// **marked** under the lease. A `Failed` classified `Retryable`/`RateLimited` or
-/// `NeedsResync` is **released** back to `Pending` instead: the classification carries a
-/// retry promise ("classified for retry/resync decisions"), and the drainer is the
-/// promised retryer — the next drain re-claims the op and replays it against a provider
-/// that may have recovered (a lifted rate limit) or warmed (an EAS SyncKey the write
-/// path seeds on its next sync pass). Returns whether the op was released (the drain
-/// counts only settled outcomes).
-///
-/// # Errors
-///
-/// [`StoreError::StaleLease`] when another worker re-claimed the op underneath — the
-/// outcome is that worker's to record, dropped here silently; other store failures
-/// propagate.
-pub(crate) async fn settle_outcome<S: Store>(
-    store: &S,
-    lease: &OpLease,
-    outcome: PendingOutcome,
-) -> Result<bool, SyncError> {
-    let release = match &outcome {
-        PendingOutcome::Failed { class, .. } => class.is_retryable() || class.requires_resync(),
-        _ => false,
-    };
-    if release {
-        store.release_pending_op(lease).await?;
-        return Ok(true);
-    }
-    store.mark_pending_op(lease, outcome).await?;
-    Ok(false)
-}
-
-/// The outcome a failed write with no ambiguous case resolves to: a plain
-/// classified `Failed` with its backoff hint. The one classifier the inline
-/// drivers' `record_failure` and the drainer's dispatch halves
-/// ([`execute_claimed_mail`](execute::execute_claimed_mail),
-/// [`execute_claimed_contact`](execute::execute_claimed_contact)) share, so a
-/// replayed op and an inline one can never disagree; only a submission has an
-/// ambiguous case, and [`send_failure_outcome`](mail::send_failure_outcome)
-/// serves it. Whether the resolved outcome is recorded terminal or released
-/// for retry is [`settle_outcome`]'s call.
-pub(crate) fn write_failure_outcome(err: &engine_provider::ProviderError) -> PendingOutcome {
-    PendingOutcome::Failed {
-        class: err.class(),
-        retry_after: err.retry_after(),
-    }
 }

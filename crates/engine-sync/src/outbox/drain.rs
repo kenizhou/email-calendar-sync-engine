@@ -31,7 +31,7 @@ use engine_store::{
     WorkerId,
 };
 
-use super::{OutboxIntent, record_failure_parked};
+use super::{OutboxIntent, record_failure};
 use crate::SyncError;
 
 /// What one drain pass did, one entry per op it attempted.
@@ -429,7 +429,7 @@ async fn settle<S: Store + StoreRead>(
     leased: &LeasedPendingOp,
     err: &engine_provider::ProviderError,
 ) -> Result<DrainOutcome, SyncError> {
-    record_failure_parked(store, leased, err).await?;
+    record_failure(store, leased, err).await?;
     let class = err.class();
     let row = store
         .list_pending_ops(leased.lease.account().clone())

@@ -356,10 +356,8 @@ pub(super) async fn resolve<S: Store>(
 }
 
 /// Executes one claimed event create: the provider call the
-/// `create_calendar_event` verb names. The execution half the inline driver
-/// runs and the calendar dispatcher
-/// ([`execute_claimed_calendar`](super::execute::execute_claimed_calendar))
-/// replays; outcome classification and recording stay with the caller.
+/// `create_calendar_event` verb names. The execution half the inline driver runs; outcome
+/// classification and recording stay with the caller.
 pub(crate) async fn execute_create_event<P: Provider>(
     provider: &P,
     account: &AccountId,
@@ -372,9 +370,8 @@ pub(crate) async fn execute_create_event<P: Provider>(
 /// `patch_calendar_event` verb names, applied to `base` — the event as the
 /// caller read it on the inline path, re-read from the store on a replay (the
 /// intent deliberately carries only the change and its target). The execution
-/// half the inline driver runs and the calendar dispatcher
-/// ([`execute_claimed_calendar`](super::execute::execute_claimed_calendar))
-/// replays; outcome classification and recording stay with the caller.
+/// half the inline driver runs; outcome classification and recording stay with
+/// the caller.
 pub(crate) async fn execute_patch_event<P: Provider>(
     provider: &P,
     account: &AccountId,
@@ -386,10 +383,8 @@ pub(crate) async fn execute_patch_event<P: Provider>(
 
 /// Executes one claimed document replace: the provider call the
 /// `put_calendar_document` verb names — self-contained, the document is the
-/// whole write, so nothing is re-read. The execution half the inline driver
-/// runs and the calendar dispatcher
-/// ([`execute_claimed_calendar`](super::execute::execute_claimed_calendar))
-/// replays; outcome classification and recording stay with the caller.
+/// whole write, so nothing is re-read. The execution half the inline driver runs; outcome
+/// classification and recording stay with the caller.
 pub(crate) async fn execute_put_event<P: Provider>(
     provider: &P,
     account: &AccountId,
@@ -402,9 +397,7 @@ pub(crate) async fn execute_put_event<P: Provider>(
 /// `rsvp_calendar_event` verb names, written against `base` — the event as
 /// the caller read it on the inline path, re-read from the store on a replay
 /// (the intent deliberately carries only the answer). The execution half the
-/// inline driver runs and the calendar dispatcher
-/// ([`execute_claimed_calendar`](super::execute::execute_claimed_calendar))
-/// replays; outcome classification and recording stay with the caller.
+/// outcome classification and recording stay with the caller.
 pub(crate) async fn execute_rsvp_event<P: Provider>(
     provider: &P,
     account: &AccountId,
@@ -418,9 +411,8 @@ pub(crate) async fn execute_rsvp_event<P: Provider>(
 /// `delete_calendar_event` verb names. `base` arrives exactly as on the
 /// inline path — `None` for a series delete, which needs no document, and the
 /// freshly re-read series document for an occurrence delete, whose rewrite
-/// runs over it. The execution half the inline driver runs and the calendar
-/// dispatcher ([`execute_claimed_calendar`](super::execute::execute_claimed_calendar))
-/// replays; outcome classification and recording stay with the caller.
+/// runs over it. The execution half the inline driver runs; outcome classification and recording
+/// stay with the caller.
 pub(crate) async fn execute_delete_event<P: Provider>(
     provider: &P,
     account: &AccountId,

@@ -336,37 +336,23 @@ async fn a_failed_send_is_visible_in_the_outbox_and_can_be_withdrawn() {
         .await
         .expect_err("the send cannot go out with no transport");
 
-    // Still there, released back to `Pending` by the inline path (the fork's
-    // release-on-retryable), so no attempt is spent and no class recorded —
-    // the drainer's own failure recording is what parks one, below.
+    // Still there, and it says what it is and why it has not gone.
     let queued = engine.outbox(&account()).await.unwrap();
     assert_eq!(queued.len(), 1);
     assert_eq!(queued[0].kind, Some(PendingOpKind::MailSubmit));
-    assert_eq!(queued[0].state, PendingOpState::Pending);
-    assert_eq!((queued[0].attempts, queued[0].failure_class), (0, None));
+    assert_eq!(queued[0].attempts, 1);
+    assert_eq!(queued[0].failure_class, Some(FailureClass::Retryable));
     // The message itself is recoverable from the row, which is how a host renders a
     // subject and recipients rather than "1 item".
     let recovered = queued_draft(&queued[0]).expect("a queued send carries its draft");
-    assert_eq!(
-        (recovered.message_id, recovered.subject.as_str()),
-        (draft.message_id, "Quarterly report",)
-    );
+    assert_eq!(recovered.message_id, draft.message_id);
+    assert_eq!(recovered.subject, "Quarterly report");
 
     // A host calls this on every row it draws, so it must refuse the ones that are not
     // sends rather than decode something that happens to fit.
     let mut not_a_send = queued[0].clone();
     not_a_send.kind = Some(PendingOpKind::MailEdit);
     assert!(queued_draft(&not_a_send).is_none());
-
-    // The drainer attempts it against the still-dead transport, and its failure
-    // recording is what parks the op behind a backoff — visibly.
-    engine.drain_outbox(&offline, &account()).await.unwrap();
-    let parked = engine.outbox(&account()).await.unwrap();
-    assert_eq!(parked.len(), 1);
-    assert_eq!(parked[0].id, queued[0].id);
-    assert_eq!(parked[0].attempts, 1);
-    assert_eq!(parked[0].failure_class, Some(FailureClass::Retryable));
-    assert!(parked[0].next_attempt_at.is_some());
 
     // A drain now must not attempt it: the store parked it behind a backoff.
     let healthy = SubmittingProvider {

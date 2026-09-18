@@ -193,20 +193,6 @@ pub trait Store: Send + Sync {
     /// superseded), or `StoreError::Backend` on a backend failure.
     async fn mark_pending_op(&self, lease: &OpLease, outcome: PendingOutcome) -> Result<()>;
 
-    /// Hands a claimed op back to `Pending` before its lease expires — the op
-    /// counterpart of [`Store::release_sync_scope`], for a holder that cannot
-    /// execute what it claimed (a drain that claimed a foreign-scope intent).
-    /// The op is runnable again immediately, and the fencing token is bumped,
-    /// so the released lease can neither mark nor release again: the next
-    /// claimant fences exactly as a post-expiry re-claim would.
-    ///
-    /// # Errors
-    ///
-    /// Returns `StoreError::StaleLease` if `lease`'s token is no longer current
-    /// or the op is no longer `InFlight` (already marked or re-claimed), or
-    /// `StoreError::Backend` on a backend failure.
-    async fn release_pending_op(&self, lease: &OpLease) -> Result<()>;
-
     /// Withdraws a queued op so it is never attempted, settling it as
     /// [`Cancelled`](crate::PendingOpState::Cancelled).
     ///

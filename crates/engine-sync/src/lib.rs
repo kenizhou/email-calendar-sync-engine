@@ -340,10 +340,9 @@ pub use observer::{IgnoreCommits, SyncCommit, SyncObserver};
 pub use outbox::{
     CalendarWriteOutcome, ContactWriteOutcome, DrainOutcome, DrainReport, DrainedOp, InviteRef,
     MailEditOutcome, OutboxIntent, ReportOutcome, SubmitOutcome, create_calendar_event,
-    create_contact, delete_calendar_event, delete_contact, drain_calendar_ops, drain_contact_ops,
-    drain_mail_ops, drain_outbox, edit_mail, patch_calendar_event, patch_contact,
-    put_calendar_document, report_message, rsvp_calendar_event, rsvp_event_from_invite,
-    submit_mail, submit_mail_source,
+    create_contact, delete_calendar_event, delete_contact, drain_outbox, edit_mail,
+    patch_calendar_event, patch_contact, put_calendar_document, report_message,
+    rsvp_calendar_event, rsvp_event_from_invite, submit_mail, submit_mail_source,
 };
 pub use progress::{AccountProgress, ProgressSnapshot};
 pub use stream::StreamTuning;

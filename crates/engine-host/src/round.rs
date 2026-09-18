@@ -6,7 +6,7 @@
 //! the *only* thing of that shape: composition, no policy. It brackets the
 //! account's status ([`AccountState::Syncing`] … a terminal), folds every chunk
 //! the engine's own `Engine::sync_mail` commits into one [`EngineEvent::Commit`]
-//! on the sink, drains the durable outbox through `Engine::drain_mail_ops` with
+//! on the sink, drains the durable outbox through `Engine::drain_outbox` with
 //! one [`EngineEvent::SendResult`] per op that reached an outcome and one
 //! [`EngineEvent::OutboxChanged`] for the depth the drain left, and hands the
 //! whole story back as [`RoundReport`]. What it does **not** do is everything a
@@ -74,8 +74,8 @@ pub struct RoundReport {
 /// terminal status.
 ///
 /// The five steps, in order: `Syncing` to the sink; `Engine::sync_mail` under a
-/// [`SyncObserver`] that folds each commit; `Engine::drain_mail_ops` through the
-/// first provider (the transport the facade's drain takes — the same one
+/// [`SyncObserver`] that folds each commit; `Engine::drain_outbox` through the
+/// the first provider (the transport the drain takes — the same one
 /// `sync_mail` itself uses for the account's folder list; no providers means no
 /// drain, and `drained` stays zero); one `SendResult` per op the drain settled
 /// plus one `OutboxChanged` when it settled any; then the terminal status from
@@ -110,8 +110,8 @@ pub async fn run_account_round<P: Provider>(
 
     let before = outbox(engine, account).await;
     let (drained, drain_ok) = match providers.first() {
-        Some(provider) => match engine.drain_mail_ops(provider, account).await {
-            Ok(count) => (count, true),
+        Some(provider) => match engine.drain_outbox(provider, account).await {
+            Ok(report) => (report.attempted.len(), true),
             Err(_) => (0, false),
         },
         None => (0, true),

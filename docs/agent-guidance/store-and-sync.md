@@ -682,9 +682,9 @@ fencing discipline as scopes. The thin inline drivers built on this are
 `engine_sync::{submit_mail, submit_mail_source, edit_mail, create_contact,
 patch_contact, delete_contact, create_calendar_event, patch_calendar_event,
 delete_calendar_event, put_calendar_document}`, each resolving the op it enqueues in the
-same call; the **outbox drainer** — `engine_sync::{drain_mail_ops, drain_contact_ops}`,
-`Engine::drain_mail_ops` / `Engine::drain_contact_ops` — is the background counterpart
-that resolves the ops no inline driver finished. `edit_mail` applies
+same call; the **outbox drainer** — `engine_sync::drain_outbox`,
+`Engine::drain_outbox` — is the background counterpart that resolves the ops no
+inline driver finished. `edit_mail` applies
 a `MailEdit`
 (mark-read/flag, move, or permanent delete) and serializes on the target message key
 (`mail:{key}`), recording a plain classified `Failed` on error (no `NeedsConfirmation`: a
@@ -717,24 +717,17 @@ one event never race on either provider.
   the message's `Message-ID` in one namespace (`submit:{id}` / `draft:{id}`), so the
   same message through either path collapses to one op.
 
-- **The drainer (issue #60 Phase 1, landed) replays mail and contact ops; calendar
-  replay is registered, not built.** An inline driver resolves the op it enqueues in the
-  same call; `drain_mail_ops` / `drain_contact_ops` resolve the ops nobody finished — an
-  unstarted `Pending` op, or a crash orphan (an `InFlight` op whose lease expired) — by
-  claiming one bounded batch and replaying each op through the same execute halves the
-  inline path runs (the dispatch is on the tagged intent alone, which is what makes
-  replay possible at all), settling each under its lease. Two entry points because the
-  split is the providers' own: a mail-only provider (IMAP) cannot satisfy
-  `ContactsProvider` yet still has mail ops to drain. A drain reports the ops it drove to
-  a recorded outcome; an op of the other drain's scope (claims are scope-blind) is
-  skipped **unmarked** — it waits out the lease, one TTL of unrunnability per skip, so a
-  host schedules the two drains with clean claim windows between them — and a mark that
-  lost its lease to another worker is dropped silently. Registered, not built:
-  `Failed`-retry backoff (`Failed` is terminal — never re-claimed; any retry is a host
-  decision), calendar replay with its base re-fetch, a `NeedsConfirmation` reconciliation
-  planner (a parked op is never re-driven; the host confirms), and outcome-data
-  persistence (a replayed submission's `SentCopy` fact is lost — the op state is the
-  record a host observes).
+- **Calendar and contact drain is a registered port, not built.** The fork once
+  carried its own per-surface drainers (`drain_mail_ops` / `drain_contact_ops` /
+  `drain_calendar_ops` with release-on-retryable); upstream landing its own queue
+  and mail-only `drain_outbox` superseded them, and the fork deleted its series
+  rather than maintain two answers to one question. Still owed on the upstream
+  design: replay for calendar verbs (a patch or delete takes the `base` event
+  *beside* the request, so draining one means re-reading it and re-applying the
+  stored intent), contact verbs likewise, and a `NeedsConfirmation`
+  reconciliation planner (a parked op is never re-driven; the host confirms).
+  Until then those ops stay queued through every drain pass, counted as
+  deferred.
 
 - **A write does not update the store; a *reconcile* does** (issue #65). The drivers are
   deliberately pure: they record the op, call the provider, record the outcome. They never
@@ -795,20 +788,15 @@ one event never race on either provider.
   engine holds no timer: the reachability signal is the host's, and polling from here would
   wake a dead network on a battery.
 
-- **Two drainer families coexist, each with its own failure discipline.** The fork's
-  per-surface drains (`engine_sync::{drain_mail_ops, drain_contact_ops,
-  drain_calendar_ops}`, the `drain_ops` module) settle through `settle_outcome`: a
-  retryable or resync-classified failure is **released** back to `Pending` under the
-  holder's lease, so the next drain replays it as soon as its provider may have recovered —
-  the release-on-retryable the fork's host round (`run_pim_round`) depends on. Upstream's
-  `drain_outbox` settles through `record_failure_parked`: a plain mark, and the **store**
-  parks a retryable failure behind a backoff with its attempt count, failure class and
-  next-attempt time (the columns a host reads through `list_pending_ops`, and what
-  `retry_pending_op_now` hurries). Each drainer reads its failures back the way it wrote
-  them, so the two must not be mixed over one queue without deciding which retry cadence
-  owns it. The payload is likewise two generations: the inline drivers enqueue the fork's
-  tagged `OutboxIntent` envelope, an upstream-shaped row carries the request itself, and
-  both `drain_outbox` and `queued_draft` decode whichever one the row is.
+- **The drainer is mail-only so far; fork-only intents stay queued.** `drain_outbox`
+  dispatches `MailSubmit`, `MailEdit` and `MailReport` only. Calendar and contact ops —
+  including the fork's from-invite RSVP (`RsvpEventFromInvite`) — stay queued, untouched
+  and counted as deferred, until calendar/contact drain is ported onto the upstream queue
+  (the accepted follow-up; the port replaces the fork's deleted per-surface drainers).
+  The payload is likewise two generations: the fork's inline drivers enqueue a tagged
+  `OutboxIntent` envelope (the fork-only intents need it), an upstream-shaped row carries
+  the request itself, and both `drain_outbox` and `queued_draft` decode whichever one the
+  row is.
 
 - **Enqueue is idempotent.** Every `PendingOp` carries a client
   `idempotency_key`. Re-enqueuing the same key (e.g. after a crash between the

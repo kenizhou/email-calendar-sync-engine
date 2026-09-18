@@ -152,13 +152,6 @@ impl<C: Clock> Store for SqliteStore<C> {
             .await
     }
 
-    async fn release_pending_op(&self, lease: &OpLease) -> Result<()> {
-        let op_id = lease.op();
-        let token = lease.token().get();
-        self.call(move |conn| outbox_ops::release(conn, op_id, token))
-            .await
-    }
-
     async fn cancel_pending_op(
         &self,
         account: AccountId,

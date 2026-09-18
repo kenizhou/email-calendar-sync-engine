@@ -96,9 +96,8 @@ where
 /// call the `rsvp_event_from_invite` verb names — `base` as the caller had it on
 /// the inline path, re-read from the store on a replay (legitimately `None` for a
 /// message-referencing transport: that is why the verb carries it as an option).
-/// The execution half the inline driver runs and the calendar dispatcher
-/// ([`execute_claimed_calendar`](super::execute::execute_claimed_calendar))
-/// replays; outcome classification and recording stay with the caller.
+/// The execution half the inline driver runs;
+/// outcome classification and recording stay with the caller.
 pub(crate) async fn execute_rsvp_event_from_invite<P: Provider>(
     provider: &P,
     account: &AccountId,

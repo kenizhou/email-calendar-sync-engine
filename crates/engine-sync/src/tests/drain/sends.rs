@@ -17,9 +17,19 @@ async fn a_queued_send_goes_out_on_the_next_drain() {
     let queued = store.list_pending_ops(account()).await.unwrap();
     assert_eq!(queued.len(), 1, "the send must still be somewhere");
 
-    // The inline failure released the op back to runnable (the fork's
-    // retry-promise semantics), so this pass — the *next* attempt after the
-    // failed inline one — takes it, and the provider is back.
+    // The store parked it behind a backoff, so a pass now must leave it alone.
+    let early = drain_outbox(
+        &provider,
+        &store,
+        &account(),
+        worker(),
+        Duration::from_mins(1),
+    )
+    .await
+    .unwrap();
+    assert!(early.is_idle(), "a parked op is not due yet");
+    assert_eq!(early.deferred, 1);
+
     clock.advance(Duration::from_mins(1));
     let report = drain_outbox(
         &provider,
@@ -62,9 +72,8 @@ async fn a_drain_parks_a_failure_and_counts_the_attempt() {
         report.attempted[0].outcome,
         DrainOutcome::Parked {
             class: FailureClass::RateLimited,
-            // One attempt from this pass: the inline failure released the op
-            // without counting one (the release does not record an attempt).
-            attempts: 1,
+            // One inline attempt, one from this pass.
+            attempts: 2,
         }
     );
     assert_eq!(store.list_pending_ops(account()).await.unwrap().len(), 1);

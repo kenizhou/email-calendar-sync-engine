@@ -240,16 +240,16 @@ where
 /// double-send (`providers.md`) — otherwise a classified `Failed` with its backoff
 /// hint. Shared by both submission paths so their handling cannot drift; the plain
 /// [`record_failure`](super::record_failure) serves the writes with no ambiguous
-/// case (edits, reports). Whether the outcome is recorded terminal or released
-/// for retry is [`settle_outcome`](super::settle_outcome)'s call — a rate-limited
-/// submission goes back to `Pending` for the next drain, the offline/rate-limit
-/// recovery the drainer exists for.
+/// case (edits, reports). The store owns what a failure does next: a retryable
+/// class parks the op behind a backoff for the drainer to come back to.
 async fn record_send_failure<S: Store>(
     store: &S,
     leased: &LeasedPendingOp,
     err: &ProviderError,
 ) -> Result<(), SyncError> {
-    super::settle_outcome(store, &leased.lease, send_failure_outcome(err)).await?;
+    store
+        .mark_pending_op(&leased.lease, send_failure_outcome(err))
+        .await?;
     Ok(())
 }
 
@@ -257,9 +257,8 @@ async fn record_send_failure<S: Store>(
 /// ambiguous send (e.g. a lost post-DATA SMTP ack) — parked, never a plain
 /// retryable failure, so neither the inline driver nor a drainer blind-retries
 /// and risks a double-send (`providers.md`) — otherwise a classified `Failed`
-/// with its backoff hint. The one classifier both halves share; the plain
-/// [`write_failure_outcome`](super::write_failure_outcome) serves the writes
-/// with no ambiguous case.
+/// with its backoff hint — the one classifier a submission needs; the writes
+/// with no ambiguous case build theirs inline in their shared `record_failure`.
 pub(super) fn send_failure_outcome(err: &ProviderError) -> PendingOutcome {
     if err.requires_confirmation() {
         PendingOutcome::NeedsConfirmation {
@@ -276,10 +275,8 @@ pub(super) fn send_failure_outcome(err: &ProviderError) -> PendingOutcome {
 /// Executes one claimed submission: the provider call the `submit_mail` verb
 /// names, dispatching on the payload's own `kind` tag — render-and-send a
 /// draft, or re-send the caller's bytes verbatim to their recorded envelope
-/// (empty set = derive mode). The execution half both submission drivers run
-/// inline and the mail dispatcher
-/// ([`execute_claimed_mail`](super::execute::execute_claimed_mail)) replays;
-/// outcome classification and recording stay with the caller.
+/// (empty set = derive mode). The execution half both submission drivers
+/// run inline; outcome classification and recording stay with the caller.
 pub(crate) async fn execute_submit_mail<P: Provider>(
     provider: &P,
     account: &AccountId,
@@ -472,9 +469,8 @@ where
 }
 
 /// Executes one claimed mail edit: the provider call the `edit_mail` verb names.
-/// The execution half the inline driver runs and the mail dispatcher
-/// ([`execute_claimed_mail`](super::execute::execute_claimed_mail)) replays;
-/// outcome classification and recording stay with the caller.
+/// The execution half the inline driver runs; outcome classification and
+/// recording stay with the caller.
 pub(crate) async fn execute_edit_mail<P: Provider>(
     provider: &P,
     account: &AccountId,
@@ -484,9 +480,8 @@ pub(crate) async fn execute_edit_mail<P: Provider>(
 }
 
 /// Executes one claimed message report: the provider call the `report_message`
-/// verb names. The execution half the inline driver runs and the mail
-/// dispatcher ([`execute_claimed_mail`](super::execute::execute_claimed_mail))
-/// replays; outcome classification and recording stay with the caller.
+/// verb names. The execution half the inline driver runs; outcome
+/// classification and recording stay with the caller.
 pub(crate) async fn execute_report_message<P: Provider>(
     provider: &P,
     account: &AccountId,
