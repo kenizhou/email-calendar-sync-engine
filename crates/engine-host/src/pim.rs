@@ -54,16 +54,15 @@
 //!
 //! # The drain order: why calendar-first is safe
 //!
-//! Outbox claims are scope-blind, and this round's order is fixed — the
-//! calendar drain always runs first — so it does claim contact ops. What it
-//! cannot execute it skips unmarked and **releases** back to `Pending` under
-//! the claim's own lease (the release-on-skip discipline the engine's drainers
-//! settle with, landed as engine task T7b): the op's fencing token is bumped,
-//! the skipper's lease dies, and the op is runnable again the moment the
-//! calendar drain moves on. The contact drain in the same round therefore
-//! claims and drives it — a fixed order costs a claim slot, never a lease-hold,
-//! and no ordering of the drains can starve a scope. The guarantee is pinned by
-//! `a_contact_op_the_calendar_drain_released_is_driven_in_the_same_round`.
+//! The drains' claims are *targeted* and *kind-filtered* (the upstream queue's
+//! own discipline): the calendar drain lists the account's queue, admits only
+//! the Calendar\* kinds, and leases each op it is about to run by id; the
+//! contact drain does the same over the Contact\* kinds. Neither can ever
+//! lease the other's ops — there is no cross-claiming to release, and no
+//! ordering of the two drains can starve a scope. The round's fixed
+//! calendar-first order is therefore about emission honesty (a calendar drain
+//! that settles something reports its depth before the contacts pass speaks),
+//! not about claim safety.
 
 use engine_api::{
     AccountId, ApiError, CalendarSyncReport, ContactSyncReport, Engine, Horizon, HorizonExpansion,
@@ -76,7 +75,7 @@ use engine_store::StoreRead as _;
 use crate::events::{EngineEvent, EventSink};
 
 /// What one PIM round did: both scopes' sync reports, and how many outbox ops
-/// the drain pass attempted.
+/// each scope's drain drove to a recorded outcome.
 #[derive(Debug)]
 pub struct PimRoundReport {
     /// The calendar sync's per-scope report — which containers and events
@@ -85,27 +84,28 @@ pub struct PimRoundReport {
     pub calendar: CalendarSyncReport,
     /// The contacts sync's report: discovery, cards, and the people rebuild.
     pub contacts: ContactSyncReport,
-    /// How many outbox ops this round's drain pass attempted. The drainer is
-    /// mail-only so far (upstream's `drain_outbox`): calendar and contact ops
-    /// stay queued, untouched and counted as deferred, until calendar/contact
-    /// drain is ported onto the upstream queue — the accepted follow-up.
-    pub drained: usize,
+    /// How many calendar ops this round's calendar drain drove to a recorded
+    /// outcome, summed over the pass.
+    pub drained_cal: usize,
+    /// How many contact ops this round's contact drain drove to a recorded
+    /// outcome, summed over the pass.
+    pub drained_contacts: usize,
 }
 
-/// Drives one PIM round: calendar sync and window maintenance, contacts sync,
-/// then one outbox drain pass.
+/// Drives one PIM round: calendar sync and window maintenance, the calendar
+/// drain, contacts sync, the contact drain.
 ///
 /// The steps, in order: `Engine::sync_calendar` over `(horizon, host_zone)`;
 /// the window check — `Engine::expand_horizon` when the store's persisted
 /// window for the synced event scope no longer covers `horizon` or was
 /// expanded under a different zone (see the module docs); one
-/// `CalendarChanged` when the calendar's rows moved; `Engine::sync_contacts`
-/// with one `ContactsChanged` on change; then one `Engine::drain_outbox`
-/// pass, with one `OutboxChanged` at the depth the pass left when it
-/// attempted anything. The drainer dispatches mail only so far — calendar and
-/// contact ops stay queued until calendar/contact drain is ported onto the
-/// upstream queue. No timers and no loops; the sink is told everything exactly
-/// once, in emission order.
+/// `CalendarChanged` when the calendar's rows moved; one
+/// `Engine::drain_calendar_ops` pass, with one `OutboxChanged` at the depth
+/// the pass left when it drove anything; `Engine::sync_contacts` with one
+/// `ContactsChanged` on change; then one `Engine::drain_contact_ops` pass with
+/// its own depth event. Mail ops are the mail round's own drain
+/// (`run_account_round`), not this round's. No timers and no loops; the sink
+/// is told everything exactly once, in emission order.
 ///
 /// # Errors
 ///
@@ -121,7 +121,7 @@ pub async fn run_pim_round<P: ContactsProvider>(
 ) -> Result<PimRoundReport, ApiError> {
     let name = account.as_str().to_owned();
 
-    // Calendar half: sync, keep the window honest, emit.
+    // Calendar half: sync, keep the window honest, emit, drain.
     let calendar = engine
         .sync_calendar(provider, account, horizon, host_zone)
         .await?;
@@ -134,8 +134,13 @@ pub async fn run_pim_round<P: ContactsProvider>(
             account: name.clone(),
         });
     }
+    // Calendar drain: replay the calendar ops this account queued (a faulted
+    // inline write, a crash orphan), then report the depth the drain left —
+    // a drain that settled nothing is not news.
+    let drained_cal = engine.drain_calendar_ops(provider, account).await?;
+    report_drain(engine, account, &name, drained_cal, sink).await;
 
-    // Contacts half: sync, emit.
+    // Contacts half: sync, emit, drain.
     let contacts = engine.sync_contacts(provider, account).await?;
     let contacts_moved = carries_changes(&contacts.address_books.applied)
         || carries_changes(&contacts.cards.applied);
@@ -144,16 +149,16 @@ pub async fn run_pim_round<P: ContactsProvider>(
             account: name.clone(),
         });
     }
-
-    // One drain pass over whatever the drainer can run (mail ops so far).
-    let report = engine.drain_outbox(provider, account).await?;
-    let drained = report.attempted.len();
-    report_drain(engine, account, &name, drained, sink).await;
+    // Contacts drain: the same replay for the contact ops, after the contacts
+    // sync that may have corrected a conflicted base.
+    let drained_contacts = engine.drain_contact_ops(provider, account).await?;
+    report_drain(engine, account, &name, drained_contacts, sink).await;
 
     Ok(PimRoundReport {
         calendar,
         contacts,
-        drained,
+        drained_cal,
+        drained_contacts,
     })
 }
 
