@@ -115,9 +115,11 @@ pub struct EasPingWatcher {
 }
 
 impl EasPingWatcher {
-    /// Builds the session at the band floor — the
-    /// [`EasAdapter::watcher`](super::EasAdapter::watcher) path.
-    pub(crate) fn new(client: EasClient, folder: MailboxId) -> Self {
+    /// Builds the Ping session over `client` for `folder`. Public so a host
+    /// can drive its own push loop (kylins' scheduler does, mirroring its
+    /// IMAP IDLE arm); everything the session needs is engine-internal, so
+    /// this constructor is the one seam.
+    pub fn new(client: EasClient, folder: MailboxId) -> Self {
         Self {
             client,
             folder,
